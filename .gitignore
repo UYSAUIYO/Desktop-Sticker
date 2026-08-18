@@ -1,0 +1,38 @@
+# Visual companion / brainstorming session files
+.superpowers/
+
+# Visual Studio / build output
+.vs/
+.vscode/
+x64/
+Debug/
+Release/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+*.ipch
+
+# Build artifacts
+bin/
+obj/
+out/
+build/
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+*.ilk
+*.log
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# User config
+*.local
