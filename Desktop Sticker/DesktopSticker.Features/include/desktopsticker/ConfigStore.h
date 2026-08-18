@@ -13,6 +13,9 @@ struct AppConfig {
     bool searchDesktop = true;
     bool searchKnownFolders = true;
     bool includeHiddenFiles = false;
+    // 磁贴网格间距（像素）
+    int zoneColumnSpacing = 48;
+    int zoneRowSpacing = 56;
 };
 
 class DESKTOPSTICKER_API ConfigStore {

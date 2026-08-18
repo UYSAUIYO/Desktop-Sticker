@@ -37,6 +37,8 @@ bool ConfigStore::Load() {
         cfg.searchDesktop = j.value("searchDesktop", true);
         cfg.searchKnownFolders = j.value("searchKnownFolders", true);
         cfg.includeHiddenFiles = j.value("includeHiddenFiles", false);
+        cfg.zoneColumnSpacing = j.value("zoneColumnSpacing", 48);
+        cfg.zoneRowSpacing = j.value("zoneRowSpacing", 56);
         config_ = cfg;
         return true;
     } catch (...) {
@@ -59,6 +61,8 @@ bool ConfigStore::Save() const {
     j["searchDesktop"] = config_.searchDesktop;
     j["searchKnownFolders"] = config_.searchKnownFolders;
     j["includeHiddenFiles"] = config_.includeHiddenFiles;
+    j["zoneColumnSpacing"] = config_.zoneColumnSpacing;
+    j["zoneRowSpacing"] = config_.zoneRowSpacing;
 
     const fs::path tmp = configPath_.wstring() + L".tmp";
     {

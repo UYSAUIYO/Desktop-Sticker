@@ -364,9 +364,11 @@ void DesktopWorkspace::RemoveFromZone(const std::wstring& zoneId, const std::wst
 
 void DesktopWorkspace::CreateZoneWindows() {
     ZoneWindow::RegisterClass(GetModuleHandleW(L"DesktopSticker.Features.dll"));
+    const auto& cfg = config_->GetConfig();
     for (const auto& zone : model_.Layout().zones) {
         auto win = std::make_unique<ZoneWindow>(GetModuleHandleW(L"DesktopSticker.Features.dll"),
-                                                zone, iconService_.get());
+                                                zone, iconService_.get(),
+                                                cfg.zoneColumnSpacing, cfg.zoneRowSpacing);
 
         win->onCollapseToggle = [this](const std::wstring& zoneId) {
             if (Zone* z = model_.FindZone(zoneId)) {

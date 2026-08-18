@@ -18,7 +18,8 @@ public:
     static void UnregisterClass(HINSTANCE hInst);
     static ZoneWindow* FromHwnd(HWND hwnd);
 
-    ZoneWindow(HINSTANCE hInst, const Zone& zone, IconService* icons);
+    ZoneWindow(HINSTANCE hInst, const Zone& zone, IconService* icons,
+               int columnSpacing = 48, int rowSpacing = 56);
     ~ZoneWindow();
 
     bool Create();
@@ -45,6 +46,7 @@ private:
     void OnLButtonUp(int x, int y);
     void OnMouseMove(int x, int y);
     void OnRButtonUp(int x, int y);
+    void OnMouseWheel(int delta);
     void StartResize(int hitCode);
 
     bool EnsureD2DResources();
@@ -59,6 +61,7 @@ private:
     ID2D1DCRenderTarget* dcTarget_ = nullptr;
     ID2D1SolidColorBrush* bgBrush_ = nullptr;
     ID2D1SolidColorBrush* titleBrush_ = nullptr;
+    ID2D1SolidColorBrush* hoverBrush_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
     IDWriteTextFormat* labelFormat_ = nullptr;
@@ -67,7 +70,13 @@ private:
     bool dragging_ = false;
     bool resizing_ = false;
     int resizeHit_ = 0;
+    bool dragMoved_ = false;
+    int scrollOffset_ = 0;
+    int columnSpacing_ = 48;
+    int rowSpacing_ = 56;
     std::wstring draggingItem_;
+    std::wstring hoverItem_;
+    std::wstring pressedItem_;
     POINT dragStart_{};
     RECT windowStart_{};
 };

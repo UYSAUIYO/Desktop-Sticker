@@ -73,8 +73,10 @@ ZoneWindow* ZoneWindow::FromHwnd(HWND hwnd) {
     return it == g_windows.end() ? nullptr : it->second;
 }
 
-ZoneWindow::ZoneWindow(HINSTANCE hInst, const Zone& zone, IconService* icons)
-    : hInst_(hInst), zone_(zone), icons_(icons) {}
+ZoneWindow::ZoneWindow(HINSTANCE hInst, const Zone& zone, IconService* icons,
+                       int columnSpacing, int rowSpacing)
+    : hInst_(hInst), zone_(zone), icons_(icons),
+      columnSpacing_(columnSpacing), rowSpacing_(rowSpacing) {}
 
 ZoneWindow::~ZoneWindow() {
     Destroy();
@@ -128,16 +130,16 @@ void ZoneWindow::Refresh() {
 std::wstring ZoneWindow::HitTestItem(int x, int y) const {
     if (zone_.collapsed) return L"";
     float tileX = 16.0f;
-    float tileY = 48.0f;
+    float tileY = 48.0f - static_cast<float>(scrollOffset_);
+    const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
     for (const auto& path : zone_.itemPaths) {
         if (x >= tileX && x <= tileX + 32 && y >= tileY && y <= tileY + 32) {
             return path;
         }
-        tileX += 48.0f;
-        const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
-        if (tileX + 48 > width) {
+        tileX += static_cast<float>(columnSpacing_);
+        if (tileX + columnSpacing_ > width) {
             tileX = 16.0f;
-            tileY += 56.0f;
+            tileY += static_cast<float>(rowSpacing_);
         }
     }
     return L"";
@@ -162,6 +164,7 @@ bool ZoneWindow::EnsureD2DResources() {
     }
     if (!bgBrush_) dcTarget_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.78f), &bgBrush_);
     if (!titleBrush_) dcTarget_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &titleBrush_);
+    if (!hoverBrush_) dcTarget_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.14f), &hoverBrush_);
     if (!textFormat_) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -178,13 +181,15 @@ bool ZoneWindow::EnsureD2DResources() {
 void ZoneWindow::ReleaseD2DResources() {
     if (labelFormat_) labelFormat_->Release();
     if (textFormat_) textFormat_->Release();
+    if (hoverBrush_) hoverBrush_->Release();
     if (titleBrush_) titleBrush_->Release();
     if (bgBrush_) bgBrush_->Release();
     if (dcTarget_) dcTarget_->Release();
     if (dwriteFactory_) dwriteFactory_->Release();
     if (wicFactory_) wicFactory_->Release();
     if (factory_) factory_->Release();
-    labelFormat_ = nullptr; textFormat_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
+    labelFormat_ = nullptr; textFormat_ = nullptr;
+    hoverBrush_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
     dcTarget_ = nullptr; dwriteFactory_ = nullptr; wicFactory_ = nullptr; factory_ = nullptr;
 }
 
@@ -233,10 +238,16 @@ void ZoneWindow::OnPaint() {
 
     if (!zone_.collapsed) {
         float x = 16.0f;
-        float y = 48.0f;
+        float y = 48.0f - static_cast<float>(scrollOffset_);
         int total = 0, iconOk = 0, wicOk = 0;
         for (const auto& path : zone_.itemPaths) {
             ++total;
+            // 悬停/按下高亮
+            if (path == hoverItem_ || path == pressedItem_) {
+                dcTarget_->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(x - 4, y - 4, x + 36, y + 36), 8.0f, 8.0f),
+                    hoverBrush_);
+            }
             HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
             if (icon) {
                 ++iconOk;
@@ -266,16 +277,23 @@ void ZoneWindow::OnPaint() {
             } else {
                 dcTarget_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
             }
-            // 图标下方显示名称
+            // 图标下方显示名称：短文字居中，长文字左对齐，含空格两端对齐
             {
                 const std::wstring name = std::filesystem::path(path).stem().wstring();
+                if (name.find(L' ') != std::wstring::npos) {
+                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_JUSTIFIED);
+                } else if (name.size() <= 4) {
+                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                } else {
+                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                }
                 dcTarget_->DrawTextW(name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
                                      D2D1::RectF(x - 6, y + 34, x + 38, y + 50), titleBrush_);
             }
-            x += 48.0f;
-            if (x + 48 > width) {
+            x += static_cast<float>(columnSpacing_);
+            if (x + columnSpacing_ > width) {
                 x = 16.0f;
-                y += 56.0f;
+                y += static_cast<float>(rowSpacing_);
             }
         }
         static bool s_paintLogged = false;
@@ -315,7 +333,9 @@ void ZoneWindow::OnPaint() {
 
 void ZoneWindow::OnLButtonDown(int x, int y) {
     dragging_ = true;
+    dragMoved_ = false;
     draggingItem_ = HitTestItem(x, y);
+    pressedItem_ = draggingItem_;
     // 必须记录“屏幕坐标”作为拖拽起点，否则窗口会按自身位置向下/右偏移
     GetCursorPos(&dragStart_);
     GetWindowRect(hwnd_, &windowStart_);
@@ -324,14 +344,22 @@ void ZoneWindow::OnLButtonDown(int x, int y) {
     if (y < 40) {
         if (onCollapseToggle) onCollapseToggle(zone_.id);
     }
+    Refresh();
 }
 
 void ZoneWindow::OnLButtonUp(int x, int y) {
+    // 没有发生拖拽且点中了图标 → 打开
+    if (!dragMoved_ && !draggingItem_.empty()) {
+        ShellExecuteW(nullptr, L"open", draggingItem_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
     dragging_ = false;
     resizing_ = false;
     resizeHit_ = 0;
+    dragMoved_ = false;
+    pressedItem_.clear();
     draggingItem_.clear();
     ReleaseCapture();
+    Refresh();
 }
 
 void ZoneWindow::StartResize(int hitCode) {
@@ -340,6 +368,22 @@ void ZoneWindow::StartResize(int hitCode) {
     GetCursorPos(&dragStart_);
     GetWindowRect(hwnd_, &windowStart_);
     SetCapture(hwnd_);
+}
+
+void ZoneWindow::OnMouseWheel(int delta) {
+    if (zone_.collapsed) return;
+    scrollOffset_ -= (delta / WHEEL_DELTA) * 40;
+    if (scrollOffset_ < 0) scrollOffset_ = 0;
+
+    const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
+    const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
+    const int cols = std::max(1, static_cast<int>(width) / std::max(1, columnSpacing_));
+    const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
+    const int contentH = rows * rowSpacing_ + 16;
+    const int viewH = static_cast<int>(height) - 48 - 8;
+    const int maxScroll = std::max(0, contentH - viewH);
+    if (scrollOffset_ > maxScroll) scrollOffset_ = maxScroll;
+    Refresh();
 }
 
 void ZoneWindow::OnMouseMove(int x, int y) {
@@ -380,10 +424,23 @@ void ZoneWindow::OnMouseMove(int x, int y) {
                      r.right - r.left, r.bottom - r.top,
                      SWP_NOACTIVATE | SWP_NOZORDER);
         zone_.rect = r;
+        Refresh(); // 尺寸变化后重新布局换行
         return;
     }
 
-    if (!dragging_) return;
+    if (!dragging_) {
+        // 悬停高亮
+        const std::wstring hit = HitTestItem(x, y);
+        if (hit != hoverItem_) {
+            hoverItem_ = hit;
+            Refresh();
+        }
+        return;
+    }
+
+    if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 3) {
+        dragMoved_ = true;
+    }
 
     if (!draggingItem_.empty() && onItemDrag) {
         if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 8) {
@@ -457,6 +514,9 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_MOUSEMOVE:
         self->OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
+    case WM_MOUSEWHEEL:
+        self->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wp));
+        return 0;
     case WM_RBUTTONUP:
         self->OnRButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
@@ -486,7 +546,8 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         if (right) return HTRIGHT;
         if (top) return HTTOP;
         if (bottom) return HTBOTTOM;
-        return HTTRANSPARENT;
+        // 空白区域也返回 HTCLIENT，让整张卡片都能拖动
+        return HTCLIENT;
     }
     case WM_NCCALCSIZE:
         if (wp) return 0;
