@@ -67,7 +67,8 @@ ZoneWindow::~ZoneWindow() {
 
 bool ZoneWindow::Create() {
     DWORD style = WS_POPUP | WS_VISIBLE | WS_THICKFRAME;
-    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    // 不使用 WS_EX_LAYERED：分层窗口在跨进程桌面子窗口上可能完全不渲染（全透明）
+    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
     hwnd_ = CreateWindowExW(exStyle, kZoneWindowClass, L"",
                             style,
@@ -176,7 +177,8 @@ void ZoneWindow::OnPaint() {
     }
 
     target_->BeginDraw();
-    target_->Clear(D2D1::ColorF(0, 0));
+    // 实色深色背景（非分层窗口 Clear(0,0) 会变黑，这里直接用不透明深色）
+    target_->Clear(D2D1::ColorF(0x1E1E1E, 1.0f));
     const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
     const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
     target_->DrawRoundedRectangle(

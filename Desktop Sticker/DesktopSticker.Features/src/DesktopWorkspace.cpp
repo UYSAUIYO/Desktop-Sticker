@@ -3,6 +3,9 @@
 
 #include <windowsx.h>
 #include <commctrl.h>
+#include <cstring>
+
+#include "desktopsticker/Utf8.h"
 
 namespace fs = std::filesystem;
 
@@ -11,6 +14,13 @@ namespace desktopsticker {
 namespace {
 
 DesktopWorkspace* g_mouseHookWorkspace = nullptr;
+
+void DebugLog(const std::filesystem::path& root, const std::wstring& msg) {
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    std::ofstream out(root / L"debug.log", std::ios::app);
+    out << ToUtf8(msg) << std::endl;
+}
 
 struct PromptState {
     std::wstring value;
@@ -110,46 +120,69 @@ DesktopWorkspace::~DesktopWorkspace() {
 }
 
 bool DesktopWorkspace::Initialize() {
-    OleInitialize(nullptr);
+    const auto root = config_->GetRootDir();
+    DebugLog(root, L"Initialize begin");
+    try {
+        OleInitialize(nullptr);
 
-    if (!shell_.Initialize()) {
-        // 降级：仍创建普通窗口（无 Shell 嵌入），功能可用
-    }
+        if (!shell_.Initialize()) {
+            DebugLog(root, L"shell_.Initialize() = false (degraded)");
+        } else {
+            const auto& w = shell_.Windows();
+            DebugLog(root, L"shell ok: progman=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.progman)) +
+                           L" workerw=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.workerw)) +
+                           L" defView=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.defView)) +
+                           L" listView=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.listView)) +
+                           L" defViewVisible=" + std::to_wstring(IsWindowVisible(w.defView) ? 1 : 0) +
+                           L" workerwVisible=" + std::to_wstring(IsWindowVisible(w.workerw) ? 1 : 0));
+        }
 
-    iconManager_ = std::make_unique<DesktopIconManager>(&shell_);
-    iconService_ = std::make_unique<IconService>();
+        iconManager_ = std::make_unique<DesktopIconManager>(&shell_);
+        iconService_ = std::make_unique<IconService>();
 
-    // 记录并关闭自动排列，避免被收纳图标自动回位
-    if (iconManager_->ListView()) {
-        LONG_PTR style = GetWindowLongPtrW(iconManager_->ListView(), GWL_STYLE);
-        model_.Layout().autoArrangeWasEnabled = (style & LVS_AUTOARRANGE) != 0;
-        iconManager_->SetAutoArrange(false);
-    }
+        // 记录并关闭自动排列，避免被收纳图标自动回位
+        if (iconManager_->ListView()) {
+            LONG_PTR style = GetWindowLongPtrW(iconManager_->ListView(), GWL_STYLE);
+            model_.Layout().autoArrangeWasEnabled = (style & LVS_AUTOARRANGE) != 0;
+            iconManager_->SetAutoArrange(false);
+            DebugLog(root, L"listview found");
+        } else {
+            DebugLog(root, L"listview NOT found");
+        }
 
-    // 已有布局则加载；否则首次自动分类
-    if (!model_.Load(layoutPath_) || model_.Layout().zones.empty()) {
-        auto icons = iconManager_->EnumIcons();
-        AutoClassify(icons);
-        SaveLayout();
-    }
-
-    // 把已收纳的原生图标移到屏幕外（启动恢复场景）
-    for (const auto& zone : model_.Layout().zones) {
-        for (const auto& path : zone.itemPaths) {
+        // 已有布局则加载；否则首次自动分类
+        if (!model_.Load(layoutPath_) || model_.Layout().zones.empty()) {
             auto icons = iconManager_->EnumIcons();
-            for (const auto& icon : icons) {
-                if (_wcsicmp(icon.path.c_str(), path.c_str()) == 0) {
-                    iconManager_->MoveIconOffscreen(icon.index);
-                    break;
+            AutoClassify(icons);
+            SaveLayout();
+        }
+        DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()));
+
+        // 把已收纳的原生图标移到屏幕外（启动恢复场景）
+        for (const auto& zone : model_.Layout().zones) {
+            for (const auto& path : zone.itemPaths) {
+                auto icons = iconManager_->EnumIcons();
+                for (const auto& icon : icons) {
+                    if (_wcsicmp(icon.path.c_str(), path.c_str()) == 0) {
+                        iconManager_->MoveIconOffscreen(icon.index);
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    CreateZoneWindows();
-    StartMouseHook();
-    StartDesktopWatcher();
-    return true;
+        CreateZoneWindows();
+        StartMouseHook();
+        StartDesktopWatcher();
+        DebugLog(root, L"Initialize end, zoneWindows=" + std::to_wstring(zoneWindows_.size()));
+        return true;
+    } catch (const std::exception& e) {
+        DebugLog(root, L"Initialize exception: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        return false;
+    } catch (...) {
+        DebugLog(root, L"Initialize unknown exception");
+        return false;
+    }
 }
 
 void DesktopWorkspace::Shutdown() {
@@ -290,13 +323,41 @@ void DesktopWorkspace::CreateZoneWindows() {
             RemoveFromZone(fromZoneId, itemPath);
         };
 
-        if (!win->Create()) continue;
+        if (!win->Create()) {
+            DebugLog(config_->GetRootDir(), L"ZoneWindow create FAILED: " + zone.name);
+            continue;
+        }
+        DebugLog(config_->GetRootDir(),
+                 L"ZoneWindow created: " + zone.name +
+                 L" parent=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))) +
+                 L" owner=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetWindow(win->Hwnd(), GW_OWNER))));
 
         if (shell_.IsReady()) {
-            shell_.EmbedWindow(win->Hwnd(), true);
+            const HWND parent = shell_.Windows().defView;
+            const HWND oldParent = SetParent(win->Hwnd(), parent);
+            const DWORD err = GetLastError();
+            DebugLog(config_->GetRootDir(),
+                     L"  after SetParent parent=" +
+                     std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))) +
+                     L" ancestor=" +
+                     std::to_wstring(reinterpret_cast<uintptr_t>(GetAncestor(win->Hwnd(), GA_PARENT))));
+            SetWindowPos(win->Hwnd(), HWND_TOP, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            RECT rc{};
+            GetWindowRect(win->Hwnd(), &rc);
+            DebugLog(config_->GetRootDir(),
+                     L"ZoneWindow embed: " + zone.name +
+                     L" oldParent=" + std::to_wstring(reinterpret_cast<uintptr_t>(oldParent)) +
+                     L" err=" + std::to_wstring(err) +
+                     L" hwnd=" + std::to_wstring(reinterpret_cast<uintptr_t>(win->Hwnd())) +
+                     L" visible=" + std::to_wstring(IsWindowVisible(win->Hwnd()) ? 1 : 0) +
+                     L" rect=" + std::to_wstring(rc.left) + L"," + std::to_wstring(rc.top) +
+                     L"-" + std::to_wstring(rc.right) + L"," + std::to_wstring(rc.bottom) +
+                     L" parent=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))));
         } else {
             SetWindowPos(win->Hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            DebugLog(config_->GetRootDir(), L"ZoneWindow fallback bottom: " + zone.name);
         }
 
         // 接收 Shell 拖放（原生图标/文件拖入分区）
