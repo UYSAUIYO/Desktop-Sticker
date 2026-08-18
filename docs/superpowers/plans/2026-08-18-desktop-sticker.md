@@ -32,6 +32,8 @@
 >
 > 注意：本机 Debug 配置的测试 exe 启动即崩溃（exit 3，Release 正常），疑似环境级 Debug CRT 问题；测试统一在 **Release** 下执行。所有测试文件用 `TEST(...)` / `ASSERT_*` 宏（见 `test_framework.h`），不再使用 `CppUnitTest.h`。
 
+> **实现偏差（Task 10-12 实际落地）**：搜索启动器与设置窗口未采用独立 XAML 窗口，而是用 **代码构建 UI 的 `LauncherController` / `SettingsController`**（直接实例化 `Microsoft.UI.Xaml.Window` 并设置 `Content`）。原因：避免新增 IDL/XAML 类型的构建复杂度，同时保持 WinUI 3 控件体系。后续如需更精致的 XAML 界面，可在此基础上迁移。
+
 ---
 
 ## Task 1: 安装 MSVC / Visual Studio Build Tools
