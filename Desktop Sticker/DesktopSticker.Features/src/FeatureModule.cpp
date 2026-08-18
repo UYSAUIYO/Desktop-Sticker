@@ -104,6 +104,7 @@ void FeatureModule::SetConfig(const AppConfig& config) {
     if (!config_) return;
     config_->SetConfig(config);
     config_->Save();
+    if (workspace_) workspace_->SetZoneSpacing(config.zoneColumnSpacing, config.zoneRowSpacing);
     if (index_) index_->Rebuild();
 }
 

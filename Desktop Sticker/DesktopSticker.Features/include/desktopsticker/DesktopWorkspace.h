@@ -27,6 +27,7 @@ public:
     void ToggleCleanDesktop();
     void RestoreDesktop();
     void Refresh();
+    void SetZoneSpacing(int columnSpacing, int rowSpacing);
 
 private:
     std::wstring ClassifyPath(const std::wstring& path);

@@ -127,6 +127,13 @@ void ZoneWindow::Refresh() {
     if (hwnd_) PostMessageW(hwnd_, kZoneRefreshMsg, 0, 0);
 }
 
+void ZoneWindow::SetSpacing(int columnSpacing, int rowSpacing) {
+    columnSpacing_ = columnSpacing;
+    rowSpacing_ = rowSpacing;
+    scrollOffset_ = 0;
+    Refresh();
+}
+
 std::wstring ZoneWindow::HitTestItem(int x, int y) const {
     if (zone_.collapsed) return L"";
     float tileX = 16.0f;
@@ -379,9 +386,9 @@ void ZoneWindow::OnMouseWheel(int delta) {
     const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
     const int cols = std::max(1, static_cast<int>(width) / std::max(1, columnSpacing_));
     const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
-    const int contentH = rows * rowSpacing_ + 16;
-    const int viewH = static_cast<int>(height) - 48 - 8;
-    const int maxScroll = std::max(0, contentH - viewH);
+    // 保证最后一行图标和名称都完整可见（图标顶部 48 + 行高*(rows-1) + 名称底部 50）
+    const int lastRowBottom = 98 + (rows - 1) * rowSpacing_;
+    const int maxScroll = std::max(0, lastRowBottom - (static_cast<int>(height) - 8));
     if (scrollOffset_ > maxScroll) scrollOffset_ = maxScroll;
     Refresh();
 }
@@ -438,7 +445,7 @@ void ZoneWindow::OnMouseMove(int x, int y) {
         return;
     }
 
-    if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 3) {
+    if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 8) {
         dragMoved_ = true;
     }
 

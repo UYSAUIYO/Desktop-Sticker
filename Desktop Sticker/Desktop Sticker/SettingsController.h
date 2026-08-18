@@ -26,6 +26,8 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch searchKnownFoldersSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch followThemeSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox hotkeyModeCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::NumberBox columnSpacingBox_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::NumberBox rowSpacingBox_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBox appPathBox_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ListView appList_{ nullptr };
 };

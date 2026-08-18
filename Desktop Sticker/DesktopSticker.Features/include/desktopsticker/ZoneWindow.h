@@ -28,6 +28,7 @@ public:
     HWND Hwnd() const { return hwnd_; }
     const Zone& GetZone() const { return zone_; }
     void SetZone(const Zone& zone);
+    void SetSpacing(int columnSpacing, int rowSpacing);
     void Refresh();
 
     std::wstring HitTestItem(int x, int y) const;

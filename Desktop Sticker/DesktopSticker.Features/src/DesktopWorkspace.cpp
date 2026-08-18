@@ -214,6 +214,10 @@ void DesktopWorkspace::Refresh() {
     if (zonesChanged_) zonesChanged_();
 }
 
+void DesktopWorkspace::SetZoneSpacing(int columnSpacing, int rowSpacing) {
+    for (auto& w : zoneWindows_) w->SetSpacing(columnSpacing, rowSpacing);
+}
+
 namespace {
 
 bool ContainsAnyLower(const std::wstring& lower, std::initializer_list<const wchar_t*> keys) {

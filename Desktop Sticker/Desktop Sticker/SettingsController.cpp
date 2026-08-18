@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "SettingsController.h"
 
+#include <winrt/Microsoft.UI.Windowing.h>
+
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
@@ -56,6 +58,22 @@ void SettingsController::EnsureWindow() {
     hotkeyModeCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveConfig(); });
     root.Children().Append(hotkeyModeCombo_);
 
+    columnSpacingBox_ = NumberBox();
+    columnSpacingBox_.Header(box_value(L"磁贴列间距（像素）"));
+    columnSpacingBox_.Minimum(32);
+    columnSpacingBox_.Maximum(96);
+    columnSpacingBox_.SmallChange(2);
+    columnSpacingBox_.ValueChanged([this](winrt::Windows::Foundation::IInspectable const&, NumberBoxValueChangedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(columnSpacingBox_);
+
+    rowSpacingBox_ = NumberBox();
+    rowSpacingBox_.Header(box_value(L"磁贴行间距（像素）"));
+    rowSpacingBox_.Minimum(40);
+    rowSpacingBox_.Maximum(120);
+    rowSpacingBox_.SmallChange(2);
+    rowSpacingBox_.ValueChanged([this](winrt::Windows::Foundation::IInspectable const&, NumberBoxValueChangedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(rowSpacingBox_);
+
     auto appLabel = TextBlock();
     appLabel.Text(L"手动添加的应用");
     root.Children().Append(appLabel);
@@ -106,6 +124,8 @@ void SettingsController::EnsureWindow() {
     searchKnownFoldersSwitch_.IsOn(cfg.searchKnownFolders);
     followThemeSwitch_.IsOn(cfg.followSystemTheme);
     hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
+    columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
+    rowSpacingBox_.Value(static_cast<double>(cfg.zoneRowSpacing));
     RefreshApps();
 }
 
@@ -113,13 +133,15 @@ void SettingsController::Show() {
     EnsureWindow();
     if (!window_) return;
     visible_ = true;
+    window_.AppWindow().Show();
     window_.Activate();
 }
 
 void SettingsController::Hide() {
     if (!window_) return;
     visible_ = false;
-    window_.Close();
+    // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
+    window_.AppWindow().Hide();
 }
 
 void SettingsController::RefreshApps() {
@@ -142,6 +164,8 @@ void SettingsController::SaveConfig() {
         auto tag = item.Tag().as<Windows::Foundation::IPropertyValue>().GetString();
         cfg.hotkeyMode = tag == L"custom" ? L"custom" : L"double-space";
     }
+    if (columnSpacingBox_) cfg.zoneColumnSpacing = static_cast<int>(columnSpacingBox_.Value());
+    if (rowSpacingBox_) cfg.zoneRowSpacing = static_cast<int>(rowSpacingBox_.Value());
     host_->Module()->SetConfig(cfg);
 }
 
