@@ -144,7 +144,8 @@ bool DesktopWorkspace::Initialize() {
         if (iconManager_->ListView() && IsWindow(iconManager_->ListView())) {
             LONG_PTR style = GetWindowLongPtrW(iconManager_->ListView(), GWL_STYLE);
             model_.Layout().autoArrangeWasEnabled = (style & LVS_AUTOARRANGE) != 0;
-            DebugLog(root, L"listview found");
+            DebugLog(root, L"listview found, autoArrange=" +
+                           std::to_wstring(model_.Layout().autoArrangeWasEnabled ? 1 : 0));
         } else {
             DebugLog(root, L"listview NOT found");
         }
@@ -172,6 +173,7 @@ bool DesktopWorkspace::Initialize() {
         // 把已收纳的原生图标移到屏幕外（只枚举一次，避免 O(N²) 远程调用卡死启动）
         {
             auto icons = iconManager_->EnumIcons();
+            int moved = 0;
             for (const auto& icon : icons) {
                 bool collected = false;
                 for (const auto& zone : model_.Layout().zones) {
@@ -183,8 +185,9 @@ bool DesktopWorkspace::Initialize() {
                     }
                     if (collected) break;
                 }
-                if (collected) iconManager_->MoveIconOffscreen(icon.index);
+                if (collected && iconManager_->MoveIconOffscreen(icon.index)) ++moved;
             }
+            DebugLog(root, L"moved icons offscreen=" + std::to_wstring(moved));
         }
 
         CreateZoneWindows();
@@ -591,7 +594,9 @@ LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARA
                                 LVHITTESTINFO ht{};
                                 ht.pt = client;
                                 WriteProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
-                                SendMessageW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(remote));
+                                DWORD_PTR hitResult = 0;
+                                SendMessageTimeoutW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(remote),
+                                                    SMTO_ABORTIFHUNG, 500, &hitResult);
                                 ReadProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
                                 index = ht.iItem;
                                 VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);

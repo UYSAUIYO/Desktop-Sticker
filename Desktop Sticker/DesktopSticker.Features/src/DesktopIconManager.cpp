@@ -19,12 +19,12 @@ HANDLE OpenListViewProcess(HWND lv) {
                        FALSE, pid);
 }
 
-std::wstring GetItemTextRemote(HWND lv, HANDLE hProc, int index) {
+bool GetItemTextRemote(HWND lv, HANDLE hProc, int index, std::wstring& out) {
     constexpr size_t kBufChars = 512;
     const SIZE_T lvSize = sizeof(LVITEMW);
     const SIZE_T total = lvSize + kBufChars * sizeof(wchar_t);
     LPVOID remote = VirtualAllocEx(hProc, nullptr, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) return {};
+    if (!remote) return false;
 
     LVITEMW item{};
     item.mask = LVIF_TEXT;
@@ -34,23 +34,79 @@ std::wstring GetItemTextRemote(HWND lv, HANDLE hProc, int index) {
     item.cchTextMax = static_cast<int>(kBufChars);
     WriteProcessMemory(hProc, remote, &item, sizeof(item), nullptr);
 
-    SendMessageW(lv, LVM_GETITEMTEXTW, index, reinterpret_cast<LPARAM>(remote));
+    DWORD_PTR result = 0;
+    if (!SendMessageTimeoutW(lv, LVM_GETITEMTEXTW, index, reinterpret_cast<LPARAM>(remote),
+                             SMTO_ABORTIFHUNG, 500, &result)) {
+        VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
+        return false;
+    }
 
     wchar_t buf[kBufChars]{};
     ReadProcessMemory(hProc, static_cast<BYTE*>(remote) + lvSize, buf, sizeof(buf), nullptr);
     VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
-    return std::wstring(buf);
+    out = buf;
+    return true;
 }
 
 bool GetItemPositionRemote(HWND lv, HANDLE hProc, int index, POINT& pt) {
     LPVOID remote = VirtualAllocEx(hProc, nullptr, sizeof(POINT), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!remote) return false;
 
-    SendMessageW(lv, LVM_GETITEMPOSITION, index, reinterpret_cast<LPARAM>(remote));
+    DWORD_PTR result = 0;
+    if (!SendMessageTimeoutW(lv, LVM_GETITEMPOSITION, index, reinterpret_cast<LPARAM>(remote),
+                             SMTO_ABORTIFHUNG, 500, &result)) {
+        VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
+        return false;
+    }
 
     ReadProcessMemory(hProc, remote, &pt, sizeof(pt), nullptr);
     VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
     return true;
+}
+
+struct DesktopEntry {
+    std::wstring label;
+    std::wstring path;
+};
+
+std::vector<DesktopEntry> BuildDesktopEntries() {
+    std::vector<DesktopEntry> entries;
+    PWSTR desktopPath = nullptr;
+    PWSTR publicPath = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) return entries;
+    SHGetKnownFolderPath(FOLDERID_PublicDesktop, 0, nullptr, &publicPath);
+
+    std::vector<std::filesystem::path> dirs;
+    dirs.emplace_back(desktopPath);
+    if (publicPath) dirs.emplace_back(publicPath);
+    CoTaskMemFree(desktopPath);
+    if (publicPath) CoTaskMemFree(publicPath);
+
+    for (const auto& d : dirs) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(d, ec)) {
+            const auto& p = entry.path();
+            const std::wstring stem = p.stem().wstring();
+            const std::wstring fileName = p.filename().wstring();
+            entries.push_back({stem, p.wstring()});
+            entries.push_back({fileName, p.wstring()});
+            SHFILEINFOW sfi{};
+            if (SHGetFileInfoW(p.c_str(), 0, &sfi, sizeof(sfi), SHGFI_DISPLAYNAME)) {
+                const std::wstring dn = sfi.szDisplayName;
+                if (_wcsicmp(dn.c_str(), stem.c_str()) != 0 && _wcsicmp(dn.c_str(), fileName.c_str()) != 0) {
+                    entries.push_back({dn, p.wstring()});
+                }
+            }
+        }
+    }
+    return entries;
+}
+
+std::wstring FindPathByLabel(const std::vector<DesktopEntry>& entries, const std::wstring& label) {
+    for (const auto& e : entries) {
+        if (_wcsicmp(e.label.c_str(), label.c_str()) == 0) return e.path;
+    }
+    return L"";
 }
 
 } // namespace
@@ -62,14 +118,21 @@ std::vector<DesktopIconInfo> DesktopIconManager::EnumIcons() {
     HWND lv = ListView();
     if (!lv || !IsWindow(lv)) return icons;
 
-    const int count = static_cast<int>(SendMessageW(lv, LVM_GETITEMCOUNT, 0, 0));
+    DWORD_PTR countResult = 0;
+    if (!SendMessageTimeoutW(lv, LVM_GETITEMCOUNT, 0, 0, SMTO_ABORTIFHUNG, 1000, &countResult)) {
+        return icons;
+    }
+    const int count = static_cast<int>(countResult);
     if (count <= 0) return icons;
 
     HANDLE hProc = OpenListViewProcess(lv);
     if (!hProc) return icons;
 
+    const auto desktopEntries = BuildDesktopEntries();
+
     for (int i = 0; i < count; ++i) {
-        std::wstring label = GetItemTextRemote(lv, hProc, i);
+        std::wstring label;
+        if (!GetItemTextRemote(lv, hProc, i, label)) break; // Explorer 无响应则放弃枚举，避免长时间卡死
         if (label.empty()) continue;
 
         POINT pt{};
@@ -79,7 +142,7 @@ std::vector<DesktopIconInfo> DesktopIconManager::EnumIcons() {
         info.index = i;
         info.label = label;
         info.position = pt;
-        info.path = ResolvePathFromLabel(label);
+        info.path = FindPathByLabel(desktopEntries, label);
         icons.push_back(std::move(info));
     }
 
@@ -90,13 +153,17 @@ std::vector<DesktopIconInfo> DesktopIconManager::EnumIcons() {
 bool DesktopIconManager::MoveIconOffscreen(int index) {
     HWND lv = ListView();
     if (!lv || !IsWindow(lv)) return false;
-    return SendMessageW(lv, LVM_SETITEMPOSITION, index, MAKELPARAM(-32000, -32000)) != FALSE;
+    DWORD_PTR result = 0;
+    return SendMessageTimeoutW(lv, LVM_SETITEMPOSITION, index, MAKELPARAM(-32000, -32000),
+                               SMTO_ABORTIFHUNG, 500, &result) != FALSE;
 }
 
 bool DesktopIconManager::RestoreIcon(int index, POINT position) {
     HWND lv = ListView();
     if (!lv || !IsWindow(lv)) return false;
-    return SendMessageW(lv, LVM_SETITEMPOSITION, index, MAKELPARAM(position.x, position.y)) != FALSE;
+    DWORD_PTR result = 0;
+    return SendMessageTimeoutW(lv, LVM_SETITEMPOSITION, index, MAKELPARAM(position.x, position.y),
+                               SMTO_ABORTIFHUNG, 500, &result) != FALSE;
 }
 
 bool DesktopIconManager::SetAutoArrange(bool enable) {

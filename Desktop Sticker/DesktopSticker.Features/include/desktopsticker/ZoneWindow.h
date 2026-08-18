@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <d2d1.h>
+#include <wincodec.h>
 #include <functional>
 #include <string>
 #include <vector>
@@ -59,6 +60,7 @@ private:
     ID2D1SolidColorBrush* titleBrush_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
+    IWICImagingFactory* wicFactory_ = nullptr;
 
     bool dragging_ = false;
     std::wstring draggingItem_;

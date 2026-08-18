@@ -137,7 +137,9 @@ bool ZoneWindow::EnsureD2DResources() {
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_);
         DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                             reinterpret_cast<IUnknown**>(&dwriteFactory_));
-        if (!factory_ || !dwriteFactory_) return false;
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                         IID_PPV_ARGS(&wicFactory_));
+        if (!factory_ || !dwriteFactory_ || !wicFactory_) return false;
     }
 
     RECT rc{};
@@ -163,9 +165,10 @@ void ZoneWindow::ReleaseD2DResources() {
     if (bgBrush_) bgBrush_->Release();
     if (target_) target_->Release();
     if (dwriteFactory_) dwriteFactory_->Release();
+    if (wicFactory_) wicFactory_->Release();
     if (factory_) factory_->Release();
     textFormat_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
-    target_ = nullptr; dwriteFactory_ = nullptr; factory_ = nullptr;
+    target_ = nullptr; dwriteFactory_ = nullptr; wicFactory_ = nullptr; factory_ = nullptr;
 }
 
 void ZoneWindow::OnPaint() {
@@ -195,11 +198,16 @@ void ZoneWindow::OnPaint() {
         for (const auto& path : zone_.itemPaths) {
             HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
             if (icon) {
-                HDC dc = GetDC(hwnd_);
-                if (dc) {
-                    DrawIconEx(dc, static_cast<int>(x), static_cast<int>(y),
-                               icon, 32, 32, 0, nullptr, DI_NORMAL);
-                    ReleaseDC(hwnd_, dc);
+                // 用 WIC 把 HICON 转成 D2D 位图再绘制（GDI DrawIconEx 在 D2D 表面上不显示）
+                IWICBitmap* wicBmp = nullptr;
+                if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
+                    ID2D1Bitmap* d2dBmp = nullptr;
+                    if (SUCCEEDED(target_->CreateBitmapFromWicBitmap(wicBmp, nullptr, &d2dBmp))) {
+                        target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
+                                            1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                        d2dBmp->Release();
+                    }
+                    wicBmp->Release();
                 }
             } else {
                 target_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
