@@ -23,6 +23,15 @@
 - 所有路径在代码中以 `std::filesystem::path` 或宽字符串处理；源文件统一 UTF-8 with BOM（MSVC 需要）。
 - 每个 Task 结束都要 `git commit`。
 
+> **测试框架偏差（Task 4 起生效）**：本机 VS 未安装“C++ 测试工具”组件（`CppUnitTest.h` 不存在），因此测试工程改用**内置轻量控制台测试框架**（`DesktopSticker.Tests/test_framework.h` + `main.cpp`），零外部依赖。测试命令：
+>
+> ```bash
+> "D:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe" "D:/project/Desktop Sticker/Desktop Sticker/Desktop Sticker.sln" -p:Configuration=Release -p:Platform=x64 -m:1
+> "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release/Tests/DesktopSticker.Tests.exe"
+> ```
+>
+> 注意：本机 Debug 配置的测试 exe 启动即崩溃（exit 3，Release 正常），疑似环境级 Debug CRT 问题；测试统一在 **Release** 下执行。所有测试文件用 `TEST(...)` / `ASSERT_*` 宏（见 `test_framework.h`），不再使用 `CppUnitTest.h`。
+
 ---
 
 ## Task 1: 安装 MSVC / Visual Studio Build Tools
