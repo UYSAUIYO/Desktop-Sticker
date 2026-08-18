@@ -55,11 +55,12 @@ private:
     IconService* icons_ = nullptr;
 
     ID2D1Factory* factory_ = nullptr;
-    ID2D1HwndRenderTarget* target_ = nullptr;
+    ID2D1DCRenderTarget* dcTarget_ = nullptr;
     ID2D1SolidColorBrush* bgBrush_ = nullptr;
     ID2D1SolidColorBrush* titleBrush_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
+    IDWriteTextFormat* labelFormat_ = nullptr;
     IWICImagingFactory* wicFactory_ = nullptr;
 
     bool dragging_ = false;

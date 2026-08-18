@@ -150,7 +150,7 @@ bool DesktopWorkspace::Initialize() {
             DebugLog(root, L"listview NOT found");
         }
 
-        // 已有布局则加载；若没有图标或仍是旧分类名则重新自动分类
+        // 已有布局则加载；若没有图标、仍是旧分类名、或分类版本过旧则重新自动分类
         bool hasItems = false;
         bool needsReclassify = false;
         if (model_.Load(layoutPath_)) {
@@ -160,6 +160,7 @@ bool DesktopWorkspace::Initialize() {
                     needsReclassify = true;
                 }
             }
+            if (model_.Layout().version < 2) needsReclassify = true;
         }
         if (model_.Layout().zones.empty() || !hasItems || needsReclassify) {
             auto icons = iconManager_->EnumIcons();
@@ -259,8 +260,14 @@ std::wstring DesktopWorkspace::ClassifyPath(const std::wstring& path) {
         if (ContainsAnyLower(name, {L"微信", L"wechat", L"qq", L"discord", L"telegram", L"钉钉",
                                     L"企业微信", L"slack", L"社交", L"聊天"}))
             return L"社交聊天";
-        if (ContainsAnyLower(name, {L"steam", L"epic", L"game", L"游戏", L"wegame", L"lol",
-                                    L"英雄联盟", L"原神"}))
+        if (ContainsAnyLower(name, {L"steam", L"epic games", L"wegame", L"origin", L"battle.net",
+                                    L"uplay", L"riot", L"valorant", L"gta", L"grand theft auto",
+                                    L"minecraft", L"守望先锋", L"绝地求生", L"csgo", L"counter-strike",
+                                    L"dota", L"apex", L"fortnite", L"原神", L"genshin", L"崩坏",
+                                    L"honkai", L"星穹铁道", L"王者荣耀", L"和平精英", L"英雄联盟",
+                                    L"league of legends", L"lol", L"炉石", L"魔兽", L"暗黑",
+                                    L"暴雪", L"战网", L"育碧", L"playstation", L"xbox", L"game",
+                                    L"games", L"游戏", L"模拟器", L"emulator"}))
             return L"游戏";
         return L"应用";
     }
@@ -289,6 +296,7 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
 
     const wchar_t* names[] = {L"应用", L"开发工具", L"办公软件", L"浏览器",
                               L"影音娱乐", L"社交聊天", L"游戏", L"文件夹", L"其他"};
+    model_.Layout().version = 2; // 当前分类规则版本
     int monitorIndex = 0;
     int x = 40;
     int y = 60;
@@ -409,13 +417,22 @@ void DesktopWorkspace::CreateZoneWindows() {
             const HWND parent = shell_.Windows().defView;
             const HWND oldParent = SetParent(win->Hwnd(), parent);
             const DWORD err = GetLastError();
+            // 转成真正的 WS_CHILD 子窗口：被裁剪在桌面范围内，不会遮挡普通窗口
+            LONG_PTR style = GetWindowLongPtrW(win->Hwnd(), GWL_STYLE);
+            SetWindowLongPtrW(win->Hwnd(), GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD);
             DebugLog(config_->GetRootDir(),
                      L"  after SetParent parent=" +
                      std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))) +
                      L" ancestor=" +
                      std::to_wstring(reinterpret_cast<uintptr_t>(GetAncestor(win->Hwnd(), GA_PARENT))));
-            SetWindowPos(win->Hwnd(), HWND_TOP, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            // 嵌入成功放在桌面最上（图标层之上）；失败则退化为最底层置顶弹窗
+            if (!oldParent && err == 0) {
+                SetWindowPos(win->Hwnd(), HWND_TOP, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            } else {
+                SetWindowPos(win->Hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
             RECT rc{};
             GetWindowRect(win->Hwnd(), &rc);
             DebugLog(config_->GetRootDir(),
@@ -446,6 +463,8 @@ void DesktopWorkspace::CreateZoneWindows() {
         }
 
         zoneWindows_.push_back(std::move(win));
+        // 分层窗口需要主动触发首帧绘制（UpdateLayeredWindow）
+        zoneWindows_.back()->Refresh();
     }
 }
 

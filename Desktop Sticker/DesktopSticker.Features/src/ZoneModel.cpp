@@ -35,6 +35,7 @@ bool ZoneModel::Load(const fs::path& layoutPath) {
         in >> j;
 
         DesktopLayout layout;
+        layout.version = j.value("version", 0);
         layout.autoArrangeWasEnabled = j.value("autoArrangeWasEnabled", false);
 
         for (const auto& zj : j.value("zones", json::array())) {
@@ -68,6 +69,7 @@ bool ZoneModel::Load(const fs::path& layoutPath) {
 
 bool ZoneModel::Save(const fs::path& layoutPath) const {
     json j;
+    j["version"] = layout_.version;
     j["autoArrangeWasEnabled"] = layout_.autoArrangeWasEnabled;
 
     json zones = json::array();

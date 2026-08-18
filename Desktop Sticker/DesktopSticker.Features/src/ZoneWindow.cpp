@@ -13,6 +13,7 @@ namespace desktopsticker {
 
 namespace {
 const wchar_t kZoneWindowClass[] = L"DesktopSticker.ZoneWindow";
+const UINT kZoneRefreshMsg = WM_APP + 10;
 std::map<HWND, ZoneWindow*> g_windows;
 
 void ZoneDebugLog(const std::wstring& msg) {
@@ -82,8 +83,8 @@ ZoneWindow::~ZoneWindow() {
 
 bool ZoneWindow::Create() {
     DWORD style = WS_POPUP | WS_VISIBLE | WS_THICKFRAME;
-    // 不使用 WS_EX_LAYERED：分层窗口在跨进程桌面子窗口上可能完全不渲染（全透明）
-    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    // 分层窗口 + UpdateLayeredWindow 渲染，才能实现半透明 Acrylic 磨砂
+    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
     hwnd_ = CreateWindowExW(exStyle, kZoneWindowClass, L"",
                             style,
@@ -95,11 +96,6 @@ bool ZoneWindow::Create() {
 
     g_windows[hwnd_] = this;
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-
-    HRGN rgn = CreateRoundRectRgn(0, 0,
-                                  zone_.rect.right - zone_.rect.left + 1,
-                                  zone_.rect.bottom - zone_.rect.top + 1, 16, 16);
-    SetWindowRgn(hwnd_, rgn, TRUE);
 
     ApplyAcrylic(hwnd_);
     return true;
@@ -125,7 +121,8 @@ void ZoneWindow::SetZone(const Zone& zone) {
 }
 
 void ZoneWindow::Refresh() {
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, TRUE);
+    // 分层窗口不会因 InvalidateRect 自动重绘，投递自定义消息让 UI 线程调用 OnPaint
+    if (hwnd_) PostMessageW(hwnd_, kZoneRefreshMsg, 0, 0);
 }
 
 std::wstring ZoneWindow::HitTestItem(int x, int y) const {
@@ -140,14 +137,14 @@ std::wstring ZoneWindow::HitTestItem(int x, int y) const {
         const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
         if (tileX + 48 > width) {
             tileX = 16.0f;
-            tileY += 48.0f;
+            tileY += 56.0f;
         }
     }
     return L"";
 }
 
 bool ZoneWindow::EnsureD2DResources() {
-    if (target_) return true;
+    if (factory_ && dwriteFactory_ && wicFactory_ && dcTarget_) return true;
     if (!factory_) {
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_);
         DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
@@ -156,56 +153,83 @@ bool ZoneWindow::EnsureD2DResources() {
                          IID_PPV_ARGS(&wicFactory_));
         if (!factory_ || !dwriteFactory_ || !wicFactory_) return false;
     }
-
-    RECT rc{};
-    GetClientRect(hwnd_, &rc);
-    factory_->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                                     D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED)),
-        D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right, rc.bottom)),
-        &target_);
-    if (!target_) return false;
-
-    target_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.80f), &bgBrush_);
-    target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &titleBrush_);
-    dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                     14.0f, L"zh-cn", &textFormat_);
+    if (!dcTarget_) {
+        const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        factory_->CreateDCRenderTarget(&props, &dcTarget_);
+        if (!dcTarget_) return false;
+    }
+    if (!bgBrush_) dcTarget_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.78f), &bgBrush_);
+    if (!titleBrush_) dcTarget_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &titleBrush_);
+    if (!textFormat_) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         14.0f, L"zh-cn", &textFormat_);
+    }
+    if (!labelFormat_) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         11.0f, L"zh-cn", &labelFormat_);
+    }
     return true;
 }
 
 void ZoneWindow::ReleaseD2DResources() {
+    if (labelFormat_) labelFormat_->Release();
     if (textFormat_) textFormat_->Release();
     if (titleBrush_) titleBrush_->Release();
     if (bgBrush_) bgBrush_->Release();
-    if (target_) target_->Release();
+    if (dcTarget_) dcTarget_->Release();
     if (dwriteFactory_) dwriteFactory_->Release();
     if (wicFactory_) wicFactory_->Release();
     if (factory_) factory_->Release();
-    textFormat_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
-    target_ = nullptr; dwriteFactory_ = nullptr; wicFactory_ = nullptr; factory_ = nullptr;
+    labelFormat_ = nullptr; textFormat_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
+    dcTarget_ = nullptr; dwriteFactory_ = nullptr; wicFactory_ = nullptr; factory_ = nullptr;
 }
 
 void ZoneWindow::OnPaint() {
-    PAINTSTRUCT ps;
-    BeginPaint(hwnd_, &ps);
-    if (!EnsureD2DResources()) {
-        EndPaint(hwnd_, &ps);
+    if (!EnsureD2DResources()) return;
+
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+
+    // 分层窗口：渲染到 32bpp 内存 DIB，再用 UpdateLayeredWindow 合成（支持 Alpha 和 Acrylic）
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP hbm = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!hbm) {
+        DeleteDC(hdcMem);
+        ReleaseDC(nullptr, hdcScreen);
         return;
     }
+    HGDIOBJ oldBmp = SelectObject(hdcMem, hbm);
 
-    target_->BeginDraw();
-    // 实色深色背景（非分层窗口 Clear(0,0) 会变黑，这里直接用不透明深色）
-    target_->Clear(D2D1::ColorF(0x1E1E1E, 1.0f));
-    const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
-    const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
-    target_->DrawRoundedRectangle(
+    dcTarget_->BindDC(hdcMem, &rc);
+    dcTarget_->BeginDraw();
+    dcTarget_->Clear(D2D1::ColorF(0, 0)); // 全透明，让 Acrylic 模糊透出
+
+    const float width = static_cast<float>(w);
+    const float height = static_cast<float>(h);
+    dcTarget_->FillRoundedRectangle(
         D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f),
-        bgBrush_, 1.0f);
+        bgBrush_);
 
     std::wstring title = zone_.collapsed ? L"\x25B8 " + zone_.name : L"\x25BE " + zone_.name;
-    target_->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat_,
-                       D2D1::RectF(16, 8, 400, 40), titleBrush_);
+    dcTarget_->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat_,
+                         D2D1::RectF(16, 8, 400, 40), titleBrush_);
 
     if (!zone_.collapsed) {
         float x = 16.0f;
@@ -227,38 +251,31 @@ void ZoneWindow::OnPaint() {
                                 WICBitmapDitherTypeNone, nullptr, 0.0,
                                 WICBitmapPaletteTypeCustom))) {
                             ID2D1Bitmap* d2dBmp = nullptr;
-                            const HRESULT d2dHr = target_->CreateBitmapFromWicBitmap(converter, nullptr, &d2dBmp);
+                            const HRESULT d2dHr = dcTarget_->CreateBitmapFromWicBitmap(converter, nullptr, &d2dBmp);
                             if (SUCCEEDED(d2dHr)) {
                                 ++wicOk;
-                                target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
-                                                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                                dcTarget_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
+                                                     1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
                                 d2dBmp->Release();
-                            } else {
-                                static bool s_d2dErrorLogged = false;
-                                if (!s_d2dErrorLogged) {
-                                    ZoneDebugLog(L"[zone paint] CreateBitmapFromWicBitmap failed hr=0x" +
-                                                 std::to_wstring(static_cast<unsigned long>(d2dHr)));
-                                    s_d2dErrorLogged = true;
-                                }
                             }
                         }
                         converter->Release();
                     }
                     wicBmp->Release();
-                } else {
-                    static bool s_wicErrorLogged = false;
-                    if (!s_wicErrorLogged) {
-                        ZoneDebugLog(L"[zone paint] CreateBitmapFromHICON failed");
-                        s_wicErrorLogged = true;
-                    }
                 }
             } else {
-                target_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
+                dcTarget_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
+            }
+            // 图标下方显示名称
+            {
+                const std::wstring name = std::filesystem::path(path).stem().wstring();
+                dcTarget_->DrawTextW(name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
+                                     D2D1::RectF(x - 6, y + 34, x + 38, y + 50), titleBrush_);
             }
             x += 48.0f;
             if (x + 48 > width) {
                 x = 16.0f;
-                y += 48.0f;
+                y += 56.0f;
             }
         }
         static bool s_paintLogged = false;
@@ -271,14 +288,32 @@ void ZoneWindow::OnPaint() {
         }
     }
 
-    target_->EndDraw();
-    EndPaint(hwnd_, &ps);
+    dcTarget_->EndDraw();
+
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = 255;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    POINT ptDst{rc.left, rc.top};
+    HWND parent = GetAncestor(hwnd_, GA_PARENT);
+    if (parent && parent != GetDesktopWindow()) {
+        ScreenToClient(parent, &ptDst);
+    }
+    SIZE size{w, h};
+    POINT ptSrc{0, 0};
+    UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
+
+    SelectObject(hdcMem, oldBmp);
+    DeleteObject(hbm);
+    DeleteDC(hdcMem);
+    ReleaseDC(nullptr, hdcScreen);
 }
 
 void ZoneWindow::OnLButtonDown(int x, int y) {
     dragging_ = true;
     draggingItem_ = HitTestItem(x, y);
-    dragStart_ = POINT{x, y};
+    // 必须记录“屏幕坐标”作为拖拽起点，否则窗口会按自身位置向下/右偏移
+    GetCursorPos(&dragStart_);
     GetWindowRect(hwnd_, &windowStart_);
     SetCapture(hwnd_);
 
@@ -349,6 +384,10 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 
     switch (msg) {
     case WM_PAINT:
+        self->OnPaint();
+        ValidateRect(hwnd, nullptr);
+        return 0;
+    case kZoneRefreshMsg:
         self->OnPaint();
         return 0;
     case WM_LBUTTONDOWN:
