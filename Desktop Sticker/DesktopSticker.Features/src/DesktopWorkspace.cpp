@@ -169,16 +169,21 @@ bool DesktopWorkspace::Initialize() {
         DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
                        L" items=" + std::to_wstring(CountZoneItems()));
 
-        // 把已收纳的原生图标移到屏幕外（启动恢复场景）
-        for (const auto& zone : model_.Layout().zones) {
-            for (const auto& path : zone.itemPaths) {
-                auto icons = iconManager_->EnumIcons();
-                for (const auto& icon : icons) {
-                    if (_wcsicmp(icon.path.c_str(), path.c_str()) == 0) {
-                        iconManager_->MoveIconOffscreen(icon.index);
-                        break;
+        // 把已收纳的原生图标移到屏幕外（只枚举一次，避免 O(N²) 远程调用卡死启动）
+        {
+            auto icons = iconManager_->EnumIcons();
+            for (const auto& icon : icons) {
+                bool collected = false;
+                for (const auto& zone : model_.Layout().zones) {
+                    for (const auto& p : zone.itemPaths) {
+                        if (_wcsicmp(p.c_str(), icon.path.c_str()) == 0) {
+                            collected = true;
+                            break;
+                        }
                     }
+                    if (collected) break;
                 }
+                if (collected) iconManager_->MoveIconOffscreen(icon.index);
             }
         }
 
