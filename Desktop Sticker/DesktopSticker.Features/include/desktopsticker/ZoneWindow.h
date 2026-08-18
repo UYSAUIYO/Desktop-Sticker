@@ -59,7 +59,7 @@ private:
     IconService* icons_ = nullptr;
 
     ID2D1Factory* factory_ = nullptr;
-    ID2D1DCRenderTarget* dcTarget_ = nullptr;
+    ID2D1HwndRenderTarget* target_ = nullptr;
     ID2D1SolidColorBrush* bgBrush_ = nullptr;
     ID2D1SolidColorBrush* titleBrush_ = nullptr;
     ID2D1SolidColorBrush* hoverBrush_ = nullptr;

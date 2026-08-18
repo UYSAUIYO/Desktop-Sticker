@@ -171,6 +171,13 @@ bool DesktopWorkspace::Initialize() {
         DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
                        L" items=" + std::to_wstring(CountZoneItems()));
 
+        // 布局版本升级：旧布局默认展开全部分区，避免“折叠后看不到图标”造成困惑
+        if (model_.Layout().version < 3) {
+            for (auto& z : model_.Layout().zones) z.collapsed = false;
+            model_.Layout().version = 3;
+            SaveLayout();
+        }
+
         // 直接隐藏整个桌面图标列表（比逐图标移出更简单可靠）
         {
             const bool hid = iconManager_->HideAllIcons(true);
@@ -547,6 +554,15 @@ bool DesktopWorkspace::IsPointOverZone(POINT pt) const {
     return false;
 }
 
+ZoneWindow* DesktopWorkspace::ZoneAtPoint(POINT pt) const {
+    for (const auto& w : zoneWindows_) {
+        if (!w || !w->Hwnd()) continue;
+        RECT rc{};
+        if (GetWindowRect(w->Hwnd(), &rc) && PtInRect(&rc, pt)) return w.get();
+    }
+    return nullptr;
+}
+
 void DesktopWorkspace::StartMouseHook() {
     if (mouseHook_) return;
     g_mouseHookWorkspace = this;
@@ -563,12 +579,33 @@ void DesktopWorkspace::StopMouseHook() {
 }
 
 LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && wParam == WM_LBUTTONDBLCLK) {
+    if (nCode == HC_ACTION) {
+        auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         auto* self = g_mouseHookWorkspace;
-        if (self) {
-            POINT pt{};
-            GetCursorPos(&pt);
-            if (!self->IsPointOverZone(pt)) {
+        if (self && info) {
+            POINT pt = info->pt;
+
+            // 按键类消息：系统命中到分区不可靠，这里统一转发给分区
+            // 注意：不能吞掉 WM_LBUTTONDOWN/UP，否则系统不会生成 WM_LBUTTONDBLCLK
+            if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONUP ||
+                wParam == WM_LBUTTONDBLCLK || wParam == WM_RBUTTONUP) {
+                if (ZoneWindow* zone = self->ZoneAtPoint(pt)) {
+                    POINT client = pt;
+                    ScreenToClient(zone->Hwnd(), &client);
+                    WPARAM wp = 0;
+                    if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONDBLCLK) wp = MK_LBUTTON;
+                    if (wParam == WM_RBUTTONUP) wp = MK_RBUTTON;
+                    SendMessageW(zone->Hwnd(), static_cast<UINT>(wParam), wp,
+                                 MAKELPARAM(client.x, client.y));
+                    // 双击/右键吞掉，避免桌面也处理；按下/抬起让系统继续（用于生成双击）
+                    if (wParam == WM_LBUTTONDBLCLK || wParam == WM_RBUTTONUP) {
+                        return 1;
+                    }
+                }
+            }
+
+            // 桌面空白处双击 → 干净桌面
+            if (wParam == WM_LBUTTONDBLCLK && !self->IsPointOverZone(pt)) {
                 HWND lv = self->shell_.Windows().listView;
                 if (lv && IsWindow(lv)) {
                     RECT rc{};
