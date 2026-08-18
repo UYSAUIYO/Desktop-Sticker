@@ -15,6 +15,7 @@ public:
     bool Visible() const { return visible_; }
 
 private:
+    void EnsureWindow();
     void RefreshApps();
     void SaveConfig();
 

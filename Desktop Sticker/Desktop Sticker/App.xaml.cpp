@@ -29,14 +29,16 @@ namespace winrt::Desktop_Sticker::implementation
         m_host->LoadFeatures();
         m_host->Start();
 
-        m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
-        m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
-
+        // 先创建并激活主窗口，再创建启动器/设置窗口，避免 WinUI 多窗口初始化时序问题
         auto mainWindow = make<MainWindow>();
         auto impl = winrt::get_self<implementation::MainWindow>(mainWindow);
-        impl->AttachHost(m_host.get(), m_settings.get());
+        impl->AttachHost(m_host.get(), nullptr);
         window = mainWindow;
         window.Activate();
+
+        m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
+        m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
+        impl->AttachSettings(m_settings.get());
 
         m_dispatcher = window.DispatcherQueue();
         m_host->SetHotkeyCallback([this]() {

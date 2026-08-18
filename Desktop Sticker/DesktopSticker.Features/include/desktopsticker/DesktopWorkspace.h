@@ -38,8 +38,11 @@ private:
     void SaveLayout();
     void StartDesktopWatcher();
 
-    static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                                 UINT_PTR id, DWORD_PTR data);
+    void StartMouseHook();
+    void StopMouseHook();
+    bool IsPointOverZone(POINT pt) const;
+
+    static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 
     ConfigStore* config_;
     std::function<void()> zonesChanged_;
@@ -52,6 +55,7 @@ private:
     ZoneModel model_;
     std::vector<std::unique_ptr<ZoneWindow>> zoneWindows_;
     std::vector<DropTarget*> dropTargets_;
+    HHOOK mouseHook_ = nullptr;
     bool cleanMode_ = false;
 };
 

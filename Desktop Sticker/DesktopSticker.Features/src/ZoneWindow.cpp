@@ -90,11 +90,11 @@ bool ZoneWindow::Create() {
 }
 
 void ZoneWindow::Destroy() {
-    if (hwnd_) {
+    if (hwnd_ && IsWindow(hwnd_)) {
         g_windows.erase(hwnd_);
         DestroyWindow(hwnd_);
-        hwnd_ = nullptr;
     }
+    hwnd_ = nullptr;
 }
 
 void ZoneWindow::SetZone(const Zone& zone) {
@@ -326,6 +326,7 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         break;
     case WM_DESTROY:
         g_windows.erase(hwnd);
+        if (self) self->hwnd_ = nullptr;
         return 0;
     default:
         return DefWindowProcW(hwnd, msg, wp, lp);

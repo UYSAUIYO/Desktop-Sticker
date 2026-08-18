@@ -10,7 +10,11 @@ using namespace Microsoft::UI::Xaml::Input;
 
 namespace desktopsticker::app {
 
-LauncherController::LauncherController(Host* host) : host_(host) {
+LauncherController::LauncherController(Host* host) : host_(host) {}
+
+void LauncherController::EnsureWindow() {
+    if (window_) return;
+
     window_ = Window();
 
     auto root = StackPanel();
@@ -55,6 +59,7 @@ LauncherController::LauncherController(Host* host) : host_(host) {
 }
 
 void LauncherController::Show() {
+    EnsureWindow();
     if (!window_) return;
     visible_ = true;
     window_.Activate();

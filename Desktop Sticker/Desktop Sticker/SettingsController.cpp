@@ -7,7 +7,11 @@ using namespace Microsoft::UI::Xaml::Controls;
 
 namespace desktopsticker::app {
 
-SettingsController::SettingsController(Host* host) : host_(host) {
+SettingsController::SettingsController(Host* host) : host_(host) {}
+
+void SettingsController::EnsureWindow() {
+    if (window_) return;
+
     window_ = Window();
 
     auto root = StackPanel();
@@ -106,6 +110,7 @@ SettingsController::SettingsController(Host* host) : host_(host) {
 }
 
 void SettingsController::Show() {
+    EnsureWindow();
     if (!window_) return;
     visible_ = true;
     window_.Activate();

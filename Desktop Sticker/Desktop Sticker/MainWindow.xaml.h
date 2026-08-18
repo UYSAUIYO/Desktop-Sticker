@@ -20,6 +20,7 @@ namespace winrt::Desktop_Sticker::implementation
         ~MainWindow();
 
         void AttachHost(desktopsticker::app::Host* host, desktopsticker::app::SettingsController* settings);
+        void AttachSettings(desktopsticker::app::SettingsController* settings);
 
         int32_t MyProperty();
         void MyProperty(int32_t value);

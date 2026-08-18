@@ -32,6 +32,11 @@ namespace winrt::Desktop_Sticker::implementation
         AddTrayIcon();
     }
 
+    void MainWindow::AttachSettings(desktopsticker::app::SettingsController* settings)
+    {
+        m_settings = settings;
+    }
+
     void MainWindow::AddTrayIcon()
     {
         if (!m_hwnd || m_trayAdded) return;

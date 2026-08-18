@@ -10,6 +10,8 @@ namespace desktopsticker {
 
 namespace {
 
+DesktopWorkspace* g_mouseHookWorkspace = nullptr;
+
 struct PromptState {
     std::wstring value;
     bool done = false;
@@ -145,15 +147,14 @@ bool DesktopWorkspace::Initialize() {
     }
 
     CreateZoneWindows();
-    shell_.SubclassListView(ListViewSubclassProc, 1,
-                            reinterpret_cast<DWORD_PTR>(this));
+    StartMouseHook();
     StartDesktopWatcher();
     return true;
 }
 
 void DesktopWorkspace::Shutdown() {
     desktopWatcher_.reset();
-    shell_.UnsubclassListView(ListViewSubclassProc, 1);
+    StopMouseHook();
     DestroyZoneWindows();
     RestoreDesktop();
     iconService_->ClearCache();
@@ -396,19 +397,57 @@ void DesktopWorkspace::StartDesktopWatcher() {
     CoTaskMemFree(desktopPath);
 }
 
-LRESULT CALLBACK DesktopWorkspace::ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                                        UINT_PTR id, DWORD_PTR data) {
-    auto* self = reinterpret_cast<DesktopWorkspace*>(data);
-    if (msg == WM_LBUTTONDBLCLK) {
-        LVHITTESTINFO ht{};
-        ht.pt = POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-        int index = static_cast<int>(SendMessageW(hwnd, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(&ht)));
-        if (index == -1) { // 空白处
-            self->ToggleCleanDesktop();
-            return 0;
+bool DesktopWorkspace::IsPointOverZone(POINT pt) const {
+    for (const auto& w : zoneWindows_) {
+        if (!w || !w->Hwnd()) continue;
+        RECT rc{};
+        if (GetWindowRect(w->Hwnd(), &rc) && PtInRect(&rc, pt)) return true;
+    }
+    return false;
+}
+
+void DesktopWorkspace::StartMouseHook() {
+    if (mouseHook_) return;
+    g_mouseHookWorkspace = this;
+    mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc,
+                                   GetModuleHandleW(L"DesktopSticker.Features.dll"), 0);
+}
+
+void DesktopWorkspace::StopMouseHook() {
+    if (mouseHook_) {
+        UnhookWindowsHookEx(mouseHook_);
+        mouseHook_ = nullptr;
+    }
+    if (g_mouseHookWorkspace == this) g_mouseHookWorkspace = nullptr;
+}
+
+LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && wParam == WM_LBUTTONDBLCLK) {
+        auto* self = g_mouseHookWorkspace;
+        if (self) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            if (!self->IsPointOverZone(pt)) {
+                HWND lv = self->shell_.Windows().listView;
+                if (lv && IsWindow(lv)) {
+                    RECT rc{};
+                    GetWindowRect(lv, &rc);
+                    if (PtInRect(&rc, pt)) {
+                        POINT client = pt;
+                        ScreenToClient(lv, &client);
+                        LVHITTESTINFO ht{};
+                        ht.pt = client;
+                        const int index = static_cast<int>(
+                            SendMessageW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(&ht)));
+                        if (index == -1) { // 桌面空白处
+                            self->ToggleCleanDesktop();
+                        }
+                    }
+                }
+            }
         }
     }
-    return DefSubclassProc(hwnd, msg, wp, lp);
+    return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
 
 } // namespace desktopsticker
