@@ -149,14 +149,18 @@ bool DesktopWorkspace::Initialize() {
             DebugLog(root, L"listview NOT found");
         }
 
-        // 已有布局则加载；若没有任何已收纳图标则重新自动分类（修复历史空布局）
+        // 已有布局则加载；若没有图标或仍是旧分类名则重新自动分类
         bool hasItems = false;
+        bool needsReclassify = false;
         if (model_.Load(layoutPath_)) {
             for (const auto& z : model_.Layout().zones) {
-                if (!z.itemPaths.empty()) { hasItems = true; break; }
+                if (!z.itemPaths.empty()) hasItems = true;
+                if (z.name == L"文档" || z.name == L"图片" || z.name == L"视频" || z.name == L"音乐") {
+                    needsReclassify = true;
+                }
             }
         }
-        if (model_.Layout().zones.empty() || !hasItems) {
+        if (model_.Layout().zones.empty() || !hasItems || needsReclassify) {
             auto icons = iconManager_->EnumIcons();
             DebugLog(root, L"desktop icons count=" + std::to_wstring(icons.size()));
             AutoClassify(icons);
@@ -215,17 +219,65 @@ void DesktopWorkspace::Refresh() {
     if (zonesChanged_) zonesChanged_();
 }
 
+namespace {
+
+bool ContainsAnyLower(const std::wstring& lower, std::initializer_list<const wchar_t*> keys) {
+    for (const wchar_t* key : keys) {
+        if (lower.find(key) != std::wstring::npos) return true;
+    }
+    return false;
+}
+
+std::wstring ToLowerCopy(std::wstring s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+    return s;
+}
+
+} // namespace
+
 std::wstring DesktopWorkspace::ClassifyPath(const std::wstring& path) {
     fs::path p(path);
-    std::wstring ext = p.extension().wstring();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+    std::wstring name = ToLowerCopy(p.stem().wstring());
+    std::wstring fileName = ToLowerCopy(p.filename().wstring());
+    std::wstring ext = ToLowerCopy(p.extension().wstring());
 
-    if (ext == L".lnk" || ext == L".exe" || ext == L".appref-ms") return L"应用";
-    if (ext == L".jpg" || ext == L".jpeg" || ext == L".png" || ext == L".gif" || ext == L".bmp" || ext == L".webp") return L"图片";
-    if (ext == L".doc" || ext == L".docx" || ext == L".pdf" || ext == L".txt" || ext == L".md" || ext == L".xls" || ext == L".xlsx" || ext == L".ppt" || ext == L".pptx") return L"文档";
-    if (ext == L".mp4" || ext == L".avi" || ext == L".mkv" || ext == L".mov" || ext == L".wmv") return L"视频";
-    if (ext == L".mp3" || ext == L".wav" || ext == L".flac" || ext == L".aac") return L"音乐";
+    // 文件夹单独归为一类
     if (fs::is_directory(p)) return L"文件夹";
+
+    const bool isApp = ext == L".lnk" || ext == L".exe" || ext == L".appref-ms" || ext == L".url";
+    if (isApp) {
+        if (ContainsAnyLower(name, {L"visual studio", L"code", L"stm32", L"keil", L"git", L"python",
+                                    L"node", L"ide", L"idea", L"arduino", L"kicad", L"cube",
+                                    L"docker", L"terminal", L"qt", L"cmake", L"开发", L"编程",
+                                    L"compiler", L"ida", L"multisim", L"fusion"}))
+            return L"开发工具";
+        if (ContainsAnyLower(name, {L"chrome", L"edge", L"firefox", L"浏览器", L"brave", L"360安全浏览器",
+                                    L"qq浏览器", L"internet explorer"}))
+            return L"浏览器";
+        if (ContainsAnyLower(name, {L"word", L"excel", L"powerpoint", L"office", L"wps", L"pdf",
+                                    L"onenote", L"outlook", L"办公", L"officeai", L"wps office",
+                                    L"xls", L"doc"}))
+            return L"办公软件";
+        if (ContainsAnyLower(name, {L"potplayer", L"vlc", L"music", L"video", L"播放", L"音乐",
+                                    L"网易云", L"qq音乐", L"spotify", L"bilibili", L"爱奇艺",
+                                    L"优酷", L"电影", L"影音", L"video lan"}))
+            return L"影音娱乐";
+        if (ContainsAnyLower(name, {L"微信", L"wechat", L"qq", L"discord", L"telegram", L"钉钉",
+                                    L"企业微信", L"slack", L"社交", L"聊天"}))
+            return L"社交聊天";
+        if (ContainsAnyLower(name, {L"steam", L"epic", L"game", L"游戏", L"wegame", L"lol",
+                                    L"英雄联盟", L"原神"}))
+            return L"游戏";
+        return L"应用";
+    }
+
+    // 非应用文件
+    if (ext == L".jpg" || ext == L".jpeg" || ext == L".png" || ext == L".gif" || ext == L".bmp" || ext == L".webp")
+        return L"其他";
+    if (ext == L".mp4" || ext == L".avi" || ext == L".mkv" || ext == L".mov" || ext == L".wmv")
+        return L"其他";
+    if (ext == L".mp3" || ext == L".wav" || ext == L".flac" || ext == L".aac")
+        return L"其他";
     return L"其他";
 }
 
@@ -241,7 +293,8 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
     model_.Layout().originalIconPositions.clear();
     DebugLog(config_->GetRootDir(), L"AutoClassify icons=" + std::to_wstring(icons.size()));
 
-    const wchar_t* names[] = {L"应用", L"文档", L"图片", L"视频", L"音乐", L"文件夹", L"其他"};
+    const wchar_t* names[] = {L"应用", L"开发工具", L"办公软件", L"浏览器",
+                              L"影音娱乐", L"社交聊天", L"游戏", L"文件夹", L"其他"};
     int monitorIndex = 0;
     int x = 40;
     int y = 60;
