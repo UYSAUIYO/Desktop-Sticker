@@ -17,7 +17,8 @@ Windows 11 桌面分区收纳 + 双击空格搜索启动器。
 3. 生成解决方案
 4. 运行 `Desktop Sticker/x64/Release/Desktop Sticker/Desktop_Sticker.exe`
 
-> 运行前请确保 `DesktopSticker.Features.dll` 与 EXE 位于同一目录（构建后手动复制，或后续配置自动复制）。
+> 运行前请确保 `DesktopSticker.Features.dll` 与 EXE 位于同一目录（Release 构建已通过 PostBuildEvent 自动复制）。
+> 程序为未打包 + 自包含模式，**无需单独安装 Windows App SDK Runtime**。
 
 ## 测试
 
