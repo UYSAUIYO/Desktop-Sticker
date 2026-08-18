@@ -30,6 +30,7 @@ public:
 
 private:
     std::wstring ClassifyPath(const std::wstring& path);
+    size_t CountZoneItems() const;
     void AutoClassify(const std::vector<DesktopIconInfo>& icons);
     void CollectIntoZone(const std::wstring& zoneId, const std::wstring& path);
     void RemoveFromZone(const std::wstring& zoneId, const std::wstring& path);

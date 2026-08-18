@@ -110,6 +110,13 @@ Zone* ZoneModel::FindZone(const std::wstring& id) {
     return nullptr;
 }
 
+Zone* ZoneModel::FindZoneByName(const std::wstring& name) {
+    for (auto& z : layout_.zones) {
+        if (z.name == name) return &z;
+    }
+    return nullptr;
+}
+
 void ZoneModel::AddZone(Zone zone) {
     if (zone.id.empty()) zone.id = GenerateZoneId();
     layout_.zones.push_back(std::move(zone));

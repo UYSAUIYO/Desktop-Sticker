@@ -25,6 +25,13 @@ namespace winrt::Desktop_Sticker::implementation
 
     void App::OnLaunched([[maybe_unused]] LaunchActivatedEventArgs const& e)
     {
+        // 单实例保护：多个实例同时移动桌面图标会导致图标来回闪烁
+        static HANDLE s_singleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\DesktopSticker.SingleInstance");
+        if (!s_singleInstanceMutex || GetLastError() == ERROR_ALREADY_EXISTS) {
+            Application::Current().Exit();
+            return;
+        }
+
         m_host = std::make_unique<desktopsticker::app::Host>();
         m_host->LoadFeatures();
         m_host->Start();

@@ -140,23 +140,30 @@ bool DesktopWorkspace::Initialize() {
         iconManager_ = std::make_unique<DesktopIconManager>(&shell_);
         iconService_ = std::make_unique<IconService>();
 
-        // 记录并关闭自动排列，避免被收纳图标自动回位
-        if (iconManager_->ListView()) {
+        // 记录自动排列状态（但不要跨进程修改 Explorer 窗口样式，会崩 Explorer）
+        if (iconManager_->ListView() && IsWindow(iconManager_->ListView())) {
             LONG_PTR style = GetWindowLongPtrW(iconManager_->ListView(), GWL_STYLE);
             model_.Layout().autoArrangeWasEnabled = (style & LVS_AUTOARRANGE) != 0;
-            iconManager_->SetAutoArrange(false);
             DebugLog(root, L"listview found");
         } else {
             DebugLog(root, L"listview NOT found");
         }
 
-        // 已有布局则加载；否则首次自动分类
-        if (!model_.Load(layoutPath_) || model_.Layout().zones.empty()) {
+        // 已有布局则加载；若没有任何已收纳图标则重新自动分类（修复历史空布局）
+        bool hasItems = false;
+        if (model_.Load(layoutPath_)) {
+            for (const auto& z : model_.Layout().zones) {
+                if (!z.itemPaths.empty()) { hasItems = true; break; }
+            }
+        }
+        if (model_.Layout().zones.empty() || !hasItems) {
             auto icons = iconManager_->EnumIcons();
+            DebugLog(root, L"desktop icons count=" + std::to_wstring(icons.size()));
             AutoClassify(icons);
             SaveLayout();
         }
-        DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()));
+        DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
+                       L" items=" + std::to_wstring(CountZoneItems()));
 
         // 把已收纳的原生图标移到屏幕外（启动恢复场景）
         for (const auto& zone : model_.Layout().zones) {
@@ -186,14 +193,21 @@ bool DesktopWorkspace::Initialize() {
 }
 
 void DesktopWorkspace::Shutdown() {
-    desktopWatcher_.reset();
-    StopMouseHook();
-    DestroyZoneWindows();
-    RestoreDesktop();
+    const auto root = config_->GetRootDir();
+    DebugLog(root, L"Shutdown begin");
+    try {
+        desktopWatcher_.reset();
+        StopMouseHook();
+        DestroyZoneWindows();
+        RestoreDesktop();
+    } catch (...) {
+        DebugLog(root, L"Shutdown cleanup exception");
+    }
     iconService_->ClearCache();
     iconManager_.reset();
     shell_.Shutdown();
     OleUninitialize();
+    DebugLog(root, L"Shutdown end");
 }
 
 void DesktopWorkspace::Refresh() {
@@ -215,7 +229,18 @@ std::wstring DesktopWorkspace::ClassifyPath(const std::wstring& path) {
     return L"其他";
 }
 
+size_t DesktopWorkspace::CountZoneItems() const {
+    size_t n = 0;
+    for (const auto& z : model_.Layout().zones) n += z.itemPaths.size();
+    return n;
+}
+
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
+    // 重新分类时先清空旧分区，避免重复
+    model_.Layout().zones.clear();
+    model_.Layout().originalIconPositions.clear();
+    DebugLog(config_->GetRootDir(), L"AutoClassify icons=" + std::to_wstring(icons.size()));
+
     const wchar_t* names[] = {L"应用", L"文档", L"图片", L"视频", L"音乐", L"文件夹", L"其他"};
     int monitorIndex = 0;
     int x = 40;
@@ -234,12 +259,13 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
     for (const auto& icon : icons) {
         if (icon.path.empty()) continue;
         std::wstring category = ClassifyPath(icon.path);
-        Zone* zone = model_.FindZone(category);
+        Zone* zone = model_.FindZoneByName(category);
         if (!zone) continue;
         zone->itemPaths.push_back(icon.path);
         model_.Layout().originalIconPositions[icon.path] = icon.position;
         iconManager_->MoveIconOffscreen(icon.index);
     }
+    DebugLog(config_->GetRootDir(), L"AutoClassify done items=" + std::to_wstring(CountZoneItems()));
 }
 
 void DesktopWorkspace::CollectIntoZone(const std::wstring& zoneId, const std::wstring& path) {
@@ -415,9 +441,7 @@ void DesktopWorkspace::RestoreDesktop() {
             iconManager_->RestoreIcon(icon.index, it->second);
         }
     }
-    if (model_.Layout().autoArrangeWasEnabled) {
-        iconManager_->SetAutoArrange(true);
-    }
+    // 不跨进程恢复 LVS_AUTOARRANGE（会崩 Explorer），保持现状
 }
 
 void DesktopWorkspace::SaveLayout() {
@@ -444,7 +468,7 @@ void DesktopWorkspace::StartDesktopWatcher() {
             }
             if (alreadyCollected) continue;
             std::wstring category = ClassifyPath(icon.path);
-            Zone* zone = model_.FindZone(category);
+            Zone* zone = model_.FindZoneByName(category);
             if (zone) {
                 zone->itemPaths.push_back(icon.path);
                 model_.Layout().originalIconPositions[icon.path] = icon.position;
@@ -496,10 +520,26 @@ LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARA
                     if (PtInRect(&rc, pt)) {
                         POINT client = pt;
                         ScreenToClient(lv, &client);
-                        LVHITTESTINFO ht{};
-                        ht.pt = client;
-                        const int index = static_cast<int>(
-                            SendMessageW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(&ht)));
+
+                        // LVM_HITTEST 的 LVHITTESTINFO* 必须位于 Explorer 进程内存，否则 Explorer 崩溃
+                        DWORD pid = 0;
+                        GetWindowThreadProcessId(lv, &pid);
+                        HANDLE hProc = pid ? OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, FALSE, pid) : nullptr;
+                        int index = -1;
+                        if (hProc) {
+                            LPVOID remote = VirtualAllocEx(hProc, nullptr, sizeof(LVHITTESTINFO),
+                                                           MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                            if (remote) {
+                                LVHITTESTINFO ht{};
+                                ht.pt = client;
+                                WriteProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
+                                SendMessageW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(remote));
+                                ReadProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
+                                index = ht.iItem;
+                                VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
+                            }
+                            CloseHandle(hProc);
+                        }
                         if (index == -1) { // 桌面空白处
                             self->ToggleCleanDesktop();
                         }

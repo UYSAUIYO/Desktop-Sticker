@@ -35,6 +35,7 @@ public:
     DesktopLayout& Layout() { return layout_; }
 
     Zone* FindZone(const std::wstring& id);
+    Zone* FindZoneByName(const std::wstring& name);
     void AddZone(Zone zone);
     bool RemoveZone(const std::wstring& id);
     bool MoveItem(const std::wstring& itemPath, const std::wstring& fromZoneId, const std::wstring& toZoneId);

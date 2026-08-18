@@ -79,7 +79,8 @@ namespace winrt::Desktop_Sticker::implementation
             } else if (cmd == 2 && m_host && m_host->Module()) {
                 m_host->Module()->RestoreDesktop();
             } else if (cmd == 3) {
-                PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+                // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）
+                Application::Current().Exit();
             }
         }
     }
