@@ -1809,7 +1809,9 @@ git commit -m "feat: add ZoneModel with JSON layout persistence and tests"
 
 - [ ] **Step 1: 用 VS 模板创建 WinUI 3 工程**
 
-在 Visual Studio 中：File → New → Project → 搜索 **"Blank App, Packaged (WinUI 3 in Desktop)"**（C++/WinRT），项目名 `DesktopSticker.App`，位置 `src/`，解决方案选择已有 `DesktopSticker.sln`。目标平台选 x64，Windows App SDK 版本选最新稳定版。
+在 Visual Studio 中：File → New → Project → 搜索 **"Blank App, Packaged with Windows Application Packaging Project (WinUI 3 in Desktop)"**（C++/WinRT），项目名 `DesktopSticker.App`，位置 `src/`，解决方案选择已有 `DesktopSticker.sln`。目标平台选 x64，Windows App SDK 版本选最新稳定版。
+
+> 为什么选带“Windows Application Packaging Project”的模板：本工具需要从 EXE 同目录 `LoadLibrary` 加载 `DesktopSticker.Features.dll`，并做桌面 Shell 嵌入、注册表自启动等常规 Win32 行为。该模板的应用工程默认以“未打包”方式直接运行（F5 直接跑 EXE，调试和部署 DLL 更简单），WAP 工程只在需要生成 MSIX 时使用。若你已选了“空白应用，已打包”模板，也可在工程属性中设置 `WindowsPackageType=None` 达到同样的未打包运行效果，但推荐直接用本模板。
 
 - [ ] **Step 2: 编写 `Host.h`（EXE 侧 DLL 宿主）**
 
