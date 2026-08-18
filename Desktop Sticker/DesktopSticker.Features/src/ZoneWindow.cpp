@@ -57,6 +57,7 @@ void ApplyAcrylic(HWND hwnd) {
 bool ZoneWindow::RegisterClass(HINSTANCE hInst) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS; // 支持双击（WM_LBUTTONDBLCLK）
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -284,7 +285,7 @@ void ZoneWindow::OnPaint() {
             } else {
                 dcTarget_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
             }
-            // 图标下方显示名称：短文字居中，长文字左对齐，含空格两端对齐
+            // 图标下方显示名称：最多 3 行，超长用省略号；不修改真实文件名
             {
                 const std::wstring name = std::filesystem::path(path).stem().wstring();
                 if (name.find(L' ') != std::wstring::npos) {
@@ -294,8 +295,19 @@ void ZoneWindow::OnPaint() {
                 } else {
                     labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 }
-                dcTarget_->DrawTextW(name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
-                                     D2D1::RectF(x - 6, y + 34, x + 38, y + 50), titleBrush_);
+                IDWriteTextLayout* layout = nullptr;
+                const float labelW = 44.0f;
+                const float labelH = 33.0f; // 3 行 * 11px
+                if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
+                        name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
+                        labelW, labelH, &layout)) && layout) {
+                    DWRITE_TRIMMING trimming{};
+                    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                    layout->SetTrimming(&trimming, nullptr); // nullptr = 标准省略号
+                    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                    dcTarget_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, titleBrush_);
+                    layout->Release();
+                }
             }
             x += static_cast<float>(columnSpacing_);
             if (x + columnSpacing_ > width) {
@@ -355,10 +367,7 @@ void ZoneWindow::OnLButtonDown(int x, int y) {
 }
 
 void ZoneWindow::OnLButtonUp(int x, int y) {
-    // 没有发生拖拽且点中了图标 → 打开
-    if (!dragMoved_ && !draggingItem_.empty()) {
-        ShellExecuteW(nullptr, L"open", draggingItem_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    }
+    // 单击只负责选中高亮；打开程序改为双击（WM_LBUTTONDBLCLK）
     dragging_ = false;
     resizing_ = false;
     resizeHit_ = 0;
@@ -449,14 +458,7 @@ void ZoneWindow::OnMouseMove(int x, int y) {
         dragMoved_ = true;
     }
 
-    if (!draggingItem_.empty() && onItemDrag) {
-        if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 8) {
-            onItemDrag(zone_.id, draggingItem_);
-            draggingItem_.clear();
-            return;
-        }
-    }
-
+    // 按住卡片任意位置（包括图标）都移动整个分区；图标拖到其他分区暂不在此触发
     int dx = pt.x - dragStart_.x;
     int dy = pt.y - dragStart_.y;
     POINT newPos{windowStart_.left + dx, windowStart_.top + dy};
@@ -464,6 +466,16 @@ void ZoneWindow::OnMouseMove(int x, int y) {
     HWND parent = GetAncestor(hwnd_, GA_PARENT);
     if (parent && parent != GetDesktopWindow()) {
         ScreenToClient(parent, &newPos);
+    }
+    static bool s_dragLogged = false;
+    if (!s_dragLogged) {
+        ZoneDebugLog(L"[drag] parent=" +
+                     std::to_wstring(reinterpret_cast<uintptr_t>(parent)) +
+                     L" from=" + std::to_wstring(windowStart_.left) + L"," +
+                     std::to_wstring(windowStart_.top) +
+                     L" to=" + std::to_wstring(newPos.x) + L"," +
+                     std::to_wstring(newPos.y));
+        s_dragLogged = true;
     }
     SetWindowPos(hwnd_, nullptr,
                  newPos.x, newPos.y,
@@ -515,6 +527,13 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_LBUTTONDOWN:
         self->OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
+    case WM_LBUTTONDBLCLK: {
+        const std::wstring item = self->HitTestItem(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        if (!item.empty()) {
+            ShellExecuteW(nullptr, L"open", item.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        return 0;
+    }
     case WM_LBUTTONUP:
         self->OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;

@@ -15,7 +15,7 @@ struct AppConfig {
     bool includeHiddenFiles = false;
     // 磁贴网格间距（像素）
     int zoneColumnSpacing = 48;
-    int zoneRowSpacing = 56;
+    int zoneRowSpacing = 72;
 };
 
 class DESKTOPSTICKER_API ConfigStore {

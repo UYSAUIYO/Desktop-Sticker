@@ -19,7 +19,7 @@ public:
     static ZoneWindow* FromHwnd(HWND hwnd);
 
     ZoneWindow(HINSTANCE hInst, const Zone& zone, IconService* icons,
-               int columnSpacing = 48, int rowSpacing = 56);
+               int columnSpacing = 48, int rowSpacing = 72);
     ~ZoneWindow();
 
     bool Create();
@@ -74,7 +74,7 @@ private:
     bool dragMoved_ = false;
     int scrollOffset_ = 0;
     int columnSpacing_ = 48;
-    int rowSpacing_ = 56;
+    int rowSpacing_ = 72;
     std::wstring draggingItem_;
     std::wstring hoverItem_;
     std::wstring pressedItem_;

@@ -38,7 +38,7 @@ bool ConfigStore::Load() {
         cfg.searchKnownFolders = j.value("searchKnownFolders", true);
         cfg.includeHiddenFiles = j.value("includeHiddenFiles", false);
         cfg.zoneColumnSpacing = j.value("zoneColumnSpacing", 48);
-        cfg.zoneRowSpacing = j.value("zoneRowSpacing", 56);
+        cfg.zoneRowSpacing = j.value("zoneRowSpacing", 72);
         config_ = cfg;
         return true;
     } catch (...) {
