@@ -87,8 +87,7 @@ ZoneWindow::~ZoneWindow() {
 bool ZoneWindow::Create() {
     DWORD style = WS_POPUP | WS_VISIBLE | WS_THICKFRAME;
     // 分层窗口 + UpdateLayeredWindow 渲染，才能实现半透明 Acrylic 磨砂
-    // WS_EX_TRANSPARENT：鼠标输入由低层钩子统一转发，避免分层子窗口命中问题
-    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
     hwnd_ = CreateWindowExW(exStyle, kZoneWindowClass, L"",
                             style,

@@ -547,15 +547,6 @@ bool DesktopWorkspace::IsPointOverZone(POINT pt) const {
     return false;
 }
 
-ZoneWindow* DesktopWorkspace::ZoneAtPoint(POINT pt) const {
-    for (const auto& w : zoneWindows_) {
-        if (!w || !w->Hwnd()) continue;
-        RECT rc{};
-        if (GetWindowRect(w->Hwnd(), &rc) && PtInRect(&rc, pt)) return w.get();
-    }
-    return nullptr;
-}
-
 void DesktopWorkspace::StartMouseHook() {
     if (mouseHook_) return;
     g_mouseHookWorkspace = this;
@@ -572,43 +563,12 @@ void DesktopWorkspace::StopMouseHook() {
 }
 
 LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION) {
-        auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
+    if (nCode == HC_ACTION && wParam == WM_LBUTTONDBLCLK) {
         auto* self = g_mouseHookWorkspace;
-        if (self && info) {
-            POINT pt = info->pt;
-
-            // 分区窗口是 WS_EX_TRANSPARENT 分层子窗口，鼠标输入统一由钩子转发
-            if (ZoneWindow* zone = self->ZoneAtPoint(pt)) {
-                POINT client = pt;
-                ScreenToClient(zone->Hwnd(), &client);
-                WPARAM wp = 0;
-                switch (wParam) {
-                    case WM_LBUTTONDOWN:
-                    case WM_LBUTTONDBLCLK:
-                        wp = MK_LBUTTON;
-                        break;
-                    case WM_LBUTTONUP:
-                        wp = 0;
-                        break;
-                    case WM_RBUTTONDOWN:
-                    case WM_RBUTTONUP:
-                        wp = MK_RBUTTON;
-                        break;
-                    case WM_MOUSEMOVE:
-                        wp = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ? MK_LBUTTON : 0;
-                        break;
-                    default:
-                        break;
-                }
-                SendMessageW(zone->Hwnd(), static_cast<UINT>(wParam), wp,
-                             MAKELPARAM(client.x, client.y));
-                // 吞掉事件，避免系统再交给桌面
-                return 1;
-            }
-
-            // 桌面空白处双击 → 干净桌面
-            if (wParam == WM_LBUTTONDBLCLK && !self->IsPointOverZone(pt)) {
+        if (self) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            if (!self->IsPointOverZone(pt)) {
                 HWND lv = self->shell_.Windows().listView;
                 if (lv && IsWindow(lv)) {
                     RECT rc{};

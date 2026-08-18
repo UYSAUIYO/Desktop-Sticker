@@ -43,7 +43,6 @@ private:
     void StartMouseHook();
     void StopMouseHook();
     bool IsPointOverZone(POINT pt) const;
-    ZoneWindow* ZoneAtPoint(POINT pt) const;
 
     static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 
