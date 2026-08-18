@@ -33,6 +33,12 @@ TestResults/
 project.assets.json
 project.nuget.cache
 
+# MSIX package build output
+AppPackages/
+*.appx
+*.msix
+*.appxsym
+
 # Build artifacts
 bin/
 obj/
