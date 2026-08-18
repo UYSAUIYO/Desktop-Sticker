@@ -16,15 +16,26 @@ void SettingsController::EnsureWindow() {
 
     window_ = Window();
 
+    auto scroll = ScrollViewer();
     auto root = StackPanel();
-    root.Padding(ThicknessHelper::FromLengths(24, 24, 24, 24));
+    root.Padding(ThicknessHelper::FromLengths(28, 28, 28, 28));
     root.Spacing(12);
+    root.MaxWidth(560);
 
     auto title = TextBlock();
     title.Text(L"Desktop Sticker 设置");
     title.Style(Application::Current().Resources().Lookup(box_value(L"TitleTextBlockStyle")).as<Style>());
     root.Children().Append(title);
 
+    auto sectionHeader = [&](const wchar_t* text) {
+        auto t = TextBlock();
+        t.Text(text);
+        t.Style(Application::Current().Resources().Lookup(box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        t.Margin(ThicknessHelper::FromLengths(0, 8, 0, 0));
+        root.Children().Append(t);
+    };
+
+    sectionHeader(L"搜索设置");
     searchDesktopSwitch_ = ToggleSwitch();
     searchDesktopSwitch_.Header(box_value(L"搜索桌面内容"));
     searchDesktopSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
@@ -40,10 +51,7 @@ void SettingsController::EnsureWindow() {
     followThemeSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
     root.Children().Append(followThemeSwitch_);
 
-    auto hotkeyLabel = TextBlock();
-    hotkeyLabel.Text(L"热键方案");
-    root.Children().Append(hotkeyLabel);
-
+    sectionHeader(L"热键设置");
     hotkeyModeCombo_ = ComboBox();
     {
         auto item1 = ComboBoxItem();
@@ -58,6 +66,7 @@ void SettingsController::EnsureWindow() {
     hotkeyModeCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveConfig(); });
     root.Children().Append(hotkeyModeCombo_);
 
+    sectionHeader(L"磁贴设置");
     columnSpacingBox_ = NumberBox();
     columnSpacingBox_.Header(box_value(L"磁贴列间距（像素）"));
     columnSpacingBox_.Minimum(32);
@@ -74,10 +83,7 @@ void SettingsController::EnsureWindow() {
     rowSpacingBox_.ValueChanged([this](winrt::Windows::Foundation::IInspectable const&, NumberBoxValueChangedEventArgs const&) { SaveConfig(); });
     root.Children().Append(rowSpacingBox_);
 
-    auto appLabel = TextBlock();
-    appLabel.Text(L"手动添加的应用");
-    root.Children().Append(appLabel);
-
+    sectionHeader(L"应用管理");
     auto addRow = StackPanel();
     addRow.Orientation(Orientation::Horizontal);
     addRow.Spacing(8);
@@ -115,7 +121,16 @@ void SettingsController::EnsureWindow() {
     });
     root.Children().Append(removeButton);
 
-    window_.Content(root);
+    sectionHeader(L"系统");
+    auto restoreButton = Button();
+    restoreButton.Content(box_value(L"恢复桌面图标"));
+    restoreButton.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) {
+        if (host_ && host_->Module()) host_->Module()->RestoreDesktop();
+    });
+    root.Children().Append(restoreButton);
+
+    scroll.Content(root);
+    window_.Content(scroll);
     window_.Title(L"Desktop Sticker 设置");
 
     // 从配置加载
