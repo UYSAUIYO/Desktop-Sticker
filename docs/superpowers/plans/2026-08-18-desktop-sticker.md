@@ -13,7 +13,12 @@
 ## 前置约定
 
 - 仓库根目录：`D:\project\Desktop Sticker`
-- 源码根目录：`src/`
+- 解决方案：`Desktop Sticker/Desktop Sticker.sln`（用户已创建）
+- App 工程（WinUI 3，已存在）：`Desktop Sticker/Desktop Sticker/`，项目名 `Desktop Sticker`，命名空间 `winrt::Desktop_Sticker`
+- WAP 打包工程（已存在）：`Desktop Sticker/Desktop Sticker (Package)/`
+- Features DLL 工程（待创建）：`Desktop Sticker/DesktopSticker.Features/`，输出 `DesktopSticker.Features.dll`
+- 单元测试工程（待创建）：`Desktop Sticker/DesktopSticker.Tests/`
+- 三方头文件：`third_party/nlohmann/json.hpp`
 - 配置数据目录：`%APPDATA%\DesktopSticker\`
 - 所有路径在代码中以 `std::filesystem::path` 或宽字符串处理；源文件统一 UTF-8 with BOM（MSVC 需要）。
 - 每个 Task 结束都要 `git commit`。
@@ -50,12 +55,12 @@ git commit -m "chore: document toolchain prerequisite (no code)"
 ## Task 2: 初始化仓库结构
 
 **Files:**
-- Create: `src/DesktopSticker.Features/`, `src/DesktopSticker.App/`, `src/DesktopSticker.Tests/`, `third_party/nlohmann/`, `tools/`
+- Create: `Desktop Sticker/DesktopSticker.Features/`, `Desktop Sticker/DesktopSticker.Tests/`, `third_party/nlohmann/`, `tools/`（App 工程已存在，跳过）
 
 - [ ] **Step 1: 创建目录**
 
 ```bash
-mkdir -p src/DesktopSticker.Features/include/desktopsticker src/DesktopSticker.Features/src src/DesktopSticker.App src/DesktopSticker.Tests third_party/nlohmann tools
+mkdir -p "Desktop Sticker/DesktopSticker.Features/include/desktopsticker" "Desktop Sticker/DesktopSticker.Features/src" "Desktop Sticker/DesktopSticker.Tests" third_party/nlohmann tools
 ```
 
 - [ ] **Step 2: 更新 `.gitignore`（追加内容）**
@@ -65,6 +70,10 @@ mkdir -p src/DesktopSticker.Features/include/desktopsticker src/DesktopSticker.F
 TestResults/
 *.coverage
 *.trx
+
+# NuGet packages (restored)
+packages/
+*.nupkg
 ```
 
 - [ ] **Step 3: 提交**
@@ -79,13 +88,13 @@ git commit -m "chore: create source directory skeleton"
 ## Task 3: Features DLL 骨架 + IFeatureModule
 
 **Files:**
-- Create: `src/DesktopSticker.Features/DesktopSticker.Features.vcxproj`
-- Create: `src/DesktopSticker.Features/pch.h`
-- Create: `src/DesktopSticker.Features/pch.cpp`
-- Create: `src/DesktopSticker.Features/include/desktopsticker/IFeatureModule.h`
-- Create: `src/DesktopSticker.Features/src/FeatureModule.h`
-- Create: `src/DesktopSticker.Features/src/FeatureModule.cpp`
-- Create: `src/DesktopSticker.Features/src/module.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/DesktopSticker.Features.vcxproj`
+- Create: `Desktop Sticker/DesktopSticker.Features/pch.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/pch.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/IFeatureModule.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/FeatureModule.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/FeatureModule.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/module.cpp`
 
 - [ ] **Step 1: 编写 `DesktopSticker.Features.vcxproj`**
 
@@ -295,14 +304,14 @@ extern "C" __declspec(dllexport) void DestroyFeatureModule(desktopsticker::IFeat
 }
 ```
 
-- [ ] **Step 8: 创建解决方案文件 `DesktopSticker.sln`**
+- [ ] **Step 8: 把 Features 工程加入已有解决方案**
 
-用 Visual Studio 创建空白解决方案（File → New → Project → Blank Solution，命名 `DesktopSticker`，保存到仓库根目录），再把 `DesktopSticker.Features.vcxproj` 加入解决方案。不要在此步骤创建其他项目。
+解决方案 `Desktop Sticker/Desktop Sticker.sln` 已存在（用户已创建）。在 Visual Studio 中：Solution Explorer → 右键解决方案 → Add → Existing Project，选择 `Desktop Sticker/DesktopSticker.Features/DesktopSticker.Features.vcxproj`。同时把后续 Task 创建的 `DesktopSticker.Tests.vcxproj` 也加入。
 
 - [ ] **Step 9: 构建验证**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 生成 `bin\x64\Debug\DesktopSticker.Features.dll`，错误 0。
@@ -320,12 +329,12 @@ git commit -m "feat: add Features DLL skeleton with IFeatureModule factory"
 
 **Files:**
 - Create: `third_party/nlohmann/json.hpp`
-- Create: `src/DesktopSticker.Features/include/desktopsticker/ConfigStore.h`
-- Create: `src/DesktopSticker.Features/src/ConfigStore.cpp`
-- Modify: `src/DesktopSticker.Features/DesktopSticker.Features.vcxproj`（添加两个文件）
-- Create: `src/DesktopSticker.Tests/DesktopSticker.Tests.vcxproj`
-- Create: `src/DesktopSticker.Tests/pch.h`、`pch.cpp`
-- Create: `src/DesktopSticker.Tests/TestConfigStore.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/ConfigStore.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/ConfigStore.cpp`
+- Modify: `Desktop Sticker/DesktopSticker.Features/DesktopSticker.Features.vcxproj`（添加两个文件）
+- Create: `Desktop Sticker/DesktopSticker.Tests/DesktopSticker.Tests.vcxproj`
+- Create: `Desktop Sticker/DesktopSticker.Tests/pch.h`、`pch.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Tests/TestConfigStore.cpp`
 
 - [ ] **Step 1: 下载 nlohmann/json 单头文件**
 
@@ -613,7 +622,7 @@ public:
 - [ ] **Step 7: 运行测试，确认失败（编译失败或断言失败）**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 编译失败，因为 `ConfigStore` 尚未加入 Features 工程。
@@ -630,7 +639,7 @@ Expected: 编译失败，因为 `ConfigStore` 尚未加入 Features 工程。
 - [ ] **Step 9: 重新运行测试，确认通过**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 2 个测试全部通过。
@@ -647,9 +656,9 @@ git commit -m "feat: add ConfigStore with atomic JSON persistence and tests"
 ## Task 5: HotkeyService（双击空格）
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/HotkeyService.h`
-- Create: `src/DesktopSticker.Features/src/HotkeyService.cpp`
-- Create: `src/DesktopSticker.Tests/TestHotkeyService.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/HotkeyService.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/HotkeyService.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Tests/TestHotkeyService.cpp`
 - Modify: `DesktopSticker.Features.vcxproj`、`DesktopSticker.Tests.vcxproj`
 
 - [ ] **Step 1: 编写 `HotkeyService.h`**
@@ -869,7 +878,7 @@ public:
 - [ ] **Step 4: 运行测试，确认失败**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 编译失败（`HotkeyService` 未定义）。
@@ -903,10 +912,10 @@ git commit -m "feat: add double-space HotkeyService with typing guard and tests"
 ## Task 6: PinyinMapper（中文拼音首字母搜索）
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/PinyinMapper.h`
-- Create: `src/DesktopSticker.Features/src/PinyinMapper.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/PinyinMapper.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/PinyinMapper.cpp`
 - Create: `tools/generate_pinyin_table.py`
-- Create: `src/DesktopSticker.Tests/TestPinyinMapper.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Tests/TestPinyinMapper.cpp`
 - Modify: 两个 vcxproj
 
 - [ ] **Step 1: 编写 `PinyinMapper.h`**
@@ -1053,7 +1062,7 @@ public:
 按 Task 4/5 的方式把新文件加入工程，先确认测试失败（找不到 `PinyinMapper`），实现后再跑通。最终命令：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 3 个测试通过。
@@ -1070,9 +1079,9 @@ git commit -m "feat: add PinyinMapper with initial table and generator script"
 ## Task 7: IndexService（索引与搜索）
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/IndexService.h`
-- Create: `src/DesktopSticker.Features/src/IndexService.cpp`
-- Create: `src/DesktopSticker.Tests/TestIndexService.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/IndexService.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/IndexService.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Tests/TestIndexService.cpp`
 - Modify: 两个 vcxproj
 
 - [ ] **Step 1: 编写 `IndexService.h`**
@@ -1384,7 +1393,7 @@ public:
 把 `IndexService.h/.cpp` 加入 Features，`TestIndexService.cpp` 加入 Tests；先跑失败，再实现通过。最终：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 全部通过（含之前 ConfigStore/Hotkey/Pinyin 测试）。
@@ -1401,10 +1410,10 @@ git commit -m "feat: add IndexService with desktop/known-folder/user-app search 
 ## Task 8: ShellLauncher + IconService
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/ShellLauncher.h`
-- Create: `src/DesktopSticker.Features/src/ShellLauncher.cpp`
-- Create: `src/DesktopSticker.Features/include/desktopsticker/IconService.h`
-- Create: `src/DesktopSticker.Features/src/IconService.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/ShellLauncher.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/ShellLauncher.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/IconService.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/IconService.cpp`
 - Modify: Features vcxproj
 
 - [ ] **Step 1: 编写 `ShellLauncher.h`**
@@ -1519,7 +1528,7 @@ void IconService::ClearCache() {
 把 4 个文件加入 Features vcxproj，然后：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 编译通过，无错误。
@@ -1536,9 +1545,9 @@ git commit -m "feat: add ShellLauncher and IconService"
 ## Task 9: ZoneModel（分区数据模型）
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/ZoneModel.h`
-- Create: `src/DesktopSticker.Features/src/ZoneModel.cpp`
-- Create: `src/DesktopSticker.Tests/TestZoneModel.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/ZoneModel.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/ZoneModel.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Tests/TestZoneModel.cpp`
 - Modify: 两个 vcxproj
 
 - [ ] **Step 1: 编写 `ZoneModel.h`**
@@ -1803,13 +1812,13 @@ git commit -m "feat: add ZoneModel with JSON layout persistence and tests"
 ## Task 10: WinUI 3 App 工程 + DLL 加载 + 托盘
 
 **Files:**
-- Create: `src/DesktopSticker.App/`（通过 VS 模板创建）
-- Create: `src/DesktopSticker.App/Host.h`、`Host.cpp`
-- Modify: `src/DesktopSticker.App/App.xaml`、`App.xaml.cpp`、`MainWindow.xaml`、`MainWindow.xaml.cpp`
+- Modify（已存在）：`Desktop Sticker/Desktop Sticker/`（WinUI 3 App 工程）
+- Create: `Desktop Sticker/Desktop Sticker/Host.h`、`Host.cpp`
+- Modify: `Desktop Sticker/Desktop Sticker/App.xaml`、`App.xaml.h`、`App.xaml.cpp`、`MainWindow.xaml`、`MainWindow.xaml.h`、`MainWindow.xaml.cpp`
 
 - [ ] **Step 1: 用 VS 模板创建 WinUI 3 工程**
 
-在 Visual Studio 中：File → New → Project → 搜索 **"Blank App, Packaged with Windows Application Packaging Project (WinUI 3 in Desktop)"**（C++/WinRT），项目名 `DesktopSticker.App`，位置 `src/`，解决方案选择已有 `DesktopSticker.sln`。目标平台选 x64，Windows App SDK 版本选最新稳定版。
+在 Visual Studio 中：File → New → Project → 搜索 **"Blank App, Packaged with Windows Application Packaging Project (WinUI 3 in Desktop)"**（C++/WinRT），项目名保持模板默认 `Desktop Sticker`（**你已经创建完成，本步跳过创建**）。目标平台选 x64，Windows App SDK 版本选最新稳定版。
 
 > 为什么选带“Windows Application Packaging Project”的模板：本工具需要从 EXE 同目录 `LoadLibrary` 加载 `DesktopSticker.Features.dll`，并做桌面 Shell 嵌入、注册表自启动等常规 Win32 行为。该模板的应用工程默认以“未打包”方式直接运行（F5 直接跑 EXE，调试和部署 DLL 更简单），WAP 工程只在需要生成 MSIX 时使用。若你已选了“空白应用，已打包”模板，也可在工程属性中设置 `WindowsPackageType=None` 达到同样的未打包运行效果，但推荐直接用本模板。
 
@@ -1939,7 +1948,7 @@ void Host::Stop() {
 
 ```xml
 <Application
-    x:Class="DesktopSticker.App.App"
+    x:Class="Desktop_Sticker.App"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
@@ -1963,7 +1972,7 @@ void Host::Stop() {
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 
-namespace winrt::DesktopSticker::App::implementation {
+namespace winrt::Desktop_Sticker::implementation {
 
 App::App() {
     Initialize();
@@ -1978,7 +1987,7 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
     m_mainWindow.Activate();
 }
 
-} // namespace winrt::DesktopSticker::App::implementation
+} // namespace winrt::Desktop_Sticker::implementation
 ```
 
 同时修改 `App.xaml.h`，添加成员：
@@ -1988,14 +1997,14 @@ void App::OnLaunched(LaunchActivatedEventArgs const&) {
 ...
 private:
     std::unique_ptr<desktopsticker::app::Host> m_host;
-    winrt::DesktopSticker::App::MainWindow m_mainWindow{ nullptr };
+    winrt::Desktop_Sticker::MainWindow m_mainWindow{ nullptr };
 ```
 
 - [ ] **Step 6: 修改 `MainWindow.xaml`（仅托盘宿主，内容后续补充）**
 
 ```xml
 <Window
-    x:Class="DesktopSticker.App.MainWindow"
+    x:Class="Desktop_Sticker.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <StackPanel Padding="24" Spacing="12">
@@ -2019,7 +2028,7 @@ private:
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 
-namespace winrt::DesktopSticker::App::implementation {
+namespace winrt::Desktop_Sticker::implementation {
 
 MainWindow::MainWindow(desktopsticker::app::Host* host) : m_host(host) {
     InitializeComponent();
@@ -2048,10 +2057,10 @@ MainWindow::~MainWindow() {
 - [ ] **Step 8: 构建并运行**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
-把 `DesktopSticker.Features.dll` 复制到 `bin\x64\Debug\DesktopSticker.App\`（或配置 App 工程的输出目录为同一 `bin\x64\Debug\`）。运行 EXE，Expected: 窗口显示，托盘出现图标，无崩溃。
+把 `DesktopSticker.Features.dll` 复制到 `bin\x64\Debug\Desktop Sticker\`（或配置 App 工程的输出目录为同一 `bin\x64\Debug\`）。运行 EXE，Expected: 窗口显示，托盘出现图标，无崩溃。
 
 - [ ] **Step 9: 提交**
 
@@ -2065,9 +2074,9 @@ git commit -m "feat: add WinUI 3 host app with DLL loading and tray icon"
 ## Task 11: LauncherWindow（搜索启动器 UI）
 
 **Files:**
-- Create: `src/DesktopSticker.App/LauncherWindow.xaml`、`.h`、`.cpp`
-- Modify: `src/DesktopSticker.App/Host.h`、`Host.cpp`（暴露 IndexService 搜索接口）
-- Modify: `src/DesktopSticker.App/App.xaml.cpp`（创建启动器窗口）
+- Create: `Desktop Sticker/Desktop Sticker/LauncherWindow.xaml`、`.h`、`.cpp`
+- Modify: `Desktop Sticker/Desktop Sticker/Host.h`、`Host.cpp`（暴露 IndexService 搜索接口）
+- Modify: `Desktop Sticker/Desktop Sticker/App.xaml.cpp`（创建启动器窗口）
 
 - [ ] **Step 1: 在 Features DLL 暴露搜索接口**
 
@@ -2102,7 +2111,7 @@ public:
 
 ```xml
 <Window
-    x:Class="DesktopSticker.App.LauncherWindow"
+    x:Class="Desktop_Sticker.LauncherWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:Microsoft.UI.Xaml.Controls">
@@ -2162,7 +2171,7 @@ public:
 #pragma once
 #include "Host.h"
 
-namespace winrt::DesktopSticker::App::implementation {
+namespace winrt::Desktop_Sticker::implementation {
 
 struct LauncherWindow : LauncherWindowT<LauncherWindow> {
     LauncherWindow(desktopsticker::app::Host* host);
@@ -2183,7 +2192,7 @@ private:
     std::vector<desktopsticker::SearchResult> m_results;
 };
 
-} // namespace winrt::DesktopSticker::App::implementation
+} // namespace winrt::Desktop_Sticker::implementation
 ```
 
 - [ ] **Step 4: 编写 `LauncherWindow.xaml.cpp`（核心交互）**
@@ -2200,7 +2209,7 @@ using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
 using namespace Microsoft::UI::Xaml::Input;
 
-namespace winrt::DesktopSticker::App::implementation {
+namespace winrt::Desktop_Sticker::implementation {
 
 LauncherWindow::LauncherWindow(desktopsticker::app::Host* host) : m_host(host) {
     InitializeComponent();
@@ -2259,12 +2268,12 @@ void LauncherWindow::OnResultItemClick(IInspectable const&, ItemClickEventArgs c
     }
 }
 
-} // namespace winrt::DesktopSticker::App::implementation
+} // namespace winrt::Desktop_Sticker::implementation
 ```
 
 说明：为保持计划可执行，MVP 结果列表用简化绑定；在实现时可改为定义 `SearchResultViewModel`（实现 `INotifyPropertyChanged`）以获得更完整体验。这一步允许简化，但必须保证“输入关键词 → 显示结果 → Enter 打开”可用。
 
-**工程配置**：`DesktopSticker.App.vcxproj` 需要添加 Features 的 include 目录（`$(ProjectDir)..\DesktopSticker.Features\include` 与 `$(ProjectDir)..\..\third_party`），并在链接器附加依赖中加入 `DesktopSticker.Features.lib`（或改为把 `ShellLauncher::Open` 也通过 `IFeatureModule` 暴露，避免 EXE 直接依赖 DLL 导入库；二选一，推荐后者以保持“UI 不直接碰 Shell API”的边界）。
+**工程配置**：`Desktop Sticker.vcxproj` 需要添加 Features 的 include 目录（`$(ProjectDir)..\DesktopSticker.Features\include` 与 `$(ProjectDir)..\..\third_party`），并在链接器附加依赖中加入 `DesktopSticker.Features.lib`（或改为把 `ShellLauncher::Open` 也通过 `IFeatureModule` 暴露，避免 EXE 直接依赖 DLL 导入库；二选一，推荐后者以保持“UI 不直接碰 Shell API”的边界）。
 
 - [ ] **Step 5: 在 `App.xaml.cpp` 中创建 LauncherWindow 并绑定热键回调**
 
@@ -2281,7 +2290,7 @@ m_host->SetHotkeyCallback([this]() {
 });
 ```
 
-`App.xaml.h` 添加成员：`winrt::DesktopSticker::App::LauncherWindow m_launcher{ nullptr };`
+`App.xaml.h` 添加成员：`winrt::Desktop_Sticker::LauncherWindow m_launcher{ nullptr };`
 
 - [ ] **Step 6: 在 FeatureModule 中启动 HotkeyService**
 
@@ -2329,14 +2338,14 @@ git commit -m "feat: add launcher window with search and hotkey toggle"
 ## Task 12: 设置窗口
 
 **Files:**
-- Create: `src/DesktopSticker.App/SettingsWindow.xaml`、`.h`、`.cpp`
+- Create: `Desktop Sticker/Desktop Sticker/SettingsWindow.xaml`、`.h`、`.cpp`
 - Modify: `MainWindow.xaml`（添加“设置”按钮或托盘菜单）
 
 - [ ] **Step 1: 编写 `SettingsWindow.xaml`**
 
 ```xml
 <Window
-    x:Class="DesktopSticker.App.SettingsWindow"
+    x:Class="Desktop_Sticker.SettingsWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Desktop Sticker 设置">
@@ -2380,7 +2389,7 @@ using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
 
-namespace winrt::DesktopSticker::App::implementation {
+namespace winrt::Desktop_Sticker::implementation {
 
 SettingsWindow::SettingsWindow(desktopsticker::app::Host* host) : m_host(host) {
     InitializeComponent();
@@ -2431,7 +2440,7 @@ void SettingsWindow::RefreshApps() {
     }
 }
 
-} // namespace winrt::DesktopSticker::App::implementation
+} // namespace winrt::Desktop_Sticker::implementation
 ```
 
 - [ ] **Step 3: 扩展 `Host.h/.cpp` 与 `IFeatureModule` 增加配置/应用列表接口**
@@ -2468,8 +2477,8 @@ git commit -m "feat: add settings window for hotkey, search scope, and app list"
 ## Task 13: DesktopShellIntegration（WorkerW 嵌入）
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/DesktopShellIntegration.h`
-- Create: `src/DesktopSticker.Features/src/DesktopShellIntegration.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/DesktopShellIntegration.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/DesktopShellIntegration.cpp`
 - Modify: Features vcxproj
 
 - [ ] **Step 1: 编写 `DesktopShellIntegration.h`**
@@ -2585,7 +2594,7 @@ bool DesktopShellIntegration::UnsubclassListView(SUBCLASSPROC proc, UINT_PTR id)
 - [ ] **Step 3: 加入工程并构建**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 编译通过。
@@ -2602,8 +2611,8 @@ git commit -m "feat: add DesktopShellIntegration for WorkerW/DefView embedding"
 ## Task 14: ZoneWindow + Direct2D 绘制
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/ZoneWindow.h`
-- Create: `src/DesktopSticker.Features/src/ZoneWindow.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/ZoneWindow.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/ZoneWindow.cpp`
 - Modify: Features vcxproj
 
 - [ ] **Step 1: 编写 `ZoneWindow.h`**
@@ -2950,8 +2959,8 @@ git commit -m "feat: add Direct2D ZoneWindow with acrylic and tile rendering"
 ## Task 15: 桌面图标枚举 + 原生图标移出/恢复
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/DesktopIconManager.h`
-- Create: `src/DesktopSticker.Features/src/DesktopIconManager.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/DesktopIconManager.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/DesktopIconManager.cpp`
 - Modify: Features vcxproj
 
 - [ ] **Step 1: 编写 `DesktopIconManager.h`**
@@ -3107,8 +3116,8 @@ git commit -m "feat: add DesktopIconManager for enumerating and moving native de
 ## Task 16: DesktopWorkspace 组装 + 自动分类 + 收纳
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/DesktopWorkspace.h`
-- Create: `src/DesktopSticker.Features/src/DesktopWorkspace.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/DesktopWorkspace.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/DesktopWorkspace.cpp`
 - Modify: `FeatureModule.h/.cpp`（启动 DesktopWorkspace）
 - Modify: Features vcxproj
 
@@ -3395,9 +3404,9 @@ git commit -m "feat: add DesktopWorkspace with auto-classification and icon coll
 ## Task 17: 折叠/展开 + 拖拽换分区 + IDropTarget
 
 **Files:**
-- Modify: `src/DesktopSticker.Features/src/ZoneWindow.cpp`（折叠点击已实现，补拖拽换分区）
-- Create: `src/DesktopSticker.Features/include/desktopsticker/DropTarget.h`
-- Create: `src/DesktopSticker.Features/src/DropTarget.cpp`
+- Modify: `Desktop Sticker/DesktopSticker.Features/src/ZoneWindow.cpp`（折叠点击已实现，补拖拽换分区）
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/DropTarget.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/DropTarget.cpp`
 - Modify: `DesktopWorkspace.cpp`（注册 DropTarget、处理拖放）
 
 - [ ] **Step 1: 编写 `DropTarget.h`**
@@ -3691,8 +3700,8 @@ git commit -m "feat: add zone context menus, clean-desktop toggle, and resize"
 ## Task 19: 文件监听自动归类 + 一键恢复 + 降级模式
 
 **Files:**
-- Create: `src/DesktopSticker.Features/include/desktopsticker/DirectoryWatcher.h`
-- Create: `src/DesktopSticker.Features/src/DirectoryWatcher.cpp`
+- Create: `Desktop Sticker/DesktopSticker.Features/include/desktopsticker/DirectoryWatcher.h`
+- Create: `Desktop Sticker/DesktopSticker.Features/src/DirectoryWatcher.cpp`
 - Modify: `DesktopWorkspace.cpp`（监听桌面目录、新图标自动归类）
 - Modify: `FeatureModule.cpp`（暴露一键恢复接口）
 
@@ -3849,7 +3858,7 @@ git commit -m "feat: add desktop watcher auto-classification, restore, and fallb
 
 **Files:**
 - Create: `README.md`（简短使用说明）
-- Modify: `DesktopSticker.App` 的 `Package.appxmanifest`（可选打包）
+- Modify: `Desktop Sticker (Package)/Package.appxmanifest`（可选打包）
 - Modify: `MainWindow.xaml.cpp`（托盘“退出”时 `UnloadFeatures`）
 
 - [ ] **Step 1: 编写 README**
@@ -3866,7 +3875,7 @@ Windows 11 桌面分区收纳 + 双击空格搜索启动器。
 - 托盘图标：设置 / 恢复桌面 / 退出
 
 ## 构建
-使用 Visual Studio 2022（C++ 桌面开发 + Windows 11 SDK）打开 `DesktopSticker.sln`，x64 Debug/Release 构建。
+使用 Visual Studio 2022（C++ 桌面开发 + Windows 11 SDK）打开 `Desktop Sticker/Desktop Sticker.sln`，x64 Debug/Release 构建。
 
 ## 数据
 配置与布局保存在 `%APPDATA%\DesktopSticker\`。
@@ -3898,7 +3907,7 @@ case WM_APP + 1:
 - [ ] **Step 3: 完整构建 + 全量测试**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild DesktopSticker.sln /p:Configuration=Release /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Release\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Release /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Release\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: Release 构建成功，全部单元测试通过。
@@ -3923,7 +3932,7 @@ Expected: Release 构建成功，全部单元测试通过。
 - [ ] **Step 5: 自启动（可选，注册表 Run 键）**
 
 ```bash
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DesktopSticker" /t REG_SZ /d "\"D:\project\Desktop Sticker\bin\x64\Release\DesktopSticker.App\DesktopSticker.App.exe\"" /f
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "DesktopSticker" /t REG_SZ /d "\"D:\project\Desktop Sticker\bin\x64\Release\Desktop Sticker\Desktop Sticker.exe\"" /f
 ```
 
 - [ ] **Step 6: 最终提交**

@@ -16,6 +16,23 @@ Release/
 *.VC.VC.opendb
 *.ipch
 
+# NuGet packages (restored)
+packages/
+*.nupkg
+
+# C++/WinRT generated files
+Generated Files/
+
+# VS test results
+TestResults/
+*.coverage
+*.trx
+
+# NuGet/build caches
+*.assets.cache
+project.assets.json
+project.nuget.cache
+
 # Build artifacts
 bin/
 obj/
