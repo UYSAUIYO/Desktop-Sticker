@@ -294,10 +294,14 @@ void ZoneWindow::OnPaint() {
     blend.BlendOp = AC_SRC_OVER;
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
-    POINT ptDst{rc.left, rc.top};
+    POINT ptDst{};
+    RECT winRect{};
+    GetWindowRect(hwnd_, &winRect);
+    ptDst.x = winRect.left;
+    ptDst.y = winRect.top;
     HWND parent = GetAncestor(hwnd_, GA_PARENT);
     if (parent && parent != GetDesktopWindow()) {
-        ScreenToClient(parent, &ptDst);
+        ScreenToClient(parent, &ptDst); // 子窗口的 UpdateLayeredWindow 位置相对父客户区
     }
     SIZE size{w, h};
     POINT ptSrc{0, 0};
@@ -324,14 +328,62 @@ void ZoneWindow::OnLButtonDown(int x, int y) {
 
 void ZoneWindow::OnLButtonUp(int x, int y) {
     dragging_ = false;
+    resizing_ = false;
+    resizeHit_ = 0;
     draggingItem_.clear();
     ReleaseCapture();
 }
 
+void ZoneWindow::StartResize(int hitCode) {
+    resizing_ = true;
+    resizeHit_ = hitCode;
+    GetCursorPos(&dragStart_);
+    GetWindowRect(hwnd_, &windowStart_);
+    SetCapture(hwnd_);
+}
+
 void ZoneWindow::OnMouseMove(int x, int y) {
-    if (!dragging_) return;
     POINT pt{};
     GetCursorPos(&pt);
+
+    if (resizing_) {
+        const int dx = pt.x - dragStart_.x;
+        const int dy = pt.y - dragStart_.y;
+        const bool left = resizeHit_ == HTLEFT || resizeHit_ == HTTOPLEFT || resizeHit_ == HTBOTTOMLEFT;
+        const bool right = resizeHit_ == HTRIGHT || resizeHit_ == HTTOPRIGHT || resizeHit_ == HTBOTTOMRIGHT;
+        const bool top = resizeHit_ == HTTOP || resizeHit_ == HTTOPLEFT || resizeHit_ == HTTOPRIGHT;
+        const bool bottom = resizeHit_ == HTBOTTOM || resizeHit_ == HTBOTTOMLEFT || resizeHit_ == HTBOTTOMRIGHT;
+
+        RECT r = windowStart_;
+        if (left) r.left += dx;
+        if (right) r.right += dx;
+        if (top) r.top += dy;
+        if (bottom) r.bottom += dy;
+
+        const int minW = 120;
+        const int minH = 80;
+        if (r.right - r.left < minW) {
+            if (left) r.left = r.right - minW;
+            else r.right = r.left + minW;
+        }
+        if (r.bottom - r.top < minH) {
+            if (top) r.top = r.bottom - minH;
+            else r.bottom = r.top + minH;
+        }
+
+        POINT newPos{r.left, r.top};
+        HWND parent = GetAncestor(hwnd_, GA_PARENT);
+        if (parent && parent != GetDesktopWindow()) {
+            ScreenToClient(parent, &newPos);
+        }
+        SetWindowPos(hwnd_, nullptr, newPos.x, newPos.y,
+                     r.right - r.left, r.bottom - r.top,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+        zone_.rect = r;
+        return;
+    }
+
+    if (!dragging_) return;
 
     if (!draggingItem_.empty() && onItemDrag) {
         if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 8) {
@@ -343,8 +395,14 @@ void ZoneWindow::OnMouseMove(int x, int y) {
 
     int dx = pt.x - dragStart_.x;
     int dy = pt.y - dragStart_.y;
+    POINT newPos{windowStart_.left + dx, windowStart_.top + dy};
+    // WS_CHILD 子窗口的 SetWindowPos 使用父客户区坐标
+    HWND parent = GetAncestor(hwnd_, GA_PARENT);
+    if (parent && parent != GetDesktopWindow()) {
+        ScreenToClient(parent, &newPos);
+    }
     SetWindowPos(hwnd_, nullptr,
-                 windowStart_.left + dx, windowStart_.top + dy,
+                 newPos.x, newPos.y,
                  0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
@@ -402,6 +460,15 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_RBUTTONUP:
         self->OnRButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
+    case WM_NCLBUTTONDOWN: {
+        const int hit = static_cast<int>(wp);
+        if (hit == HTLEFT || hit == HTRIGHT || hit == HTTOP || hit == HTBOTTOM ||
+            hit == HTTOPLEFT || hit == HTTOPRIGHT || hit == HTBOTTOMLEFT || hit == HTBOTTOMRIGHT) {
+            self->StartResize(hit);
+            return 0;
+        }
+        break;
+    }
     case WM_NCHITTEST: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);

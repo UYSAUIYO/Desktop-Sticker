@@ -45,6 +45,7 @@ private:
     void OnLButtonUp(int x, int y);
     void OnMouseMove(int x, int y);
     void OnRButtonUp(int x, int y);
+    void StartResize(int hitCode);
 
     bool EnsureD2DResources();
     void ReleaseD2DResources();
@@ -64,6 +65,8 @@ private:
     IWICImagingFactory* wicFactory_ = nullptr;
 
     bool dragging_ = false;
+    bool resizing_ = false;
+    int resizeHit_ = 0;
     std::wstring draggingItem_;
     POINT dragStart_{};
     RECT windowStart_{};
