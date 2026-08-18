@@ -38,7 +38,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsof
 - [ ] **Step 2: 验证工具链可用**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && where cl && where msbuild"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && where cl && where msbuild"
 ```
 
 Expected: 输出 `cl.exe` 与 `msbuild.exe` 的路径，无错误。
@@ -311,7 +311,7 @@ extern "C" __declspec(dllexport) void DestroyFeatureModule(desktopsticker::IFeat
 - [ ] **Step 9: 构建验证**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 生成 `bin\x64\Debug\DesktopSticker.Features.dll`，错误 0。
@@ -622,7 +622,7 @@ public:
 - [ ] **Step 7: 运行测试，确认失败（编译失败或断言失败）**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 编译失败，因为 `ConfigStore` 尚未加入 Features 工程。
@@ -639,7 +639,7 @@ Expected: 编译失败，因为 `ConfigStore` 尚未加入 Features 工程。
 - [ ] **Step 9: 重新运行测试，确认通过**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 2 个测试全部通过。
@@ -878,7 +878,7 @@ public:
 - [ ] **Step 4: 运行测试，确认失败**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 编译失败（`HotkeyService` 未定义）。
@@ -1062,7 +1062,7 @@ public:
 按 Task 4/5 的方式把新文件加入工程，先确认测试失败（找不到 `PinyinMapper`），实现后再跑通。最终命令：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 3 个测试通过。
@@ -1393,7 +1393,7 @@ public:
 把 `IndexService.h/.cpp` 加入 Features，`TestIndexService.cpp` 加入 Tests；先跑失败，再实现通过。最终：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Debug\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: 全部通过（含之前 ConfigStore/Hotkey/Pinyin 测试）。
@@ -1528,7 +1528,7 @@ void IconService::ClearCache() {
 把 4 个文件加入 Features vcxproj，然后：
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 编译通过，无错误。
@@ -2057,7 +2057,7 @@ MainWindow::~MainWindow() {
 - [ ] **Step 8: 构建并运行**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 把 `DesktopSticker.Features.dll` 复制到 `bin\x64\Debug\Desktop Sticker\`（或配置 App 工程的输出目录为同一 `bin\x64\Debug\`）。运行 EXE，Expected: 窗口显示，托盘出现图标，无崩溃。
@@ -2594,7 +2594,7 @@ bool DesktopShellIntegration::UnsubclassListView(SUBCLASSPROC proc, UINT_PTR id)
 - [ ] **Step 3: 加入工程并构建**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Debug /p:Platform=x64 /m"
 ```
 
 Expected: 编译通过。
@@ -3907,7 +3907,7 @@ case WM_APP + 1:
 - [ ] **Step 3: 完整构建 + 全量测试**
 
 ```bash
-cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Release /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Release\Tests\DesktopSticker.Tests.dll"
+cmd.exe /c "\"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat\" && msbuild "Desktop Sticker/Desktop Sticker.sln" /p:Configuration=Release /p:Platform=x64 /m && \"C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe\" bin\x64\Release\Tests\DesktopSticker.Tests.dll"
 ```
 
 Expected: Release 构建成功，全部单元测试通过。
