@@ -3,6 +3,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "desktopsticker/Utf8.h"
+
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
@@ -26,10 +28,10 @@ bool ConfigStore::Load() {
 
         AppConfig cfg;
         if (j.contains("hotkeyMode") && j["hotkeyMode"].is_string()) {
-            cfg.hotkeyMode = std::wstring(j["hotkeyMode"].get<std::string>().begin(), j["hotkeyMode"].get<std::string>().end());
+            cfg.hotkeyMode = FromUtf8(j["hotkeyMode"].get<std::string>());
         }
         if (j.contains("customHotkey") && j["customHotkey"].is_string()) {
-            cfg.customHotkey = std::wstring(j["customHotkey"].get<std::string>().begin(), j["customHotkey"].get<std::string>().end());
+            cfg.customHotkey = FromUtf8(j["customHotkey"].get<std::string>());
         }
         cfg.followSystemTheme = j.value("followSystemTheme", true);
         cfg.searchDesktop = j.value("searchDesktop", true);
@@ -51,10 +53,8 @@ bool ConfigStore::Save() const {
     fs::create_directories(rootDir_, ec);
 
     json j;
-    std::string hotkeyMode(config_.hotkeyMode.begin(), config_.hotkeyMode.end());
-    std::string customHotkey(config_.customHotkey.begin(), config_.customHotkey.end());
-    j["hotkeyMode"] = hotkeyMode;
-    j["customHotkey"] = customHotkey;
+    j["hotkeyMode"] = ToUtf8(config_.hotkeyMode);
+    j["customHotkey"] = ToUtf8(config_.customHotkey);
     j["followSystemTheme"] = config_.followSystemTheme;
     j["searchDesktop"] = config_.searchDesktop;
     j["searchKnownFolders"] = config_.searchKnownFolders;

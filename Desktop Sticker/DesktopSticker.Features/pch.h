@@ -4,6 +4,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <windowsx.h>
 #include <d2d1.h>
@@ -13,6 +17,7 @@
 #include <Shlwapi.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>

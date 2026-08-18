@@ -1,5 +1,9 @@
 #pragma once
 #include <functional>
+#include <string>
+#include <vector>
+
+#include "desktopsticker/ConfigStore.h"
 
 namespace desktopsticker {
 
@@ -12,6 +16,13 @@ struct FeatureEvents {
     std::function<void()> zonesChanged;
 };
 
+struct SearchResult {
+    std::wstring name;
+    std::wstring path;
+    std::wstring source;
+    bool isApp = false;
+};
+
 class IFeatureModule {
 public:
     virtual ~IFeatureModule() = default;
@@ -19,6 +30,15 @@ public:
     virtual void Start() = 0;
     virtual void Stop() = 0;
     virtual void Shutdown() = 0;
+
+    virtual std::vector<SearchResult> Search(const std::wstring& query, size_t maxResults) = 0;
+    virtual bool AddApp(const std::wstring& path) = 0;
+    virtual bool RemoveApp(const std::wstring& path) = 0;
+    virtual std::vector<std::wstring> GetApps() = 0;
+    virtual AppConfig GetConfig() = 0;
+    virtual void SetConfig(const AppConfig& config) = 0;
+    virtual void OpenItem(const std::wstring& path) = 0;
+    virtual void RestoreDesktop() = 0;
 };
 
 } // namespace desktopsticker

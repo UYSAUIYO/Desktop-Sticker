@@ -2,23 +2,15 @@
 #include "App.xaml.h"
 #include "MainWindow.xaml.h"
 
+#include <winrt/Microsoft.UI.Dispatching.h>
+
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 
-// To learn more about WinUI, the WinUI project structure,
-// and more about our project templates, see: http://aka.ms/winui-project-info.
-
 namespace winrt::Desktop_Sticker::implementation
 {
-    /// <summary>
-    /// Initializes the singleton application object.  This is the first line of authored code
-    /// executed, and as such is the logical equivalent of main() or WinMain().
-    /// </summary>
     App::App()
     {
-        // Xaml objects should not call InitializeComponent during construction.
-        // See https://github.com/microsoft/cppwinrt/tree/master/nuget#initializecomponent
-
 #if defined _DEBUG && !defined DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION
         UnhandledException([](IInspectable const&, UnhandledExceptionEventArgs const& e)
         {
@@ -31,13 +23,32 @@ namespace winrt::Desktop_Sticker::implementation
 #endif
     }
 
-    /// <summary>
-    /// Invoked when the application is launched.
-    /// </summary>
-    /// <param name="e">Details about the launch request and process.</param>
     void App::OnLaunched([[maybe_unused]] LaunchActivatedEventArgs const& e)
     {
-        window = make<MainWindow>();
+        m_host = std::make_unique<desktopsticker::app::Host>();
+        m_host->LoadFeatures();
+        m_host->Start();
+
+        m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
+        m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
+
+        auto mainWindow = make<MainWindow>();
+        auto impl = winrt::get_self<implementation::MainWindow>(mainWindow);
+        impl->AttachHost(m_host.get(), m_settings.get());
+        window = mainWindow;
         window.Activate();
+
+        m_dispatcher = window.DispatcherQueue();
+        m_host->SetHotkeyCallback([this]() {
+            if (m_dispatcher) {
+                m_dispatcher.TryEnqueue([this]() {
+                    if (m_launcher->Visible()) {
+                        m_launcher->Hide();
+                    } else {
+                        m_launcher->Show();
+                    }
+                });
+            }
+        });
     }
 }

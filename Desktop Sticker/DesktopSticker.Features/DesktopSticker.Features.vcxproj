@@ -54,6 +54,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;comctl32.lib;shlwapi.lib;ole32.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -75,13 +76,27 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>d2d1.lib;dwrite.lib;comctl32.lib;shlwapi.lib;ole32.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="include\desktopsticker\Export.h" />
+    <ClInclude Include="include\desktopsticker\Utf8.h" />
     <ClInclude Include="include\desktopsticker\IFeatureModule.h" />
     <ClInclude Include="include\desktopsticker\ConfigStore.h" />
+    <ClInclude Include="include\desktopsticker\HotkeyService.h" />
+    <ClInclude Include="include\desktopsticker\PinyinMapper.h" />
+    <ClInclude Include="include\desktopsticker\IndexService.h" />
+    <ClInclude Include="include\desktopsticker\ShellLauncher.h" />
+    <ClInclude Include="include\desktopsticker\IconService.h" />
+    <ClInclude Include="include\desktopsticker\ZoneModel.h" />
+    <ClInclude Include="include\desktopsticker\DesktopShellIntegration.h" />
+    <ClInclude Include="include\desktopsticker\ZoneWindow.h" />
+    <ClInclude Include="include\desktopsticker\DesktopIconManager.h" />
+    <ClInclude Include="include\desktopsticker\DropTarget.h" />
+    <ClInclude Include="include\desktopsticker\DirectoryWatcher.h" />
+    <ClInclude Include="include\desktopsticker\DesktopWorkspace.h" />
     <ClInclude Include="src\FeatureModule.h" />
   </ItemGroup>
   <ItemGroup>
@@ -89,6 +104,18 @@
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="src\ConfigStore.cpp" />
+    <ClCompile Include="src\HotkeyService.cpp" />
+    <ClCompile Include="src\PinyinMapper.cpp" />
+    <ClCompile Include="src\IndexService.cpp" />
+    <ClCompile Include="src\ShellLauncher.cpp" />
+    <ClCompile Include="src\IconService.cpp" />
+    <ClCompile Include="src\ZoneModel.cpp" />
+    <ClCompile Include="src\DesktopShellIntegration.cpp" />
+    <ClCompile Include="src\ZoneWindow.cpp" />
+    <ClCompile Include="src\DesktopIconManager.cpp" />
+    <ClCompile Include="src\DropTarget.cpp" />
+    <ClCompile Include="src\DirectoryWatcher.cpp" />
+    <ClCompile Include="src\DesktopWorkspace.cpp" />
     <ClCompile Include="src\FeatureModule.cpp" />
     <ClCompile Include="src\module.cpp" />
   </ItemGroup>

@@ -81,6 +81,10 @@
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="TestConfigStore.cpp" />
+    <ClCompile Include="TestHotkeyService.cpp" />
+    <ClCompile Include="TestPinyinMapper.cpp" />
+    <ClCompile Include="TestIndexService.cpp" />
+    <ClCompile Include="TestZoneModel.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">

@@ -1,0 +1,143 @@
+#include "pch.h"
+#include "SettingsController.h"
+
+using namespace winrt;
+using namespace Microsoft::UI::Xaml;
+using namespace Microsoft::UI::Xaml::Controls;
+
+namespace desktopsticker::app {
+
+SettingsController::SettingsController(Host* host) : host_(host) {
+    window_ = Window();
+
+    auto root = StackPanel();
+    root.Padding(ThicknessHelper::FromLengths(24, 24, 24, 24));
+    root.Spacing(12);
+
+    auto title = TextBlock();
+    title.Text(L"Desktop Sticker 设置");
+    title.Style(Application::Current().Resources().Lookup(box_value(L"TitleTextBlockStyle")).as<Style>());
+    root.Children().Append(title);
+
+    searchDesktopSwitch_ = ToggleSwitch();
+    searchDesktopSwitch_.Header(box_value(L"搜索桌面内容"));
+    searchDesktopSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(searchDesktopSwitch_);
+
+    searchKnownFoldersSwitch_ = ToggleSwitch();
+    searchKnownFoldersSwitch_.Header(box_value(L"搜索文档/下载/图片/视频/音乐"));
+    searchKnownFoldersSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(searchKnownFoldersSwitch_);
+
+    followThemeSwitch_ = ToggleSwitch();
+    followThemeSwitch_.Header(box_value(L"跟随系统深浅色主题"));
+    followThemeSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(followThemeSwitch_);
+
+    auto hotkeyLabel = TextBlock();
+    hotkeyLabel.Text(L"热键方案");
+    root.Children().Append(hotkeyLabel);
+
+    hotkeyModeCombo_ = ComboBox();
+    {
+        auto item1 = ComboBoxItem();
+        item1.Content(box_value(L"双击空格"));
+        item1.Tag(box_value(L"double-space"));
+        auto item2 = ComboBoxItem();
+        item2.Content(box_value(L"Alt + Space"));
+        item2.Tag(box_value(L"custom"));
+        hotkeyModeCombo_.Items().Append(item1);
+        hotkeyModeCombo_.Items().Append(item2);
+    }
+    hotkeyModeCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(hotkeyModeCombo_);
+
+    auto appLabel = TextBlock();
+    appLabel.Text(L"手动添加的应用");
+    root.Children().Append(appLabel);
+
+    auto addRow = StackPanel();
+    addRow.Orientation(Orientation::Horizontal);
+    addRow.Spacing(8);
+
+    appPathBox_ = TextBox();
+    appPathBox_.Width(400);
+    appPathBox_.PlaceholderText(L"例如 C:\\Program Files\\App\\app.exe");
+    addRow.Children().Append(appPathBox_);
+
+    auto addButton = Button();
+    addButton.Content(box_value(L"添加"));
+    addButton.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) {
+        auto text = appPathBox_.Text();
+        if (!text.empty()) {
+            host_->Module()->AddApp(text.c_str());
+            RefreshApps();
+            appPathBox_.Text(L"");
+        }
+    });
+    addRow.Children().Append(addButton);
+    root.Children().Append(addRow);
+
+    appList_ = ListView();
+    appList_.MaxHeight(200);
+    root.Children().Append(appList_);
+
+    auto removeButton = Button();
+    removeButton.Content(box_value(L"移除选中"));
+    removeButton.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) {
+        auto selected = appList_.SelectedItem();
+        if (selected) {
+            host_->Module()->RemoveApp(selected.as<TextBlock>().Text().c_str());
+            RefreshApps();
+        }
+    });
+    root.Children().Append(removeButton);
+
+    window_.Content(root);
+    window_.Title(L"Desktop Sticker 设置");
+
+    // 从配置加载
+    auto cfg = host_->Module()->GetConfig();
+    searchDesktopSwitch_.IsOn(cfg.searchDesktop);
+    searchKnownFoldersSwitch_.IsOn(cfg.searchKnownFolders);
+    followThemeSwitch_.IsOn(cfg.followSystemTheme);
+    hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
+    RefreshApps();
+}
+
+void SettingsController::Show() {
+    if (!window_) return;
+    visible_ = true;
+    window_.Activate();
+}
+
+void SettingsController::Hide() {
+    if (!window_) return;
+    visible_ = false;
+    window_.Close();
+}
+
+void SettingsController::RefreshApps() {
+    appList_.Items().Clear();
+    for (const auto& app : host_->Module()->GetApps()) {
+        auto tb = TextBlock();
+        tb.Text(app);
+        appList_.Items().Append(tb);
+    }
+}
+
+void SettingsController::SaveConfig() {
+    auto cfg = host_->Module()->GetConfig();
+    cfg.searchDesktop = searchDesktopSwitch_.IsOn();
+    cfg.searchKnownFolders = searchKnownFoldersSwitch_.IsOn();
+    cfg.followSystemTheme = followThemeSwitch_.IsOn();
+
+    auto item = hotkeyModeCombo_.SelectedItem().try_as<ComboBoxItem>();
+    if (item) {
+        auto tag = item.Tag().as<Windows::Foundation::IPropertyValue>().GetString();
+        cfg.hotkeyMode = tag == L"custom" ? L"custom" : L"double-space";
+    }
+    host_->Module()->SetConfig(cfg);
+}
+
+} // namespace desktopsticker::app
