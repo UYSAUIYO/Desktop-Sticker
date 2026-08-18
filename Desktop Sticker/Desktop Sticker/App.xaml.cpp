@@ -29,12 +29,13 @@ namespace winrt::Desktop_Sticker::implementation
         m_host->LoadFeatures();
         m_host->Start();
 
-        // 先创建并激活主窗口，再创建启动器/设置窗口，避免 WinUI 多窗口初始化时序问题
+        // 主窗口只作为托盘宿主，创建后立即隐藏
         auto mainWindow = make<MainWindow>();
         auto impl = winrt::get_self<implementation::MainWindow>(mainWindow);
         impl->AttachHost(m_host.get(), nullptr);
         window = mainWindow;
         window.Activate();
+        ShowWindow(impl->Hwnd(), SW_HIDE);
 
         m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
         m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());

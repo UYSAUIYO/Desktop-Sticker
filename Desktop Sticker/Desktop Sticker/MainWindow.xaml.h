@@ -21,6 +21,7 @@ namespace winrt::Desktop_Sticker::implementation
 
         void AttachHost(desktopsticker::app::Host* host, desktopsticker::app::SettingsController* settings);
         void AttachSettings(desktopsticker::app::SettingsController* settings);
+        HWND Hwnd() const { return m_hwnd; }
 
         int32_t MyProperty();
         void MyProperty(int32_t value);
