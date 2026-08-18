@@ -1,16 +1,31 @@
 #include "pch.h"
 #include "desktopsticker/ZoneWindow.h"
 #include "desktopsticker/IconService.h"
+#include "desktopsticker/Utf8.h"
 
 #include <cstdlib>
 #include <dwrite.h>
+#include <fstream>
 #include <map>
+#include <shlobj.h>
 
 namespace desktopsticker {
 
 namespace {
 const wchar_t kZoneWindowClass[] = L"DesktopSticker.ZoneWindow";
 std::map<HWND, ZoneWindow*> g_windows;
+
+void ZoneDebugLog(const std::wstring& msg) {
+    PWSTR appData = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
+    std::filesystem::path root(appData);
+    CoTaskMemFree(appData);
+    root /= L"DesktopSticker";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    std::ofstream out(root / L"debug.log", std::ios::app);
+    out << ToUtf8(msg) << std::endl;
+}
 
 void ApplyAcrylic(HWND hwnd) {
     enum AccentState { ACCENT_DISABLED = 0, ACCENT_ENABLE_BLURBEHIND = 3, ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 };
@@ -195,19 +210,47 @@ void ZoneWindow::OnPaint() {
     if (!zone_.collapsed) {
         float x = 16.0f;
         float y = 48.0f;
+        int total = 0, iconOk = 0, wicOk = 0;
         for (const auto& path : zone_.itemPaths) {
+            ++total;
             HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
             if (icon) {
+                ++iconOk;
                 // 用 WIC 把 HICON 转成 D2D 位图再绘制（GDI DrawIconEx 在 D2D 表面上不显示）
                 IWICBitmap* wicBmp = nullptr;
                 if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
-                    ID2D1Bitmap* d2dBmp = nullptr;
-                    if (SUCCEEDED(target_->CreateBitmapFromWicBitmap(wicBmp, nullptr, &d2dBmp))) {
-                        target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
-                                            1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-                        d2dBmp->Release();
+                    // D2D 需要 32bpp 预乘 alpha，WIC 图标可能不是该格式，先转换
+                    IWICFormatConverter* converter = nullptr;
+                    if (SUCCEEDED(wicFactory_->CreateFormatConverter(&converter))) {
+                        if (SUCCEEDED(converter->Initialize(
+                                wicBmp, GUID_WICPixelFormat32bppPBGRA,
+                                WICBitmapDitherTypeNone, nullptr, 0.0,
+                                WICBitmapPaletteTypeCustom))) {
+                            ID2D1Bitmap* d2dBmp = nullptr;
+                            const HRESULT d2dHr = target_->CreateBitmapFromWicBitmap(converter, nullptr, &d2dBmp);
+                            if (SUCCEEDED(d2dHr)) {
+                                ++wicOk;
+                                target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
+                                                    1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                                d2dBmp->Release();
+                            } else {
+                                static bool s_d2dErrorLogged = false;
+                                if (!s_d2dErrorLogged) {
+                                    ZoneDebugLog(L"[zone paint] CreateBitmapFromWicBitmap failed hr=0x" +
+                                                 std::to_wstring(static_cast<unsigned long>(d2dHr)));
+                                    s_d2dErrorLogged = true;
+                                }
+                            }
+                        }
+                        converter->Release();
                     }
                     wicBmp->Release();
+                } else {
+                    static bool s_wicErrorLogged = false;
+                    if (!s_wicErrorLogged) {
+                        ZoneDebugLog(L"[zone paint] CreateBitmapFromHICON failed");
+                        s_wicErrorLogged = true;
+                    }
                 }
             } else {
                 target_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
@@ -217,6 +260,14 @@ void ZoneWindow::OnPaint() {
                 x = 16.0f;
                 y += 48.0f;
             }
+        }
+        static bool s_paintLogged = false;
+        if (!s_paintLogged) {
+            ZoneDebugLog(L"[zone paint] zone=" + zone_.name +
+                         L" items=" + std::to_wstring(total) +
+                         L" iconOk=" + std::to_wstring(iconOk) +
+                         L" wicOk=" + std::to_wstring(wicOk));
+            s_paintLogged = true;
         }
     }
 

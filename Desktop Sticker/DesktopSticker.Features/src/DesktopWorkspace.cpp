@@ -170,24 +170,10 @@ bool DesktopWorkspace::Initialize() {
         DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
                        L" items=" + std::to_wstring(CountZoneItems()));
 
-        // 把已收纳的原生图标移到屏幕外（只枚举一次，避免 O(N²) 远程调用卡死启动）
+        // 直接隐藏整个桌面图标列表（比逐图标移出更简单可靠）
         {
-            auto icons = iconManager_->EnumIcons();
-            int moved = 0;
-            for (const auto& icon : icons) {
-                bool collected = false;
-                for (const auto& zone : model_.Layout().zones) {
-                    for (const auto& p : zone.itemPaths) {
-                        if (_wcsicmp(p.c_str(), icon.path.c_str()) == 0) {
-                            collected = true;
-                            break;
-                        }
-                    }
-                    if (collected) break;
-                }
-                if (collected && iconManager_->MoveIconOffscreen(icon.index)) ++moved;
-            }
-            DebugLog(root, L"moved icons offscreen=" + std::to_wstring(moved));
+            const bool hid = iconManager_->HideAllIcons(true);
+            DebugLog(root, L"hide desktop icons=" + std::to_wstring(hid ? 1 : 0));
         }
 
         CreateZoneWindows();
@@ -480,29 +466,13 @@ void DesktopWorkspace::ToggleCleanDesktop() {
     for (auto& w : zoneWindows_) {
         ShowWindow(w->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
     }
-    auto icons = iconManager_->EnumIcons();
-    for (const auto& icon : icons) {
-        if (cleanMode_) {
-            iconManager_->MoveIconOffscreen(icon.index);
-        } else {
-            auto it = model_.Layout().originalIconPositions.find(icon.path);
-            if (it != model_.Layout().originalIconPositions.end()) {
-                iconManager_->RestoreIcon(icon.index, it->second);
-            }
-        }
-    }
+    if (iconManager_) iconManager_->HideAllIcons(cleanMode_);
 }
 
 void DesktopWorkspace::RestoreDesktop() {
     if (!iconManager_) return;
-    auto icons = iconManager_->EnumIcons();
-    for (const auto& icon : icons) {
-        auto it = model_.Layout().originalIconPositions.find(icon.path);
-        if (it != model_.Layout().originalIconPositions.end()) {
-            iconManager_->RestoreIcon(icon.index, it->second);
-        }
-    }
-    // 不跨进程恢复 LVS_AUTOARRANGE（会崩 Explorer），保持现状
+    // 显示原生桌面图标（因为我们启动时隐藏了整个图标列表）
+    iconManager_->HideAllIcons(false);
 }
 
 void DesktopWorkspace::SaveLayout() {

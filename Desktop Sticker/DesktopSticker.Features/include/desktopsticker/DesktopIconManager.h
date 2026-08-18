@@ -24,6 +24,8 @@ public:
     bool MoveIconOffscreen(int index);
     bool RestoreIcon(int index, POINT position);
     bool SetAutoArrange(bool enable);
+    // 直接隐藏/显示整个桌面图标列表窗口（最简单可靠的原生图标隐藏方式）
+    bool HideAllIcons(bool hide);
 
     HWND ListView() const { return shell_->Windows().listView; }
 

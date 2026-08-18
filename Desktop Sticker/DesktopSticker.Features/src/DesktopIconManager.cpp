@@ -166,6 +166,13 @@ bool DesktopIconManager::RestoreIcon(int index, POINT position) {
                                SMTO_ABORTIFHUNG, 500, &result) != FALSE;
 }
 
+bool DesktopIconManager::HideAllIcons(bool hide) {
+    HWND lv = ListView();
+    if (!lv || !IsWindow(lv)) return false;
+    ShowWindow(lv, hide ? SW_HIDE : SW_SHOW);
+    return true;
+}
+
 bool DesktopIconManager::SetAutoArrange(bool enable) {
     HWND lv = ListView();
     if (!lv || !IsWindow(lv)) return false;
