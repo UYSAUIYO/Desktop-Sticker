@@ -21,6 +21,7 @@ private:
 
     Host* host_ = nullptr;
     bool visible_ = false;
+    bool loading_ = false; // 初始化控件赋值期间抑制 SaveConfig，防止把未初始化值写进配置
     winrt::Microsoft::UI::Xaml::Window window_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch searchDesktopSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch searchKnownFoldersSwitch_{ nullptr };

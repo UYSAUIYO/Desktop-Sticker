@@ -3,6 +3,7 @@
 
 #include <windowsx.h>
 #include <commctrl.h>
+#include <cstdlib>
 #include <cstring>
 
 #include "desktopsticker/Utf8.h"
@@ -12,6 +13,10 @@ namespace fs = std::filesystem;
 namespace desktopsticker {
 
 namespace {
+
+// 图标“移到屏幕外”使用 (-32000,-32000)；小于该值视为无效/被污染的位置记录
+constexpr LONG kOffscreenCoord = -30000;
+const UINT kWatcherNotifyMsg = WM_APP + 2;
 
 DesktopWorkspace* g_mouseHookWorkspace = nullptr;
 
@@ -123,7 +128,7 @@ bool DesktopWorkspace::Initialize() {
     const auto root = config_->GetRootDir();
     DebugLog(root, L"Initialize begin");
     try {
-        OleInitialize(nullptr);
+        oleInitialized_ = SUCCEEDED(OleInitialize(nullptr));
 
         if (!shell_.Initialize()) {
             DebugLog(root, L"shell_.Initialize() = false (degraded)");
@@ -178,12 +183,28 @@ bool DesktopWorkspace::Initialize() {
             SaveLayout();
         }
 
+        // 清理历史版本误记录的无效原始位置（-32000 是我们自己移出去的，恢复无意义）
+        {
+            bool removed = false;
+            for (auto it = model_.Layout().originalIconPositions.begin();
+                 it != model_.Layout().originalIconPositions.end();) {
+                if (it->second.x <= kOffscreenCoord || it->second.y <= kOffscreenCoord) {
+                    it = model_.Layout().originalIconPositions.erase(it);
+                    removed = true;
+                } else {
+                    ++it;
+                }
+            }
+            if (removed) SaveLayout();
+        }
+
         // 直接隐藏整个桌面图标列表（比逐图标移出更简单可靠）
         {
             const bool hid = iconManager_->HideAllIcons(true);
             DebugLog(root, L"hide desktop icons=" + std::to_wstring(hid ? 1 : 0));
         }
 
+        CreateMessageWindow();
         CreateZoneWindows();
         StartMouseHook();
         StartDesktopWatcher();
@@ -209,16 +230,67 @@ void DesktopWorkspace::Shutdown() {
     } catch (...) {
         DebugLog(root, L"Shutdown cleanup exception");
     }
+    if (msgHwnd_) {
+        DestroyWindow(msgHwnd_);
+        msgHwnd_ = nullptr;
+    }
     iconService_->ClearCache();
     iconManager_.reset();
     shell_.Shutdown();
-    OleUninitialize();
+    if (oleInitialized_) {
+        OleUninitialize();
+        oleInitialized_ = false;
+    }
     DebugLog(root, L"Shutdown end");
 }
 
 void DesktopWorkspace::Refresh() {
-    for (auto& w : zoneWindows_) w->Refresh();
+    SyncZoneWindows();
     if (zonesChanged_) zonesChanged_();
+}
+
+void DesktopWorkspace::SyncZoneWindows() {
+    // 把 model 数据同步到窗口（折叠/重命名/缩放立即生效），并销毁已删除分区的窗口
+    std::vector<std::unique_ptr<ZoneWindow>> keep;
+    keep.reserve(zoneWindows_.size());
+    for (auto& w : zoneWindows_) {
+        Zone* z = model_.FindZone(w->GetZone().id);
+        if (!z) {
+            DestroyZoneWindow(w.get());
+        } else {
+            w->SetZone(*z);
+            keep.push_back(std::move(w));
+        }
+    }
+    zoneWindows_ = std::move(keep);
+    for (auto& w : zoneWindows_) w->Refresh();
+}
+
+void DesktopWorkspace::CreateMessageWindow() {
+    HINSTANCE hInst = GetModuleHandleW(L"DesktopSticker.Features.dll");
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = WorkspaceMsgProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"DesktopSticker.WorkspaceMsg";
+    RegisterClassExW(&wc);
+    msgHwnd_ = CreateWindowExW(0, L"DesktopSticker.WorkspaceMsg", L"", 0,
+                               0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, this);
+}
+
+LRESULT CALLBACK DesktopWorkspace::WorkspaceMsgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* self = reinterpret_cast<DesktopWorkspace*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        self = static_cast<DesktopWorkspace*>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    if (msg == kWatcherNotifyMsg && self) {
+        self->CollectNewDesktopIcons();
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 void DesktopWorkspace::SetZoneSpacing(int columnSpacing, int rowSpacing) {
@@ -328,7 +400,10 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
         Zone* zone = model_.FindZoneByName(category);
         if (!zone) continue;
         zone->itemPaths.push_back(icon.path);
-        model_.Layout().originalIconPositions[icon.path] = icon.position;
+        // 只记录移动前的真实位置；重分类时旧图标已在屏幕外，记下 -32000 会导致原位永久丢失
+        if (icon.position.x > kOffscreenCoord && icon.position.y > kOffscreenCoord) {
+            model_.Layout().originalIconPositions[icon.path] = icon.position;
+        }
         iconManager_->MoveIconOffscreen(icon.index);
     }
     DebugLog(config_->GetRootDir(), L"AutoClassify done items=" + std::to_wstring(CountZoneItems()));
@@ -344,7 +419,8 @@ void DesktopWorkspace::CollectIntoZone(const std::wstring& zoneId, const std::ws
     auto icons = iconManager_->EnumIcons();
     for (const auto& icon : icons) {
         if (_wcsicmp(icon.path.c_str(), path.c_str()) == 0) {
-            if (model_.Layout().originalIconPositions.find(path) == model_.Layout().originalIconPositions.end()) {
+            if (model_.Layout().originalIconPositions.find(path) == model_.Layout().originalIconPositions.end() &&
+                icon.position.x > kOffscreenCoord && icon.position.y > kOffscreenCoord) {
                 model_.Layout().originalIconPositions[path] = icon.position;
             }
             iconManager_->MoveIconOffscreen(icon.index);
@@ -363,10 +439,18 @@ void DesktopWorkspace::RemoveFromZone(const std::wstring& zoneId, const std::wst
     auto icons = iconManager_->EnumIcons();
     for (const auto& icon : icons) {
         if (_wcsicmp(icon.path.c_str(), path.c_str()) == 0) {
+            POINT target{-32000, -32000};
             auto posIt = model_.Layout().originalIconPositions.find(path);
-            if (posIt != model_.Layout().originalIconPositions.end()) {
-                iconManager_->RestoreIcon(icon.index, posIt->second);
+            if (posIt != model_.Layout().originalIconPositions.end() &&
+                posIt->second.x > kOffscreenCoord && posIt->second.y > kOffscreenCoord) {
+                target = posIt->second;
+            } else {
+                // 位置记录缺失/被污染（历史数据）：放到左上角附近的空位，避免图标“消失”
+                static int s_fallbackSlot = 0;
+                target = POINT{20 + (s_fallbackSlot % 12) * 84, 20 + (s_fallbackSlot / 12) * 100};
+                ++s_fallbackSlot;
             }
+            iconManager_->RestoreIcon(icon.index, target);
         }
     }
     SaveLayout();
@@ -412,9 +496,26 @@ void DesktopWorkspace::CreateZoneWindows() {
             }
         };
 
-        win->onItemDrag = [this](const std::wstring& fromZoneId, const std::wstring& itemPath) {
-            // MVP：拖出即移回桌面；完整跨分区拖放由 DropTarget 扩展
-            RemoveFromZone(fromZoneId, itemPath);
+        win->onTileDrop = [this](const std::wstring& fromZoneId, const std::wstring& itemPath, POINT pt) {
+            if (!model_.FindZone(fromZoneId)) return;
+            ZoneWindow* targetWindow = ZoneAtPoint(pt); // 落点所在分区窗口（含可见性过滤）
+            const std::wstring targetId = targetWindow ? targetWindow->GetZone().id : std::wstring();
+            if (!targetId.empty() && targetId != fromZoneId) {
+                if (model_.MoveItem(itemPath, fromZoneId, targetId)) {
+                    SaveLayout();
+                    Refresh();
+                }
+            } else if (targetId.empty()) {
+                // 拖出分区 → 恢复为原生桌面图标
+                RemoveFromZone(fromZoneId, itemPath);
+            }
+        };
+
+        win->onGeometryChanged = [this](const std::wstring& zoneId, const RECT& rect) {
+            if (Zone* z = model_.FindZone(zoneId)) {
+                z->rect = rect; // 拖动/缩放结果写回 model 并落盘
+                SaveLayout();
+            }
         };
 
         if (!win->Create()) {
@@ -430,6 +531,7 @@ void DesktopWorkspace::CreateZoneWindows() {
             const HWND parent = shell_.Windows().defView;
             const HWND oldParent = SetParent(win->Hwnd(), parent);
             const DWORD err = GetLastError();
+            if (oldParent || err == 0) win->SetEmbedded(true);
             // 转成真正的 WS_CHILD 子窗口：被裁剪在桌面范围内，不会遮挡普通窗口
             LONG_PTR style = GetWindowLongPtrW(win->Hwnd(), GWL_STYLE);
             SetWindowLongPtrW(win->Hwnd(), GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD);
@@ -481,14 +583,36 @@ void DesktopWorkspace::CreateZoneWindows() {
     }
 }
 
-void DesktopWorkspace::DestroyZoneWindows() {
-    for (auto* drop : dropTargets_) {
-        if (drop) {
-            RevokeDragDrop(drop->Hwnd());
-            drop->Release();
+void DesktopWorkspace::DestroyZoneWindow(ZoneWindow* window) {
+    if (!window) return;
+    DetachDropTarget(window->Hwnd());
+    window->Destroy();
+}
+
+void DesktopWorkspace::DetachDropTarget(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        // 窗口已销毁：仍需清理对应的 DropTarget 引用
+        for (auto it = dropTargets_.begin(); it != dropTargets_.end(); ++it) {
+            if (*it && !IsWindow((*it)->Hwnd())) {
+                (*it)->Release();
+                dropTargets_.erase(it);
+                return;
+            }
+        }
+        return;
+    }
+    for (auto it = dropTargets_.begin(); it != dropTargets_.end(); ++it) {
+        if (*it && (*it)->Hwnd() == hwnd) {
+            RevokeDragDrop(hwnd);
+            (*it)->Release();
+            dropTargets_.erase(it);
+            return;
         }
     }
-    dropTargets_.clear();
+}
+
+void DesktopWorkspace::DestroyZoneWindows() {
+    for (auto& w : zoneWindows_) DetachDropTarget(w->Hwnd());
     zoneWindows_.clear();
     ZoneWindow::UnregisterClass(GetModuleHandleW(L"DesktopSticker.Features.dll"));
 }
@@ -503,8 +627,28 @@ void DesktopWorkspace::ToggleCleanDesktop() {
 
 void DesktopWorkspace::RestoreDesktop() {
     if (!iconManager_) return;
-    // 显示原生桌面图标（因为我们启动时隐藏了整个图标列表）
-    iconManager_->HideAllIcons(false);
+    // 退出/还原：把仍在屏幕外的图标按记录的原始位置放回去，再显示列表。
+    // 只动“还在屏幕外”的图标，用户手动整理过的位置不受影响；无位置记录的放到左上角空位。
+    auto icons = iconManager_->EnumIcons();
+    int restored = 0;
+    for (const auto& icon : icons) {
+        if (icon.path.empty()) continue;
+        if (icon.position.x > kOffscreenCoord && icon.position.y > kOffscreenCoord) continue;
+        POINT target{-32000, -32000};
+        auto posIt = model_.Layout().originalIconPositions.find(icon.path);
+        if (posIt != model_.Layout().originalIconPositions.end() &&
+            posIt->second.x > kOffscreenCoord && posIt->second.y > kOffscreenCoord) {
+            target = posIt->second;
+        } else {
+            static int s_fallbackSlot = 0;
+            target = POINT{20 + (s_fallbackSlot % 12) * 84, 20 + (s_fallbackSlot / 12) * 100};
+            ++s_fallbackSlot;
+        }
+        iconManager_->RestoreIcon(icon.index, target);
+        ++restored;
+    }
+    iconManager_->HideAllIcons(false); // 显示原生桌面图标（启动时隐藏了整个列表）
+    DebugLog(config_->GetRootDir(), L"RestoreDesktop restored=" + std::to_wstring(restored));
 }
 
 void DesktopWorkspace::SaveLayout() {
@@ -515,48 +659,49 @@ void DesktopWorkspace::StartDesktopWatcher() {
     PWSTR desktopPath = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) return;
 
+    // watcher 回调在后台线程触发，这里只投递消息，实际收集逻辑封送回 UI 线程执行，
+    // 避免后台线程与交互操作并发读写 layout 数据
     desktopWatcher_ = std::make_unique<DirectoryWatcher>(desktopPath, [this]() {
-        auto icons = iconManager_->EnumIcons();
-        for (const auto& icon : icons) {
-            if (icon.path.empty()) continue;
-            bool alreadyCollected = false;
-            for (const auto& zone : model_.Layout().zones) {
-                for (const auto& p : zone.itemPaths) {
-                    if (_wcsicmp(p.c_str(), icon.path.c_str()) == 0) {
-                        alreadyCollected = true;
-                        break;
-                    }
-                }
-                if (alreadyCollected) break;
-            }
-            if (alreadyCollected) continue;
-            std::wstring category = ClassifyPath(icon.path);
-            Zone* zone = model_.FindZoneByName(category);
-            if (zone) {
-                zone->itemPaths.push_back(icon.path);
-                model_.Layout().originalIconPositions[icon.path] = icon.position;
-                iconManager_->MoveIconOffscreen(icon.index);
-            }
-        }
-        SaveLayout();
-        Refresh();
+        if (msgHwnd_) PostMessageW(msgHwnd_, kWatcherNotifyMsg, 0, 0);
     });
     desktopWatcher_->Start();
     CoTaskMemFree(desktopPath);
 }
 
-bool DesktopWorkspace::IsPointOverZone(POINT pt) const {
-    for (const auto& w : zoneWindows_) {
-        if (!w || !w->Hwnd()) continue;
-        RECT rc{};
-        if (GetWindowRect(w->Hwnd(), &rc) && PtInRect(&rc, pt)) return true;
+void DesktopWorkspace::CollectNewDesktopIcons() {
+    if (!iconManager_) return;
+    auto icons = iconManager_->EnumIcons();
+    for (const auto& icon : icons) {
+        if (icon.path.empty()) continue;
+        bool alreadyCollected = false;
+        for (const auto& zone : model_.Layout().zones) {
+            for (const auto& p : zone.itemPaths) {
+                if (_wcsicmp(p.c_str(), icon.path.c_str()) == 0) {
+                    alreadyCollected = true;
+                    break;
+                }
+            }
+            if (alreadyCollected) break;
+        }
+        if (alreadyCollected) continue;
+        std::wstring category = ClassifyPath(icon.path);
+        Zone* zone = model_.FindZoneByName(category);
+        if (zone) {
+            zone->itemPaths.push_back(icon.path);
+            if (icon.position.x > kOffscreenCoord && icon.position.y > kOffscreenCoord) {
+                model_.Layout().originalIconPositions[icon.path] = icon.position;
+            }
+            iconManager_->MoveIconOffscreen(icon.index);
+        }
     }
-    return false;
+    SaveLayout();
+    Refresh();
 }
 
 ZoneWindow* DesktopWorkspace::ZoneAtPoint(POINT pt) const {
     for (const auto& w : zoneWindows_) {
         if (!w || !w->Hwnd()) continue;
+        if (!IsWindowVisible(w->Hwnd())) continue; // 干净桌面模式下隐藏的分区不拦截鼠标
         RECT rc{};
         if (GetWindowRect(w->Hwnd(), &rc) && PtInRect(&rc, pt)) return w.get();
     }
@@ -583,67 +728,100 @@ LRESULT CALLBACK DesktopWorkspace::MouseHookProc(int nCode, WPARAM wParam, LPARA
         auto* info = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         auto* self = g_mouseHookWorkspace;
         if (self && info) {
-            POINT pt = info->pt;
-
-            // 按键类消息：系统命中到分区不可靠，这里统一转发给分区
-            // 注意：不能吞掉 WM_LBUTTONDOWN/UP，否则系统不会生成 WM_LBUTTONDBLCLK
-            if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONUP ||
-                wParam == WM_LBUTTONDBLCLK || wParam == WM_RBUTTONUP) {
-                if (ZoneWindow* zone = self->ZoneAtPoint(pt)) {
-                    POINT client = pt;
-                    ScreenToClient(zone->Hwnd(), &client);
-                    WPARAM wp = 0;
-                    if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONDBLCLK) wp = MK_LBUTTON;
-                    if (wParam == WM_RBUTTONUP) wp = MK_RBUTTON;
-                    SendMessageW(zone->Hwnd(), static_cast<UINT>(wParam), wp,
-                                 MAKELPARAM(client.x, client.y));
-                    // 双击/右键吞掉，避免桌面也处理；按下/抬起让系统继续（用于生成双击）
-                    if (wParam == WM_LBUTTONDBLCLK || wParam == WM_RBUTTONUP) {
-                        return 1;
-                    }
+            const POINT pt = info->pt;
+            ZoneWindow* zone = self->ZoneAtPoint(pt); // 已过滤隐藏分区（干净桌面不拦截）
+            if (zone && !zone->IsEmbedded()) {
+                // 降级模式（分区未嵌入桌面、处在最底层）：系统把输入路由给上层窗口，
+                // 这里转发给分区并吞掉原始事件；嵌入模式下系统直接命中分区子窗口，
+                // 绝不能重复转发，否则每次点击被处理两次（双击标题会折叠又展开）
+                const UINT msg = static_cast<UINT>(wParam);
+                if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONUP) {
+                    return self->ForwardMouseToZone(zone, msg, pt);
                 }
-            }
-
-            // 桌面空白处双击 → 干净桌面
-            if (wParam == WM_LBUTTONDBLCLK && !self->IsPointOverZone(pt)) {
-                HWND lv = self->shell_.Windows().listView;
-                if (lv && IsWindow(lv)) {
-                    RECT rc{};
-                    GetWindowRect(lv, &rc);
-                    if (PtInRect(&rc, pt)) {
-                        POINT client = pt;
-                        ScreenToClient(lv, &client);
-
-                        // LVM_HITTEST 的 LVHITTESTINFO* 必须位于 Explorer 进程内存，否则 Explorer 崩溃
-                        DWORD pid = 0;
-                        GetWindowThreadProcessId(lv, &pid);
-                        HANDLE hProc = pid ? OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, FALSE, pid) : nullptr;
-                        int index = -1;
-                        if (hProc) {
-                            LPVOID remote = VirtualAllocEx(hProc, nullptr, sizeof(LVHITTESTINFO),
-                                                           MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                            if (remote) {
-                                LVHITTESTINFO ht{};
-                                ht.pt = client;
-                                WriteProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
-                                DWORD_PTR hitResult = 0;
-                                SendMessageTimeoutW(lv, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(remote),
-                                                    SMTO_ABORTIFHUNG, 500, &hitResult);
-                                ReadProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
-                                index = ht.iItem;
-                                VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
-                            }
-                            CloseHandle(hProc);
-                        }
-                        if (index == -1) { // 桌面空白处
-                            self->ToggleCleanDesktop();
-                        }
-                    }
-                }
+            } else if (!zone && wParam == WM_LBUTTONDOWN) {
+                self->DetectDesktopBlankDoubleClick(pt); // 双击桌面空白 → 干净桌面
             }
         }
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
+
+LRESULT DesktopWorkspace::ForwardMouseToZone(ZoneWindow* zone, UINT msg, const POINT& pt) {
+    // 系统只为命中窗口合成 WM_LBUTTONDBLCLK，最底层分区收不到，双击在这里手动合成
+    bool dblclk = false;
+    if (msg == WM_LBUTTONDOWN) {
+        const DWORD now = GetTickCount();
+        if (forwardDownZone_ == zone &&
+            now - forwardDownTick_ <= GetDoubleClickTime() &&
+            std::abs(pt.x - forwardDownPt_.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+            std::abs(pt.y - forwardDownPt_.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
+            dblclk = true;
+            forwardDownZone_ = nullptr;
+        } else {
+            forwardDownZone_ = zone;
+            forwardDownTick_ = now;
+            forwardDownPt_ = pt;
+        }
+    }
+    POINT client = pt;
+    ScreenToClient(zone->Hwnd(), &client);
+    WPARAM wp = 0;
+    if (msg == WM_LBUTTONDOWN || dblclk) wp = MK_LBUTTON;
+    if (msg == WM_RBUTTONUP) wp = MK_RBUTTON;
+    // PostMessage 而非 SendMessage：绝不能在 hook 回调里弹菜单/做 IO，
+    // 否则超过 LowLevelHooksTimeout 后系统会静默摘除 hook，之后所有转发失效
+    PostMessageW(zone->Hwnd(), dblclk ? WM_LBUTTONDBLCLK : msg, wp, MAKELPARAM(client.x, client.y));
+    return 1; // 吞掉原始事件，避免桌面同时响应
+}
+
+void DesktopWorkspace::DetectDesktopBlankDoubleClick(const POINT& pt) {
+    const DWORD now = GetTickCount();
+    const bool dblclk =
+        blankDownTick_ != 0 &&
+        now - blankDownTick_ <= GetDoubleClickTime() &&
+        std::abs(pt.x - blankDownPt_.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+        std::abs(pt.y - blankDownPt_.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+    blankDownTick_ = now;
+    blankDownPt_ = pt;
+    if (!dblclk) return;
+
+    // 确认双击发生在桌面层（Progman/WorkerW/listView），而不是其他应用窗口上
+    HWND hit = WindowFromPoint(pt);
+    if (!hit) return;
+    const HWND root = GetAncestor(hit, GA_ROOT);
+    const auto& w = shell_.Windows();
+    if (root != w.workerw && root != w.progman && hit != w.listView) return;
+
+    if (cleanMode_) {
+        ToggleCleanDesktop(); // 干净桌面模式：双击空白处恢复分区
+        return;
+    }
+    if (!w.listView || !IsWindow(w.listView) || !IsWindowVisible(w.listView)) return;
+
+    // LVM_HITTEST 的 LVHITTESTINFO* 必须位于 Explorer 进程内存，否则 Explorer 崩溃
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w.listView, &pid);
+    HANDLE hProc = pid ? OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, FALSE, pid) : nullptr;
+    int index = -1;
+    if (hProc) {
+        LPVOID remote = VirtualAllocEx(hProc, nullptr, sizeof(LVHITTESTINFO),
+                                       MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (remote) {
+            POINT client = pt;
+            ScreenToClient(w.listView, &client);
+            LVHITTESTINFO ht{};
+            ht.pt = client;
+            WriteProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
+            DWORD_PTR hitResult = 0;
+            SendMessageTimeoutW(w.listView, LVM_HITTEST, 0, reinterpret_cast<LPARAM>(remote),
+                                SMTO_ABORTIFHUNG, 500, &hitResult);
+            ReadProcessMemory(hProc, remote, &ht, sizeof(ht), nullptr);
+            index = ht.iItem;
+            VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
+        }
+        CloseHandle(hProc);
+    }
+    if (index == -1) ToggleCleanDesktop(); // 双击空白处（不是图标）
 }
 
 } // namespace desktopsticker

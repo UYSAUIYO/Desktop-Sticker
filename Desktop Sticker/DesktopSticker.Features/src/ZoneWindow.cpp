@@ -100,13 +100,8 @@ bool ZoneWindow::Create() {
     g_windows[hwnd_] = this;
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 
-    // 圆角区域 + 常量 Alpha：既半透明，又能正常接收鼠标按键（逐像素 Alpha 会“看得见点不中”）
-    HRGN rgn = CreateRoundRectRgn(0, 0,
-                                  zone_.rect.right - zone_.rect.left + 1,
-                                  zone_.rect.bottom - zone_.rect.top + 1, 16, 16);
-    SetWindowRgn(hwnd_, rgn, TRUE);
-    SetLayeredWindowAttributes(hwnd_, 0, 178, LWA_ALPHA);
-
+    // 圆角外形与点击命中由逐像素 Alpha（ULW 位图）决定；不能调用 SetLayeredWindowAttributes，
+    // 一旦调用窗口就切到 SLWA 模式，UpdateLayeredWindow 将失效（本机该模式不渲染）
     ApplyAcrylic(hwnd_);
     return true;
 }
@@ -171,17 +166,14 @@ bool ZoneWindow::EnsureD2DResources() {
         if (!factory_ || !dwriteFactory_ || !wicFactory_) return false;
     }
     if (!target_) {
-        RECT rc{};
-        GetClientRect(hwnd_, &rc);
-        factory_->CreateHwndRenderTarget(
-            D2D1::RenderTargetProperties(
-                D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_IGNORE)),
-            D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right, rc.bottom)),
-            &target_);
+        // DC 渲染目标：B8G8R8A8 预乘 Alpha，BindDC 到内存 DIB 后由 UpdateLayeredWindow 合成
+        const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        factory_->CreateDCRenderTarget(&props, &target_);
         if (!target_) return false;
     }
-    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 1.0f), &bgBrush_);
+    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.78f), &bgBrush_);
     if (!titleBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &titleBrush_);
     if (!hoverBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.14f), &hoverBrush_);
     if (!textFormat_) {
@@ -198,6 +190,10 @@ bool ZoneWindow::EnsureD2DResources() {
 }
 
 void ZoneWindow::ReleaseD2DResources() {
+    for (auto& [path, bmp] : bitmapCache_) {
+        if (bmp) bmp->Release();
+    }
+    bitmapCache_.clear();
     if (labelFormat_) labelFormat_->Release();
     if (textFormat_) textFormat_->Release();
     if (hoverBrush_) hoverBrush_->Release();
@@ -221,9 +217,29 @@ void ZoneWindow::OnPaint() {
     const int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
 
-    // 常量 Alpha 分层窗口：直接画到窗口表面，SetLayeredWindowAttributes 负责整体半透明
+    // 分层窗口：渲染到 32bpp 内存 DIB，再用 UpdateLayeredWindow 合成（本机唯一可见的路径）
+    HDC hdcScreen = GetDC(nullptr);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP hbm = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!hbm) {
+        DeleteDC(hdcMem);
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(hdcMem, hbm);
+
+    target_->BindDC(hdcMem, &rc);
     target_->BeginDraw();
-    target_->Clear(D2D1::ColorF(0x1E1E1E, 1.0f));
+    target_->Clear(D2D1::ColorF(0, 0)); // 全透明底：圆角外透空，半透明底色由 bgBrush 提供
 
     const float width = static_cast<float>(w);
     const float height = static_cast<float>(h);
@@ -250,28 +266,38 @@ void ZoneWindow::OnPaint() {
             HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
             if (icon) {
                 ++iconOk;
-                // 用 WIC 把 HICON 转成 D2D 位图再绘制（GDI DrawIconEx 在 D2D 表面上不显示）
-                IWICBitmap* wicBmp = nullptr;
-                if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
-                    // D2D 需要 32bpp 预乘 alpha，WIC 图标可能不是该格式，先转换
-                    IWICFormatConverter* converter = nullptr;
-                    if (SUCCEEDED(wicFactory_->CreateFormatConverter(&converter))) {
-                        if (SUCCEEDED(converter->Initialize(
-                                wicBmp, GUID_WICPixelFormat32bppPBGRA,
-                                WICBitmapDitherTypeNone, nullptr, 0.0,
-                                WICBitmapPaletteTypeCustom))) {
-                            ID2D1Bitmap* d2dBmp = nullptr;
-                            const HRESULT d2dHr = target_->CreateBitmapFromWicBitmap(converter, nullptr, &d2dBmp);
-                            if (SUCCEEDED(d2dHr)) {
-                                ++wicOk;
-                                target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
-                                                     1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-                                d2dBmp->Release();
+                // 用 WIC 把 HICON 转成 D2D 位图再绘制（GDI DrawIconEx 在 D2D 表面上不显示）；
+                // 位图按路径缓存，避免每次悬停/滚动都全量转码导致卡顿
+                ID2D1Bitmap* d2dBmp = nullptr;
+                auto cached = bitmapCache_.find(path);
+                if (cached != bitmapCache_.end()) {
+                    d2dBmp = cached->second;
+                    ++wicOk;
+                } else {
+                    IWICBitmap* wicBmp = nullptr;
+                    if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
+                        // D2D 需要 32bpp 预乘 alpha，WIC 图标可能不是该格式，先转换
+                        IWICFormatConverter* converter = nullptr;
+                        if (SUCCEEDED(wicFactory_->CreateFormatConverter(&converter))) {
+                            if (SUCCEEDED(converter->Initialize(
+                                    wicBmp, GUID_WICPixelFormat32bppPBGRA,
+                                    WICBitmapDitherTypeNone, nullptr, 0.0,
+                                    WICBitmapPaletteTypeCustom))) {
+                                ID2D1Bitmap* created = nullptr;
+                                if (SUCCEEDED(target_->CreateBitmapFromWicBitmap(converter, nullptr, &created))) {
+                                    bitmapCache_[path] = created; // 缓存持有，ReleaseD2DResources 统一释放
+                                    d2dBmp = created;
+                                    ++wicOk;
+                                }
                             }
+                            converter->Release();
                         }
-                        converter->Release();
+                        wicBmp->Release();
                     }
-                    wicBmp->Release();
+                }
+                if (d2dBmp) {
+                    target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
+                                         1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
                 }
             } else {
                 target_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
@@ -316,34 +342,94 @@ void ZoneWindow::OnPaint() {
         }
     }
 
-    target_->EndDraw();
+    const HRESULT endHr = target_->EndDraw();
+
+    if (SUCCEEDED(endHr)) {
+        BLENDFUNCTION blend{};
+        blend.BlendOp = AC_SRC_OVER;
+        blend.SourceConstantAlpha = 255; // 半透明由逐像素 Alpha 携带
+        blend.AlphaFormat = AC_SRC_ALPHA;
+        POINT ptDst{};
+        RECT winRect{};
+        GetWindowRect(hwnd_, &winRect);
+        ptDst.x = winRect.left;
+        ptDst.y = winRect.top;
+        HWND parent = GetAncestor(hwnd_, GA_PARENT);
+        if (parent && parent != GetDesktopWindow()) {
+            ScreenToClient(parent, &ptDst); // 子窗口的 UpdateLayeredWindow 位置相对父客户区
+        }
+        SIZE size{w, h};
+        POINT ptSrc{0, 0};
+        UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
+    } else {
+        // 设备丢失（如 D2DERR_RECREATE_TARGET）：释放资源，下次绘制时重建，否则永久黑屏
+        ReleaseD2DResources();
+    }
+
+    SelectObject(hdcMem, oldBmp);
+    DeleteObject(hbm);
+    DeleteDC(hdcMem);
+    ReleaseDC(nullptr, hdcScreen);
 }
 
 void ZoneWindow::OnLButtonDown(int x, int y) {
-    dragging_ = true;
-    dragMoved_ = false;
-    draggingItem_ = HitTestItem(x, y);
-    pressedItem_ = draggingItem_;
-    // 必须记录“屏幕坐标”作为拖拽起点，否则窗口会按自身位置向下/右偏移
+    const std::wstring hit = HitTestItem(x, y);
     GetCursorPos(&dragStart_);
-    GetWindowRect(hwnd_, &windowStart_);
-    SetCapture(hwnd_);
-
-    if (y < 40) {
-        if (onCollapseToggle) onCollapseToggle(zone_.id);
+    if (!hit.empty()) {
+        // 按在磁贴上：拖动磁贴（松手时落点决定换分区或恢复为桌面图标）
+        tileDragging_ = true;
+        dragging_ = false;
+        draggingItem_ = hit;
+        pressedItem_ = hit;
+        dragMoved_ = false;
+    } else {
+        // 按在标题/空白：移动整张卡片（折叠/展开改为双击标题触发，避免单击拖拽冲突）
+        tileDragging_ = false;
+        dragging_ = true;
+        draggingItem_.clear();
+        pressedItem_.clear();
+        dragMoved_ = false;
+        // 必须记录“屏幕坐标”作为拖拽起点，否则窗口会按自身位置向下/右偏移
+        GetWindowRect(hwnd_, &windowStart_);
+    }
+    // 嵌入模式下延迟到移动阈值再 SetCapture，保证系统还能合成 WM_LBUTTONDBLCLK；
+    // 降级模式（最底层窗口）收不到移动消息，必须立即捕获（双击由 hook 合成，不依赖系统）
+    if (!embedded_) {
+        SetCapture(hwnd_);
+        captureSet_ = true;
+    } else {
+        captureSet_ = false;
     }
     Refresh();
 }
 
 void ZoneWindow::OnLButtonUp(int x, int y) {
-    // 单击只负责选中高亮；打开程序改为双击（WM_LBUTTONDBLCLK）
+    if (tileDragging_) {
+        tileDragging_ = false;
+        if (dragMoved_ && onTileDrop) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            onTileDrop(zone_.id, draggingItem_, pt);
+        }
+        draggingItem_.clear();
+        pressedItem_.clear();
+        if (captureSet_) ReleaseCapture();
+        captureSet_ = false;
+        Refresh();
+        return;
+    }
+    if ((dragging_ || resizing_) && geometryDirty_ && onGeometryChanged) {
+        onGeometryChanged(zone_.id, zone_.rect); // 拖动/缩放落盘，重启后位置保持
+    }
+    geometryDirty_ = false;
     dragging_ = false;
     resizing_ = false;
     resizeHit_ = 0;
     dragMoved_ = false;
     pressedItem_.clear();
     draggingItem_.clear();
-    ReleaseCapture();
+    if (captureSet_) ReleaseCapture();
+    captureSet_ = false;
     Refresh();
 }
 
@@ -353,6 +439,7 @@ void ZoneWindow::StartResize(int hitCode) {
     GetCursorPos(&dragStart_);
     GetWindowRect(hwnd_, &windowStart_);
     SetCapture(hwnd_);
+    captureSet_ = true;
 }
 
 void ZoneWindow::OnMouseWheel(int delta) {
@@ -374,10 +461,10 @@ void ZoneWindow::OnMouseWheel(int delta) {
 void ZoneWindow::OnMouseMove(int x, int y) {
     POINT pt{};
     GetCursorPos(&pt);
+    const int dx = pt.x - dragStart_.x;
+    const int dy = pt.y - dragStart_.y;
 
     if (resizing_) {
-        const int dx = pt.x - dragStart_.x;
-        const int dy = pt.y - dragStart_.y;
         const bool left = resizeHit_ == HTLEFT || resizeHit_ == HTTOPLEFT || resizeHit_ == HTBOTTOMLEFT;
         const bool right = resizeHit_ == HTRIGHT || resizeHit_ == HTTOPRIGHT || resizeHit_ == HTBOTTOMRIGHT;
         const bool top = resizeHit_ == HTTOP || resizeHit_ == HTTOPLEFT || resizeHit_ == HTTOPRIGHT;
@@ -409,8 +496,18 @@ void ZoneWindow::OnMouseMove(int x, int y) {
                      r.right - r.left, r.bottom - r.top,
                      SWP_NOACTIVATE | SWP_NOZORDER);
         zone_.rect = r;
-        Refresh(); // 尺寸变化后重新布局换行
+        if (dx != 0 || dy != 0) geometryDirty_ = true;
+        Refresh(); // 尺寸变化后重新布局换行（ULW 按新客户区尺寸重建 DIB）
         return;
+    }
+
+    if (tileDragging_) {
+        if (!captureSet_ && std::abs(dx) + std::abs(dy) > 4) {
+            SetCapture(hwnd_);
+            captureSet_ = true;
+        }
+        if (std::abs(dx) + std::abs(dy) > 8) dragMoved_ = true;
+        return; // 松手时由 onTileDrop 按落点决定去向
     }
 
     if (!dragging_) {
@@ -423,22 +520,24 @@ void ZoneWindow::OnMouseMove(int x, int y) {
         return;
     }
 
-    if (std::abs(pt.x - dragStart_.x) + std::abs(pt.y - dragStart_.y) > 8) {
-        dragMoved_ = true;
+    // 嵌入模式：延迟捕获（见 OnLButtonDown），移动超过阈值后再接管鼠标
+    if (!captureSet_ && std::abs(dx) + std::abs(dy) > 4) {
+        SetCapture(hwnd_);
+        captureSet_ = true;
     }
+    if (std::abs(dx) + std::abs(dy) > 8) dragMoved_ = true;
 
-    // 按住卡片任意位置（包括图标）都移动整个分区；图标拖到其他分区暂不在此触发
-    int dx = pt.x - dragStart_.x;
-    int dy = pt.y - dragStart_.y;
+    // 按住卡片任意非磁贴位置（含标题）移动整个分区
     POINT newPos{windowStart_.left + dx, windowStart_.top + dy};
     // WS_CHILD 子窗口的 SetWindowPos 使用父客户区坐标
     HWND parent = GetAncestor(hwnd_, GA_PARENT);
     if (parent && parent != GetDesktopWindow()) {
         ScreenToClient(parent, &newPos);
     }
-    SetWindowPos(hwnd_, nullptr,
-                 newPos.x, newPos.y,
-                 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(hwnd_, nullptr, newPos.x, newPos.y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    zone_.rect = RECT{windowStart_.left + dx, windowStart_.top + dy,
+                      windowStart_.right + dx, windowStart_.bottom + dy};
+    if (dx != 0 || dy != 0) geometryDirty_ = true;
 }
 
 void ZoneWindow::OnRButtonUp(int x, int y) {
@@ -489,6 +588,11 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_LBUTTONDBLCLK: {
         const int cx = GET_X_LPARAM(lp);
         const int cy = GET_Y_LPARAM(lp);
+        if (cy < 40) {
+            // 标题栏双击：折叠/展开（单击标题保留给拖动卡片）
+            if (self->onCollapseToggle) self->onCollapseToggle(self->zone_.id);
+            return 0;
+        }
         const std::wstring item = self->HitTestItem(cx, cy);
         if (!item.empty()) {
             ShellExecuteW(nullptr, L"open", item.c_str(), nullptr, nullptr, SW_SHOWNORMAL);

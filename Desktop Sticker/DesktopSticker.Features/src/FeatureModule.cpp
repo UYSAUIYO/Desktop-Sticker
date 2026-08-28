@@ -31,6 +31,8 @@ bool FeatureModule::Init(const FeatureEvents& events) {
     hotkey_->SetOnDoublePress([this]() {
         if (events_.hotkeyTriggered) events_.hotkeyTriggered();
     });
+    // 应用配置的热键方案（双击空格 / 自定义组合键）
+    hotkey_->SetHotkeyMode(config_->GetConfig().hotkeyMode, config_->GetConfig().customHotkey);
 
     workspace_ = std::make_unique<DesktopWorkspace>(config_.get(), [this]() {
         if (events_.zonesChanged) events_.zonesChanged();
@@ -104,6 +106,7 @@ void FeatureModule::SetConfig(const AppConfig& config) {
     if (!config_) return;
     config_->SetConfig(config);
     config_->Save();
+    if (hotkey_) hotkey_->SetHotkeyMode(config.hotkeyMode, config.customHotkey);
     if (workspace_) workspace_->SetZoneSpacing(config.zoneColumnSpacing, config.zoneRowSpacing);
     if (index_) index_->Rebuild();
 }

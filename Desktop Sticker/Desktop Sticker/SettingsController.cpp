@@ -3,6 +3,9 @@
 
 #include <winrt/Microsoft.UI.Windowing.h>
 
+#include <algorithm>
+#include <cmath>
+
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
@@ -14,6 +17,7 @@ SettingsController::SettingsController(Host* host) : host_(host) {}
 void SettingsController::EnsureWindow() {
     if (window_) return;
 
+    loading_ = true; // 下面逐个赋值会触发 Toggled/SelectionChanged/ValueChanged → SaveConfig
     window_ = Window();
 
     auto scroll = ScrollViewer();
@@ -142,6 +146,7 @@ void SettingsController::EnsureWindow() {
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
     rowSpacingBox_.Value(static_cast<double>(cfg.zoneRowSpacing));
     RefreshApps();
+    loading_ = false;
 }
 
 void SettingsController::Show() {
@@ -169,6 +174,8 @@ void SettingsController::RefreshApps() {
 }
 
 void SettingsController::SaveConfig() {
+    // 初始化赋值期间不回写：控件尚未全部就绪，会把默认/垃圾值写进 config.json
+    if (loading_ || !host_ || !host_->Module()) return;
     auto cfg = host_->Module()->GetConfig();
     cfg.searchDesktop = searchDesktopSwitch_.IsOn();
     cfg.searchKnownFolders = searchKnownFoldersSwitch_.IsOn();
@@ -179,8 +186,14 @@ void SettingsController::SaveConfig() {
         auto tag = item.Tag().as<Windows::Foundation::IPropertyValue>().GetString();
         cfg.hotkeyMode = tag == L"custom" ? L"custom" : L"double-space";
     }
-    if (columnSpacingBox_) cfg.zoneColumnSpacing = static_cast<int>(columnSpacingBox_.Value());
-    if (rowSpacingBox_) cfg.zoneRowSpacing = static_cast<int>(rowSpacingBox_.Value());
+    if (columnSpacingBox_) {
+        const double v = columnSpacingBox_.Value(); // 空输入时为 NaN，强转 int 是 UB
+        if (!std::isnan(v)) cfg.zoneColumnSpacing = std::clamp(static_cast<int>(v), 32, 96);
+    }
+    if (rowSpacingBox_) {
+        const double v = rowSpacingBox_.Value();
+        if (!std::isnan(v)) cfg.zoneRowSpacing = std::clamp(static_cast<int>(v), 40, 120);
+    }
     host_->Module()->SetConfig(cfg);
 }
 

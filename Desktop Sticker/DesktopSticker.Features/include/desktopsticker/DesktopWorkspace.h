@@ -37,15 +37,22 @@ private:
     void RemoveFromZone(const std::wstring& zoneId, const std::wstring& path);
     void CreateZoneWindows();
     void DestroyZoneWindows();
+    void DestroyZoneWindow(ZoneWindow* window);
+    void DetachDropTarget(HWND hwnd);
+    void SyncZoneWindows();
     void SaveLayout();
     void StartDesktopWatcher();
+    void CollectNewDesktopIcons();
+    void CreateMessageWindow();
 
     void StartMouseHook();
     void StopMouseHook();
-    bool IsPointOverZone(POINT pt) const;
     ZoneWindow* ZoneAtPoint(POINT pt) const;
+    LRESULT ForwardMouseToZone(ZoneWindow* zone, UINT msg, const POINT& pt);
+    void DetectDesktopBlankDoubleClick(const POINT& pt);
 
     static LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK WorkspaceMsgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
     ConfigStore* config_;
     std::function<void()> zonesChanged_;
@@ -60,6 +67,15 @@ private:
     std::vector<DropTarget*> dropTargets_;
     HHOOK mouseHook_ = nullptr;
     bool cleanMode_ = false;
+    bool oleInitialized_ = false;
+    // message-only 窗口：把 watcher 后台线程回调封送回 UI 线程，避免跨线程并发改 model
+    HWND msgHwnd_ = nullptr;
+    // hook 转发/空白双击判定状态（hook 回调与窗口操作同在 UI 线程，无并发）
+    ZoneWindow* forwardDownZone_ = nullptr;
+    DWORD forwardDownTick_ = 0;
+    POINT forwardDownPt_{};
+    DWORD blankDownTick_ = 0;
+    POINT blankDownPt_{};
 };
 
 } // namespace desktopsticker

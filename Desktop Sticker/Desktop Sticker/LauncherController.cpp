@@ -2,6 +2,7 @@
 #include "LauncherController.h"
 
 #include <microsoft.ui.xaml.window.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -29,7 +30,9 @@ void LauncherController::EnsureWindow() {
     });
     searchBox_.KeyDown([this](winrt::Windows::Foundation::IInspectable const&, KeyRoutedEventArgs const& e) {
         if (e.Key() == Windows::System::VirtualKey::Enter && !results_.empty()) {
-            host_->Module()->OpenItem(results_[0].path);
+            int idx = resultList_.SelectedIndex(); // 优先打开当前选中项，否则第一条
+            if (idx < 0 || idx >= static_cast<int>(results_.size())) idx = 0;
+            host_->Module()->OpenItem(results_[idx].path);
             Hide();
         } else if (e.Key() == Windows::System::VirtualKey::Escape) {
             Hide();
@@ -39,11 +42,15 @@ void LauncherController::EnsureWindow() {
     resultList_ = ListView();
     resultList_.MaxHeight(420);
     resultList_.IsItemClickEnabled(true);
-    resultList_.ItemClick([this](winrt::Windows::Foundation::IInspectable const&, ItemClickEventArgs const&) {
-        if (!results_.empty()) {
-            host_->Module()->OpenItem(results_[0].path);
-            Hide();
+    resultList_.ItemClick([this](winrt::Windows::Foundation::IInspectable const&, ItemClickEventArgs const& e) {
+        if (results_.empty()) return;
+        int idx = -1;
+        if (auto item = e.ClickedItem().try_as<TextBlock>()) {
+            idx = winrt::unbox_value_or<int>(item.Tag(), -1); // 打开实际点击的那一条
         }
+        if (idx < 0 || idx >= static_cast<int>(results_.size())) idx = 0;
+        host_->Module()->OpenItem(results_[idx].path);
+        Hide();
     });
 
     root.Children().Append(searchBox_);
@@ -62,6 +69,7 @@ void LauncherController::Show() {
     EnsureWindow();
     if (!window_) return;
     visible_ = true;
+    window_.AppWindow().Show();
     window_.Activate();
     searchBox_.Focus(FocusState::Programmatic);
 }
@@ -69,7 +77,8 @@ void LauncherController::Show() {
 void LauncherController::Hide() {
     if (!window_) return;
     visible_ = false;
-    window_.Close();
+    // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
+    window_.AppWindow().Hide();
 }
 
 void LauncherController::RunSearch() {
@@ -81,9 +90,10 @@ void LauncherController::RunSearch() {
     }
     results_ = host_->Module()->Search(query.c_str(), 30);
     resultList_.Items().Clear();
-    for (const auto& r : results_) {
+    for (size_t i = 0; i < results_.size(); ++i) {
         auto tb = TextBlock();
-        tb.Text(r.name + L"  —  " + r.source);
+        tb.Text(results_[i].name + L"  —  " + results_[i].source);
+        tb.Tag(box_value(static_cast<int32_t>(i))); // ItemClick 用 Tag 找回结果索引
         resultList_.Items().Append(tb);
     }
 }

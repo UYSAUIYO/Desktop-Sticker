@@ -71,8 +71,11 @@ namespace winrt::Desktop_Sticker::implementation
             AppendMenuW(menu, MF_STRING, 3, L"退出");
             POINT pt{};
             GetCursorPos(&pt);
+            // TrackPopupMenu 前必须把前台焦点交给托盘窗口，否则点击菜单外菜单不会消失
+            SetForegroundWindow(m_hwnd);
             int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hwnd, nullptr);
             DestroyMenu(menu);
+            PostMessageW(m_hwnd, WM_NULL, 0, 0);
 
             if (cmd == 1 && m_settings) {
                 m_settings->Show();
