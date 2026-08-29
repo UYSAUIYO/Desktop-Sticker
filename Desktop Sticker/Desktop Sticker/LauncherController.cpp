@@ -2,14 +2,40 @@
 #include "LauncherController.h"
 
 #include <microsoft.ui.xaml.window.h>
+#include <shellapi.h>
+#include <shlobj_core.h>
+#include <wincodec.h>
+
 #include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Storage.Streams.h>
+
+#include <cstring>
+
+#pragma comment(lib, "gdi32.lib")
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
 using namespace Microsoft::UI::Xaml::Input;
+using namespace Microsoft::UI::Xaml::Media;
+using namespace Microsoft::UI::Xaml::Media::Imaging;
 
 namespace desktopsticker::app {
+namespace {
+
+// 网格每行磁贴数与单元尺寸（DIP）
+constexpr int kColumns = 8;
+constexpr float kTileWidth = 76.0f;
+constexpr float kTileHeight = 78.0f;
+
+Windows::Foundation::Collections::IVector<UIElement> PanelChildren(
+    winrt::Microsoft::UI::Xaml::Controls::StackPanel const& panel) {
+    return panel.Children();
+}
+
+} // namespace
 
 LauncherController::LauncherController(Host* host) : host_(host) {}
 
@@ -17,52 +43,116 @@ void LauncherController::EnsureWindow() {
     if (window_) return;
 
     window_ = Window();
+    dispatcher_ = window_.DispatcherQueue();
 
-    auto root = StackPanel();
-    root.Padding(ThicknessHelper::FromLengths(12, 12, 12, 12));
-    root.Spacing(8);
+    // 无边框无标题栏的深色浮层（Win11 自带系统圆角）
+    auto presenter = window_.AppWindow().Presenter().as<winrt::Microsoft::UI::Windowing::OverlappedPresenter>();
+    presenter.SetBorderAndTitleBar(false, false);
+    presenter.IsResizable(false);
+    presenter.IsMaximizable(false);
+    presenter.IsMinimizable(false);
+
+    auto root = Grid();
+    auto dark = SolidColorBrush(winrt::Windows::UI::Color{0xF4, 0x20, 0x20, 0x20});
+    root.Background(dark);
+    auto rows = root.RowDefinitions();
+    auto r0 = RowDefinition();
+    r0.Height(GridLengthHelper::Auto());
+    auto r1 = RowDefinition();
+    r1.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+    rows.Append(r0);
+    rows.Append(r1);
 
     searchBox_ = TextBox();
+    searchBox_.Margin(ThicknessHelper::FromLengths(14, 14, 14, 10));
+    searchBox_.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+    searchBox_.FontSize(20);
+    searchBox_.MinHeight(44);
+    searchBox_.VerticalContentAlignment(VerticalAlignment::Center);
     searchBox_.PlaceholderText(L"搜索应用、文件…");
-    searchBox_.FontSize(18);
+    searchBox_.Background(SolidColorBrush(winrt::Windows::UI::Color{0xFF, 0x2D, 0x2D, 0x2D}));
+    searchBox_.BorderBrush(SolidColorBrush(winrt::Windows::UI::Color{0x00, 0, 0, 0}));
+    searchBox_.Foreground(SolidColorBrush(winrt::Windows::UI::Color{0xFF, 0xF2, 0xF2, 0xF2}));
+    Grid::SetRow(searchBox_, 0);
     searchBox_.TextChanged([this](winrt::Windows::Foundation::IInspectable const&, TextChangedEventArgs const&) {
         RunSearch();
     });
     searchBox_.KeyDown([this](winrt::Windows::Foundation::IInspectable const&, KeyRoutedEventArgs const& e) {
-        if (e.Key() == Windows::System::VirtualKey::Enter && !results_.empty()) {
-            int idx = resultList_.SelectedIndex(); // 优先打开当前选中项，否则第一条
-            if (idx < 0 || idx >= static_cast<int>(results_.size())) idx = 0;
-            host_->Module()->OpenItem(results_[idx].path);
-            Hide();
-        } else if (e.Key() == Windows::System::VirtualKey::Escape) {
+        const auto key = e.Key();
+        const int count = static_cast<int>(tiles_.size());
+        if (key == Windows::System::VirtualKey::Up || key == Windows::System::VirtualKey::Down ||
+            key == Windows::System::VirtualKey::Left || key == Windows::System::VirtualKey::Right) {
+            e.Handled(true);
+            if (count == 0) return;
+            const int delta = key == Windows::System::VirtualKey::Up    ? -kColumns
+                              : key == Windows::System::VirtualKey::Down ? kColumns
+                              : key == Windows::System::VirtualKey::Left ? -1
+                                                                          : 1;
+            int v = (selectedIndex_ < 0 ? 0 : selectedIndex_) + delta;
+            v = (std::max)(0, (std::min)(v, count - 1));
+            selectedIndex_ = v;
+            UpdateSelection();
+        } else if (key == Windows::System::VirtualKey::Enter) {
+            if (!results_.empty()) {
+                OpenIndex(selectedIndex_ >= 0 && selectedIndex_ < static_cast<int>(results_.size()) ? selectedIndex_ : 0);
+            }
+        } else if (key == Windows::System::VirtualKey::Escape) {
             Hide();
         }
     });
-
-    resultList_ = ListView();
-    resultList_.MaxHeight(420);
-    resultList_.IsItemClickEnabled(true);
-    resultList_.ItemClick([this](winrt::Windows::Foundation::IInspectable const&, ItemClickEventArgs const& e) {
-        if (results_.empty()) return;
-        int idx = -1;
-        if (auto item = e.ClickedItem().try_as<TextBlock>()) {
-            idx = winrt::unbox_value_or<int>(item.Tag(), -1); // 打开实际点击的那一条
-        }
-        if (idx < 0 || idx >= static_cast<int>(results_.size())) idx = 0;
-        host_->Module()->OpenItem(results_[idx].path);
-        Hide();
-    });
-
     root.Children().Append(searchBox_);
-    root.Children().Append(resultList_);
+
+    resultsPanel_ = StackPanel();
+    resultsPanel_.Padding(ThicknessHelper::FromLengths(12, 2, 12, 14));
+
+    auto scroll = ScrollViewer();
+    scroll.Content(resultsPanel_);
+    scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+    scroll.VerticalScrollMode(ScrollMode::Auto);
+    Grid::SetRow(scroll, 1);
+    root.Children().Append(scroll);
+
     window_.Content(root);
     window_.Title(L"Desktop Sticker 搜索");
 
-    // 无边框、不显示任务栏
+    // 选中/悬停底色
+    selectedBrush_ = SolidColorBrush(winrt::Windows::UI::Color{0x38, 0xFF, 0xFF, 0xFF});
+    hoverBrush_ = SolidColorBrush(winrt::Windows::UI::Color{0x16, 0xFF, 0xFF, 0xFF});
+    idleBrush_ = SolidColorBrush(winrt::Windows::UI::Color{0x00, 0, 0, 0});
+
+    // 尺寸与位置：主屏水平居中、垂直约 1/5 处（AppWindow 使用物理像素）
+    const float scale = static_cast<float>(GetDpiForSystem()) / 96.0f;
+    const int width = static_cast<int>(kColumns * kTileWidth * scale + 44 * scale);
+    const int height = static_cast<int>(430 * scale);
+    window_.AppWindow().Resize({width, height});
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    window_.AppWindow().Move({(screenW - width) / 2, screenH / 5});
+
+    // 不在任务栏显示
     HWND hwnd = nullptr;
     window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                       GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
+
+    // 去掉系统/DWM 边框白边：改为 WS_POPUP 并强制圆角
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU);
+    style |= WS_POPUP;
+    SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, void*, DWORD);
+    static DwmSetWindowAttributeFn dwmSet = []() -> DwmSetWindowAttributeFn {
+        HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(
+                         GetProcAddress(dwm, "DwmSetWindowAttribute"))
+                   : nullptr;
+    }();
+    if (dwmSet) {
+        UINT pref = 2; // DWMWCP_ROUND
+        dwmSet(hwnd, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, &pref, sizeof(pref));
+    }
 }
 
 void LauncherController::Show() {
@@ -71,6 +161,8 @@ void LauncherController::Show() {
     visible_ = true;
     window_.AppWindow().Show();
     window_.Activate();
+    searchBox_.Text(L"");
+    RunSearch();
     searchBox_.Focus(FocusState::Programmatic);
 }
 
@@ -82,20 +174,204 @@ void LauncherController::Hide() {
 }
 
 void LauncherController::RunSearch() {
+    results_.clear();
+    tiles_.clear();
+    selectedIndex_ = -1;
+    PanelChildren(resultsPanel_).Clear();
     const auto query = searchBox_.Text();
-    if (query.empty()) {
-        resultList_.Items().Clear();
-        results_.clear();
-        return;
+    if (query.empty() || !host_ || !host_->Module()) return;
+
+    const auto raw = host_->Module()->Search(query.c_str(), 30);
+    if (raw.empty()) return;
+
+    // 按来源分组展示（与截图面板一致：组标题 + 图标网格）
+    static const struct { const wchar_t* source; const wchar_t* title; } kGroups[] = {
+        {L"Apps", L"手动添加"},      {L"StartMenu", L"开始菜单"}, {L"Desktop", L"桌面"},
+        {L"Documents", L"文档"},    {L"Downloads", L"下载"},     {L"Pictures", L"图片"},
+        {L"Videos", L"视频"},       {L"Music", L"音乐"},
+    };
+    for (const auto& g : kGroups) {
+        BuildGroup(g.source, g.title, raw);
     }
-    results_ = host_->Module()->Search(query.c_str(), 30);
-    resultList_.Items().Clear();
-    for (size_t i = 0; i < results_.size(); ++i) {
-        auto tb = TextBlock();
-        tb.Text(results_[i].name + L"  —  " + results_[i].source);
-        tb.Tag(box_value(static_cast<int32_t>(i))); // ItemClick 用 Tag 找回结果索引
-        resultList_.Items().Append(tb);
+    UpdateSelection();
+}
+
+void LauncherController::BuildGroup(const std::wstring& source, const wchar_t* title,
+                                    std::vector<desktopsticker::SearchResult> const& raw) {
+    std::vector<int> hits;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i].source == source) hits.push_back(static_cast<int>(i));
     }
+    if (hits.empty()) return;
+
+    auto header = TextBlock();
+    header.Text(title);
+    header.FontSize(13);
+    header.Margin(ThicknessHelper::FromLengths(4, 10, 0, 4));
+    header.Foreground(SolidColorBrush(winrt::Windows::UI::Color{0xB3, 0xFF, 0xFF, 0xFF}));
+    PanelChildren(resultsPanel_).Append(header);
+
+    const int count = static_cast<int>(hits.size());
+    const int rows = (count + kColumns - 1) / kColumns;
+    auto grid = Grid();
+    grid.Margin(ThicknessHelper::FromLengths(0, 0, 0, 6));
+    for (int c = 0; c < kColumns; ++c) {
+        auto col = ColumnDefinition();
+        col.Width(GridLengthHelper::FromPixels(kTileWidth));
+        grid.ColumnDefinitions().Append(col);
+    }
+    for (int r = 0; r < rows; ++r) {
+        auto row = RowDefinition();
+        row.Height(GridLengthHelper::FromPixels(kTileHeight));
+        grid.RowDefinitions().Append(row);
+    }
+
+    for (int k = 0; k < count; ++k) {
+        const int globalIdx = static_cast<int>(results_.size());
+        results_.push_back(raw[static_cast<size_t>(hits[static_cast<size_t>(k)])]);
+
+        auto img = Image();
+        img.Width(40);
+        img.Height(40);
+        img.Stretch(Stretch::Uniform);
+
+        auto name = TextBlock();
+        name.Text(results_[static_cast<size_t>(globalIdx)].name);
+        name.FontSize(11);
+        name.TextAlignment(TextAlignment::Center);
+        name.TextWrapping(TextWrapping::Wrap);
+        name.MaxLines(2);
+        name.TextTrimming(TextTrimming::CharacterEllipsis);
+        name.Foreground(SolidColorBrush(winrt::Windows::UI::Color{0xE6, 0xFF, 0xFF, 0xFF}));
+
+        auto stack = StackPanel();
+        stack.HorizontalAlignment(HorizontalAlignment::Center);
+        stack.VerticalAlignment(VerticalAlignment::Center);
+        stack.Spacing(4);
+        stack.Children().Append(img);
+        stack.Children().Append(name);
+
+        auto tile = Border();
+        tile.Background(idleBrush_);
+        tile.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
+        tile.Width(kTileWidth);
+        tile.Height(kTileHeight);
+        tile.Child(stack);
+        Grid::SetColumn(tile, k % kColumns);
+        Grid::SetRow(tile, k / kColumns);
+        tile.Tapped([this, globalIdx](auto const&, auto const&) {
+            OpenIndex(globalIdx);
+        });
+        tile.PointerEntered([this, globalIdx](winrt::Windows::Foundation::IInspectable const&,
+                                              winrt::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+            if (globalIdx != selectedIndex_) tiles_[static_cast<size_t>(globalIdx)].Background(hoverBrush_);
+        });
+        tile.PointerExited([this, globalIdx](winrt::Windows::Foundation::IInspectable const&,
+                                             winrt::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+            if (globalIdx != selectedIndex_) tiles_[static_cast<size_t>(globalIdx)].Background(idleBrush_);
+        });
+
+        LoadTileIconAsync(results_[static_cast<size_t>(globalIdx)].path, img);
+        grid.Children().Append(tile);
+        tiles_.push_back(tile);
+    }
+    PanelChildren(resultsPanel_).Append(grid);
+}
+
+void LauncherController::UpdateSelection() {
+    if (tiles_.empty()) return;
+    if (selectedIndex_ < 0 || selectedIndex_ >= static_cast<int>(tiles_.size())) selectedIndex_ = 0;
+    for (size_t i = 0; i < tiles_.size(); ++i) {
+        tiles_[i].Background(i == static_cast<size_t>(selectedIndex_) ? selectedBrush_ : idleBrush_);
+    }
+}
+
+void LauncherController::OpenIndex(int index) {
+    if (index < 0 || index >= static_cast<int>(results_.size())) return;
+    if (host_ && host_->Module()) {
+        host_->Module()->OpenItem(results_[static_cast<size_t>(index)].path);
+    }
+    Hide();
+}
+
+winrt::fire_and_forget LauncherController::LoadTileIconAsync(std::wstring path, Image image) {
+    apartment_context ui;
+
+    // 后台线程：提取图标并转成 Bgra8 预乘软件位图
+    winrt::Windows::Graphics::Imaging::SoftwareBitmap sb{ nullptr };
+    auto makeFromBytes = [&](std::vector<uint8_t>& bits, UINT w, UINT h) {
+        auto buffer = winrt::Windows::Storage::Streams::Buffer(static_cast<uint32_t>(bits.size()));
+        std::memcpy(buffer.data(), bits.data(), bits.size());
+        buffer.Length(static_cast<uint32_t>(bits.size()));
+        sb = winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
+            buffer,
+            winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+            static_cast<int>(w), static_cast<int>(h),
+            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+    };
+    co_await winrt::resume_background();
+    {
+        HICON icon = nullptr;
+        // mp4/mp3 等关联 UWP 应用的类型 SHDefExtractIcon 提取不到，记下失败走 Shell 兜底
+        const bool extracted = SUCCEEDED(SHDefExtractIconW(path.c_str(), 0, 0, &icon, nullptr, 48)) && icon;
+        if (extracted) {
+            winrt::com_ptr<IWICImagingFactory> wic;
+            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                           IID_PPV_ARGS(wic.put())))) {
+                winrt::com_ptr<IWICBitmap> wicBmp;
+                winrt::com_ptr<IWICFormatConverter> conv;
+                if (SUCCEEDED(wic->CreateBitmapFromHICON(icon, wicBmp.put())) &&
+                    SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
+                    SUCCEEDED(conv->Initialize(wicBmp.get(), GUID_WICPixelFormat32bppPBGRA,
+                                               WICBitmapDitherTypeNone, nullptr, 0.0,
+                                               WICBitmapPaletteTypeCustom))) {
+                    UINT w = 0, h = 0;
+                    conv->GetSize(&w, &h);
+                    const UINT stride = w * 4;
+                    std::vector<uint8_t> bits(static_cast<size_t>(stride) * h);
+                    if (w > 0 && h > 0 &&
+                        SUCCEEDED(conv->CopyPixels(nullptr, stride, static_cast<UINT>(bits.size()), bits.data()))) {
+                        makeFromBytes(bits, w, h);
+                    }
+                }
+            }
+            DestroyIcon(icon);
+        } else {
+            // Shell 图像工厂能解析 UWP 应用图标（仅取图标不取缩略图）
+            IShellItemImageFactory* factory = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory)))) {
+                HBITMAP hbm = nullptr;
+                const SIZE size{48, 48};
+                if (SUCCEEDED(factory->GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &hbm)) && hbm) {
+                    BITMAP bm{};
+                    if (GetObjectW(hbm, sizeof(bm), &bm) && bm.bmWidth > 0 && bm.bmHeight > 0) {
+                        const int w = bm.bmWidth;
+                        const int h = std::abs(bm.bmHeight);
+                        BITMAPINFO bmi{};
+                        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                        bmi.bmiHeader.biWidth = w;
+                        bmi.bmiHeader.biHeight = -h; // top-down
+                        bmi.bmiHeader.biPlanes = 1;
+                        bmi.bmiHeader.biBitCount = 32;
+                        bmi.bmiHeader.biCompression = BI_RGB;
+                        std::vector<uint8_t> bits(static_cast<size_t>(w) * h * 4);
+                        HDC hdc = GetDC(nullptr);
+                        const int copied = GetDIBits(hdc, hbm, 0, h, bits.data(), &bmi, DIB_RGB_COLORS);
+                        ReleaseDC(nullptr, hdc);
+                        if (copied) makeFromBytes(bits, static_cast<UINT>(w), static_cast<UINT>(h));
+                    }
+                    DeleteObject(hbm);
+                }
+                factory->Release();
+            }
+        }
+    }
+    if (!sb) co_return;
+
+    co_await ui; // 回 UI 线程设置图像源
+    SoftwareBitmapSource src;
+    co_await src.SetBitmapAsync(sb);
+    image.Source(src);
 }
 
 } // namespace desktopsticker::app

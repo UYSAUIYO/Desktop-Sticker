@@ -13,7 +13,7 @@ namespace desktopsticker {
 
 namespace {
 const wchar_t kZoneWindowClass[] = L"DesktopSticker.ZoneWindow";
-const UINT kZoneRefreshMsg = WM_APP + 10;
+constexpr UINT_PTR kRenderTimerId = 1; // 统一渲染/滚动插值定时器（~60fps）
 std::map<HWND, ZoneWindow*> g_windows;
 
 void ZoneDebugLog(const std::wstring& msg) {
@@ -108,33 +108,173 @@ bool ZoneWindow::Create() {
 
 void ZoneWindow::Destroy() {
     if (hwnd_ && IsWindow(hwnd_)) {
+        if (renderTimer_) {
+            KillTimer(hwnd_, kRenderTimerId);
+            renderTimer_ = 0;
+        }
         g_windows.erase(hwnd_);
         DestroyWindow(hwnd_);
     }
     hwnd_ = nullptr;
+    if (paintBmp_) {
+        DeleteObject(paintBmp_);
+        paintBmp_ = nullptr;
+        paintBits_ = nullptr;
+    }
+    paintW_ = paintH_ = 0;
 }
 
 void ZoneWindow::SetZone(const Zone& zone) {
+    if (zone_.collapsed != zone.collapsed || zone_.name != zone.name ||
+        zone_.itemPaths != zone.itemPaths) {
+        contentDirty_ = true; // 数据变化时重建内容层缓存
+    }
     zone_ = zone;
     if (hwnd_) {
         SetWindowPos(hwnd_, nullptr, zone_.rect.left, zone_.rect.top,
                      zone_.rect.right - zone_.rect.left,
                      zone_.rect.bottom - zone_.rect.top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
-        InvalidateRect(hwnd_, nullptr, TRUE);
+        Refresh();
     }
-}
-
-void ZoneWindow::Refresh() {
-    // 分层窗口不会因 InvalidateRect 自动重绘，投递自定义消息让 UI 线程调用 OnPaint
-    if (hwnd_) PostMessageW(hwnd_, kZoneRefreshMsg, 0, 0);
 }
 
 void ZoneWindow::SetSpacing(int columnSpacing, int rowSpacing) {
     columnSpacing_ = columnSpacing;
     rowSpacing_ = rowSpacing;
     scrollOffset_ = 0;
+    scrollTarget_ = 0;
+    contentDirty_ = true;
     Refresh();
+}
+
+void ZoneWindow::Refresh() {
+    // 重绘请求合并：只置标志并确保 ~60fps 渲染定时器在跑，避免 hover/滚动时重绘堆积
+    refreshPending_ = true;
+    if (hwnd_ && IsWindow(hwnd_) && !renderTimer_) {
+        renderTimer_ = SetTimer(hwnd_, kRenderTimerId, 16, nullptr);
+    }
+}
+
+void ZoneWindow::RenderTick() {
+    // 滚动插值：每帧向目标位置指数趋近（45%，至少 1px），尾部自然减速
+    const int diff = scrollTarget_ - scrollOffset_;
+    if (diff != 0) {
+        int step = static_cast<int>(diff * 0.45);
+        if (step == 0) step = diff > 0 ? 1 : -1;
+        scrollOffset_ += step;
+        if (std::abs(scrollTarget_ - scrollOffset_) <= 1) scrollOffset_ = scrollTarget_;
+    }
+    OnPaint();
+    refreshPending_ = false;
+    if (!refreshPending_ && scrollTarget_ == scrollOffset_ && renderTimer_) {
+        KillTimer(hwnd_, kRenderTimerId);
+        renderTimer_ = 0;
+    }
+}
+
+void ZoneWindow::RenderContentCache(int width, int contentHeight) {
+    if (!target_) return;
+    // BitmapRenderTarget 无 Resize：尺寸变化时整体重建（其上的图标位图缓存一并失效）
+    if (contentRt_ && (contentW_ != width || contentH_ != contentHeight)) {
+        for (auto& [path, bmp] : bitmapCache_) {
+            if (bmp) bmp->Release();
+        }
+        bitmapCache_.clear();
+        contentRt_->Release();
+        contentRt_ = nullptr;
+    }
+    if (!contentRt_) {
+        const D2D1_SIZE_F size = D2D1::SizeF(static_cast<float>(width), static_cast<float>(contentHeight));
+        target_->CreateCompatibleRenderTarget(size, &contentRt_);
+        if (!contentRt_) return;
+    }
+
+    contentRt_->BeginDraw();
+    contentRt_->Clear(D2D1::ColorF(0, 0)); // 透明底，卡片底色由帧层绘制
+
+    float x = 16.0f;
+    float y = 0.0f; // 内容层首行图标顶部对应主层 y = 48 - scrollOffset_
+    for (const auto& path : zone_.itemPaths) {
+        // 悬停/按下高亮（画进内容层，随内容一起滚动）
+        if (path == hoverItem_ || path == pressedItem_) {
+            contentRt_->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(x - 4, y - 4, x + 36, y + 36), 8.0f, 8.0f),
+                hoverBrush_);
+        }
+        HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
+        if (icon) {
+            ID2D1Bitmap* bmp = nullptr;
+            auto cached = bitmapCache_.find(path);
+            if (cached != bitmapCache_.end()) {
+                bmp = cached->second;
+            } else {
+                IWICBitmap* wicBmp = nullptr;
+                if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
+                    IWICFormatConverter* converter = nullptr;
+                    if (SUCCEEDED(wicFactory_->CreateFormatConverter(&converter))) {
+                        if (SUCCEEDED(converter->Initialize(
+                                wicBmp, GUID_WICPixelFormat32bppPBGRA,
+                                WICBitmapDitherTypeNone, nullptr, 0.0,
+                                WICBitmapPaletteTypeCustom))) {
+                            ID2D1Bitmap* created = nullptr;
+                            if (SUCCEEDED(contentRt_->CreateBitmapFromWicBitmap(converter, nullptr, &created))) {
+                                bitmapCache_[path] = created; // 缓存持有，ReleaseD2DResources 统一释放
+                                bmp = created;
+                            }
+                        }
+                        converter->Release();
+                    }
+                    wicBmp->Release();
+                }
+            }
+            if (bmp) {
+                contentRt_->DrawBitmap(bmp, D2D1::RectF(x, y, x + 32, y + 32),
+                                       1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            }
+        } else {
+            contentRt_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
+        }
+        // 名称：最多 3 行，超长省略号；布局按路径缓存，避免每帧重建（重建成本很高）
+        const std::wstring name = std::filesystem::path(path).stem().wstring();
+        IDWriteTextLayout* layout = nullptr;
+        auto layoutIt = textLayoutCache_.find(path);
+        if (layoutIt != textLayoutCache_.end()) {
+            layout = layoutIt->second;
+        } else if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
+                       name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
+                       44.0f, 33.0f, &layout)) && layout) {
+            DWRITE_TRIMMING trimming{};
+            trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+            layout->SetTrimming(&trimming, nullptr);
+            layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            // 对齐方式与旧版一致：含空格两端对齐、短名居中、其余左对齐
+            if (name.find(L' ') != std::wstring::npos) {
+                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_JUSTIFIED);
+            } else if (name.size() <= 4) {
+                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            } else {
+                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            }
+            textLayoutCache_[path] = layout;
+        }
+        if (layout) {
+            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, titleBrush_);
+        }
+        x += static_cast<float>(columnSpacing_);
+        if (x + columnSpacing_ > static_cast<float>(width)) {
+            x = 16.0f;
+            y += static_cast<float>(rowSpacing_);
+        }
+    }
+    contentRt_->EndDraw();
+
+    if (contentBmp_) contentBmp_->Release();
+    contentBmp_ = nullptr;
+    contentRt_->GetBitmap(&contentBmp_);
+    contentW_ = width;
+    contentH_ = contentHeight;
+    contentDirty_ = false;
 }
 
 std::wstring ZoneWindow::HitTestItem(int x, int y) const {
@@ -190,10 +330,20 @@ bool ZoneWindow::EnsureD2DResources() {
 }
 
 void ZoneWindow::ReleaseD2DResources() {
+    for (auto& [path, layout] : textLayoutCache_) {
+        if (layout) layout->Release();
+    }
+    textLayoutCache_.clear();
     for (auto& [path, bmp] : bitmapCache_) {
         if (bmp) bmp->Release();
     }
     bitmapCache_.clear();
+    if (contentBmp_) contentBmp_->Release();
+    contentBmp_ = nullptr;
+    if (contentRt_) contentRt_->Release();
+    contentRt_ = nullptr;
+    contentW_ = contentH_ = 0;
+    contentDirty_ = true;
     if (labelFormat_) labelFormat_->Release();
     if (textFormat_) textFormat_->Release();
     if (hoverBrush_) hoverBrush_->Release();
@@ -217,130 +367,68 @@ void ZoneWindow::OnPaint() {
     const int h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
 
-    // 分层窗口：渲染到 32bpp 内存 DIB，再用 UpdateLayeredWindow 合成（本机唯一可见的路径）
+    // 分层窗口：渲染到 32bpp 内存 DIB，再用 UpdateLayeredWindow 合成（本机唯一可见的路径）。
+    // DIB 按尺寸复用，滚动动画每帧重绘时避免反复分配大块内存
     HDC hdcScreen = GetDC(nullptr);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
 
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HBITMAP hbm = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!hbm) {
-        DeleteDC(hdcMem);
-        ReleaseDC(nullptr, hdcScreen);
-        return;
+    if (!paintBmp_ || paintW_ != w || paintH_ != h) {
+        if (paintBmp_) {
+            DeleteObject(paintBmp_);
+            paintBmp_ = nullptr;
+        }
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = w;
+        bmi.bmiHeader.biHeight = -h; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        paintBmp_ = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &paintBits_, nullptr, 0);
+        if (!paintBmp_) {
+            DeleteDC(hdcMem);
+            ReleaseDC(nullptr, hdcScreen);
+            return;
+        }
+        paintW_ = w;
+        paintH_ = h;
     }
-    HGDIOBJ oldBmp = SelectObject(hdcMem, hbm);
+    HGDIOBJ oldBmp = SelectObject(hdcMem, paintBmp_);
 
     target_->BindDC(hdcMem, &rc);
     target_->BeginDraw();
-    target_->Clear(D2D1::ColorF(0, 0)); // 全透明底：圆角外透空，半透明底色由 bgBrush 提供
+    target_->Clear(D2D1::ColorF(0, 0)); // 全透明底：圆角外透空
 
     const float width = static_cast<float>(w);
     const float height = static_cast<float>(h);
-    target_->DrawRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f),
-        titleBrush_, 1.0f);
+
+    // 内容层失效检测：数据/尺寸/间距变化才重建，滚动帧只做一次位图平移
+    int contentH = 0;
+    if (!zone_.collapsed) {
+        const int cols = std::max(1, w / std::max(1, columnSpacing_));
+        const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
+        contentH = 67 + (rows - 1) * rowSpacing_; // 含末行名称底部
+        if (contentDirty_ || contentW_ != w || contentH_ != contentH) {
+            RenderContentCache(w, std::max(contentH, 1));
+            contentH = contentH_;
+        }
+    }
+
+    // 卡片半透明底色（固定层），磁贴内容层在其上按滚动偏移平移
+    target_->FillRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f), bgBrush_);
+    if (!zone_.collapsed && contentBmp_) {
+        const float yTop = 48.0f - static_cast<float>(scrollOffset_);
+        target_->DrawBitmap(contentBmp_,
+                            D2D1::RectF(0, yTop, width, yTop + static_cast<float>(contentH_)));
+    }
 
     std::wstring title = zone_.collapsed ? L"\x25B8 " + zone_.name : L"\x25BE " + zone_.name;
     target_->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat_,
                          D2D1::RectF(16, 8, 400, 40), titleBrush_);
-
-    if (!zone_.collapsed) {
-        float x = 16.0f;
-        float y = 48.0f - static_cast<float>(scrollOffset_);
-        int total = 0, iconOk = 0, wicOk = 0;
-        for (const auto& path : zone_.itemPaths) {
-            ++total;
-            // 悬停/按下高亮
-            if (path == hoverItem_ || path == pressedItem_) {
-                target_->FillRoundedRectangle(
-                    D2D1::RoundedRect(D2D1::RectF(x - 4, y - 4, x + 36, y + 36), 8.0f, 8.0f),
-                    hoverBrush_);
-            }
-            HICON icon = icons_ ? icons_->GetIcon(path, 32) : nullptr;
-            if (icon) {
-                ++iconOk;
-                // 用 WIC 把 HICON 转成 D2D 位图再绘制（GDI DrawIconEx 在 D2D 表面上不显示）；
-                // 位图按路径缓存，避免每次悬停/滚动都全量转码导致卡顿
-                ID2D1Bitmap* d2dBmp = nullptr;
-                auto cached = bitmapCache_.find(path);
-                if (cached != bitmapCache_.end()) {
-                    d2dBmp = cached->second;
-                    ++wicOk;
-                } else {
-                    IWICBitmap* wicBmp = nullptr;
-                    if (SUCCEEDED(wicFactory_->CreateBitmapFromHICON(icon, &wicBmp))) {
-                        // D2D 需要 32bpp 预乘 alpha，WIC 图标可能不是该格式，先转换
-                        IWICFormatConverter* converter = nullptr;
-                        if (SUCCEEDED(wicFactory_->CreateFormatConverter(&converter))) {
-                            if (SUCCEEDED(converter->Initialize(
-                                    wicBmp, GUID_WICPixelFormat32bppPBGRA,
-                                    WICBitmapDitherTypeNone, nullptr, 0.0,
-                                    WICBitmapPaletteTypeCustom))) {
-                                ID2D1Bitmap* created = nullptr;
-                                if (SUCCEEDED(target_->CreateBitmapFromWicBitmap(converter, nullptr, &created))) {
-                                    bitmapCache_[path] = created; // 缓存持有，ReleaseD2DResources 统一释放
-                                    d2dBmp = created;
-                                    ++wicOk;
-                                }
-                            }
-                            converter->Release();
-                        }
-                        wicBmp->Release();
-                    }
-                }
-                if (d2dBmp) {
-                    target_->DrawBitmap(d2dBmp, D2D1::RectF(x, y, x + 32, y + 32),
-                                         1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-                }
-            } else {
-                target_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
-            }
-            // 图标下方显示名称：最多 3 行，超长用省略号；不修改真实文件名
-            {
-                const std::wstring name = std::filesystem::path(path).stem().wstring();
-                if (name.find(L' ') != std::wstring::npos) {
-                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_JUSTIFIED);
-                } else if (name.size() <= 4) {
-                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                } else {
-                    labelFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                }
-                IDWriteTextLayout* layout = nullptr;
-                const float labelW = 44.0f;
-                const float labelH = 33.0f; // 3 行 * 11px
-                if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
-                        name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
-                        labelW, labelH, &layout)) && layout) {
-                    DWRITE_TRIMMING trimming{};
-                    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-                    layout->SetTrimming(&trimming, nullptr); // nullptr = 标准省略号
-                    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-                    target_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, titleBrush_);
-                    layout->Release();
-                }
-            }
-            x += static_cast<float>(columnSpacing_);
-            if (x + columnSpacing_ > width) {
-                x = 16.0f;
-                y += static_cast<float>(rowSpacing_);
-            }
-        }
-        static bool s_paintLogged = false;
-        if (!s_paintLogged) {
-            ZoneDebugLog(L"[zone paint] zone=" + zone_.name +
-                         L" items=" + std::to_wstring(total) +
-                         L" iconOk=" + std::to_wstring(iconOk) +
-                         L" wicOk=" + std::to_wstring(wicOk));
-            s_paintLogged = true;
-        }
-    }
+    target_->DrawRoundedRectangle(
+        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f),
+        titleBrush_, 1.0f);
 
     const HRESULT endHr = target_->EndDraw();
 
@@ -367,7 +455,6 @@ void ZoneWindow::OnPaint() {
     }
 
     SelectObject(hdcMem, oldBmp);
-    DeleteObject(hbm);
     DeleteDC(hdcMem);
     ReleaseDC(nullptr, hdcScreen);
 }
@@ -382,6 +469,7 @@ void ZoneWindow::OnLButtonDown(int x, int y) {
         draggingItem_ = hit;
         pressedItem_ = hit;
         dragMoved_ = false;
+        contentDirty_ = true;
     } else {
         // 按在标题/空白：移动整张卡片（折叠/展开改为双击标题触发，避免单击拖拽冲突）
         tileDragging_ = false;
@@ -413,6 +501,7 @@ void ZoneWindow::OnLButtonUp(int x, int y) {
         }
         draggingItem_.clear();
         pressedItem_.clear();
+        contentDirty_ = true;
         if (captureSet_) ReleaseCapture();
         captureSet_ = false;
         Refresh();
@@ -428,6 +517,7 @@ void ZoneWindow::OnLButtonUp(int x, int y) {
     dragMoved_ = false;
     pressedItem_.clear();
     draggingItem_.clear();
+    contentDirty_ = true;
     if (captureSet_) ReleaseCapture();
     captureSet_ = false;
     Refresh();
@@ -444,17 +534,25 @@ void ZoneWindow::StartResize(int hitCode) {
 
 void ZoneWindow::OnMouseWheel(int delta) {
     if (zone_.collapsed) return;
-    scrollOffset_ -= (delta / WHEEL_DELTA) * 40;
-    if (scrollOffset_ < 0) scrollOffset_ = 0;
+    // 高分辨率滚轮/触摸板以小于 WHEEL_DELTA 的增量高频上报，
+    // 整数除法会把小增量全部截断成 0（表现为“滚不动”），这里累积余数
+    wheelRemainder_ += delta;
+    const int notches = wheelRemainder_ / WHEEL_DELTA;
+    wheelRemainder_ -= notches * WHEEL_DELTA;
+    if (notches == 0) return;
 
     const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
     const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
     const int cols = std::max(1, static_cast<int>(width) / std::max(1, columnSpacing_));
     const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
-    // 保证最后一行图标和名称都完整可见（图标顶部 48 + 行高*(rows-1) + 名称底部 50）
-    const int lastRowBottom = 98 + (rows - 1) * rowSpacing_;
-    const int maxScroll = std::max(0, lastRowBottom - (static_cast<int>(height) - 8));
-    if (scrollOffset_ > maxScroll) scrollOffset_ = maxScroll;
+    // 最后一行名称底部（内容层坐标）= (rows-1)*rowSpacing + 67；
+    // 滚动到底时让名称底部与卡片底边之间留 8px 空隙
+    const int lastRowTextBottom = (rows - 1) * rowSpacing_ + 67;
+    const int maxScroll = std::max(0, lastRowTextBottom + 8 - (static_cast<int>(height) - 48));
+
+    // 滚轮只更新目标位置，由渲染定时器插值逼近，实现平滑滚动
+    scrollTarget_ -= notches * 40;
+    scrollTarget_ = std::max(0, std::min(scrollTarget_, maxScroll));
     Refresh();
 }
 
@@ -511,10 +609,11 @@ void ZoneWindow::OnMouseMove(int x, int y) {
     }
 
     if (!dragging_) {
-        // 悬停高亮
+        // 悬停高亮（高亮画进内容层，变化时标记缓存重建）
         const std::wstring hit = HitTestItem(x, y);
         if (hit != hoverItem_) {
             hoverItem_ = hit;
+            contentDirty_ = true;
             Refresh();
         }
         return;
@@ -579,9 +678,12 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         self->OnPaint();
         ValidateRect(hwnd, nullptr);
         return 0;
-    case kZoneRefreshMsg:
-        self->OnPaint();
-        return 0;
+    case WM_TIMER:
+        if (wp == kRenderTimerId) {
+            self->RenderTick();
+            return 0;
+        }
+        break;
     case WM_LBUTTONDOWN:
         self->OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
@@ -595,7 +697,15 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         }
         const std::wstring item = self->HitTestItem(cx, cy);
         if (!item.empty()) {
-            ShellExecuteW(nullptr, L"open", item.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            const HINSTANCE se = ShellExecuteW(nullptr, L"open", item.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            const DWORD_PTR code = reinterpret_cast<DWORD_PTR>(se);
+            if (code <= 32) {
+                // 打开失败：记录返回码便于定位（>32 为成功句柄）
+                ZoneDebugLog(L"[open fail] zone=" + self->zone_.name +
+                             L" se=" + std::to_wstring(code) +
+                             L" gle=" + std::to_wstring(GetLastError()) +
+                             L" path=" + item);
+            }
         }
         return 0;
     }

@@ -48,6 +48,7 @@ bool IndexService::Rebuild() {
     const AppConfig& cfg = config_->GetConfig();
     if (cfg.searchDesktop) ScanDesktop();
     if (cfg.searchKnownFolders) ScanKnownFolders();
+    if (cfg.searchStartMenu) ScanStartMenu();
 
     for (const auto& app : apps_) {
         IndexedItem item;
@@ -88,6 +89,40 @@ void IndexService::ScanKnownFolders() {
             ScanDirectory(path, f.name);
             CoTaskMemFree(path);
         }
+    }
+}
+
+void IndexService::ScanStartMenu() {
+    // 用户与公共开始菜单是已安装应用快捷方式的主要来源（如 QQ/微信的 .lnk）
+    PWSTR user = nullptr;
+    PWSTR common = nullptr;
+    SHGetKnownFolderPath(FOLDERID_StartMenu, 0, nullptr, &user);
+    SHGetKnownFolderPath(FOLDERID_CommonStartMenu, 0, nullptr, &common);
+    if (user) ScanStartMenuDir(std::filesystem::path(user) / L"Programs", 0);
+    if (common) ScanStartMenuDir(std::filesystem::path(common) / L"Programs", 0);
+    CoTaskMemFree(user);
+    CoTaskMemFree(common);
+}
+
+void IndexService::ScanStartMenuDir(const std::filesystem::path& dir, int depth) {
+    std::error_code ec;
+    if (!fs::exists(dir, ec)) return;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        const auto& p = entry.path();
+        if (entry.is_directory(ec)) {
+            if (depth < 3) ScanStartMenuDir(p, depth + 1);
+            continue;
+        }
+        const std::wstring extLower = ToLower(p.extension().wstring());
+        if (extLower != L".lnk" && extLower != L".url") continue;
+        IndexedItem item;
+        item.name = p.stem().wstring(); // 快捷方式显示为去扩展名的名称
+        item.path = p.wstring();
+        item.source = L"StartMenu";
+        item.pinyin = PinyinMapper::GetInitials(item.name);
+        item.isApp = true;
+        items_.push_back(std::move(item));
     }
 }
 

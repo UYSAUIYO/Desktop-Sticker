@@ -12,6 +12,7 @@ struct AppConfig {
     bool followSystemTheme = true;
     bool searchDesktop = true;
     bool searchKnownFolders = true;
+    bool searchStartMenu = true; // 搜索开始菜单快捷方式（应用的主要来源）
     bool includeHiddenFiles = false;
     // 磁贴网格间距（像素）
     int zoneColumnSpacing = 48;

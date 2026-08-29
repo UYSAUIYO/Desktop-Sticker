@@ -32,8 +32,10 @@ public:
 
 private:
     void ScanDirectory(const std::filesystem::path& dir, const std::wstring& source);
+    void ScanStartMenuDir(const std::filesystem::path& dir, int depth);
     void ScanKnownFolders();
     void ScanDesktop();
+    void ScanStartMenu();
     void LoadApps();
     bool SaveApps() const;
 

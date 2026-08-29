@@ -50,6 +50,11 @@ void SettingsController::EnsureWindow() {
     searchKnownFoldersSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
     root.Children().Append(searchKnownFoldersSwitch_);
 
+    startMenuSwitch_ = ToggleSwitch();
+    startMenuSwitch_.Header(box_value(L"搜索开始菜单应用"));
+    startMenuSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+    root.Children().Append(startMenuSwitch_);
+
     followThemeSwitch_ = ToggleSwitch();
     followThemeSwitch_.Header(box_value(L"跟随系统深浅色主题"));
     followThemeSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
@@ -141,6 +146,7 @@ void SettingsController::EnsureWindow() {
     auto cfg = host_->Module()->GetConfig();
     searchDesktopSwitch_.IsOn(cfg.searchDesktop);
     searchKnownFoldersSwitch_.IsOn(cfg.searchKnownFolders);
+    startMenuSwitch_.IsOn(cfg.searchStartMenu);
     followThemeSwitch_.IsOn(cfg.followSystemTheme);
     hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
@@ -179,6 +185,7 @@ void SettingsController::SaveConfig() {
     auto cfg = host_->Module()->GetConfig();
     cfg.searchDesktop = searchDesktopSwitch_.IsOn();
     cfg.searchKnownFolders = searchKnownFoldersSwitch_.IsOn();
+    if (startMenuSwitch_) cfg.searchStartMenu = startMenuSwitch_.IsOn();
     cfg.followSystemTheme = followThemeSwitch_.IsOn();
 
     auto item = hotkeyModeCombo_.SelectedItem().try_as<ComboBoxItem>();

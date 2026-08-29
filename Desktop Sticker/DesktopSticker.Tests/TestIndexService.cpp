@@ -23,6 +23,7 @@ TEST(Search_FindsFileByName) {
     AppConfig cfg;
     cfg.searchDesktop = false;
     cfg.searchKnownFolders = false;
+    cfg.searchStartMenu = false;
     config.SetConfig(cfg);
     IndexService index(&config);
     index.AddApp(root / L"report.docx");
@@ -42,6 +43,7 @@ TEST(Search_FindsByPinyin) {
     AppConfig cfg;
     cfg.searchDesktop = false;
     cfg.searchKnownFolders = false;
+    cfg.searchStartMenu = false;
     config.SetConfig(cfg);
     IndexService index(&config);
     index.AddApp(L"C:\\fake\\微信.exe");

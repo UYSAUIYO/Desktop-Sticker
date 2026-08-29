@@ -36,6 +36,7 @@ bool ConfigStore::Load() {
         cfg.followSystemTheme = j.value("followSystemTheme", true);
         cfg.searchDesktop = j.value("searchDesktop", true);
         cfg.searchKnownFolders = j.value("searchKnownFolders", true);
+        cfg.searchStartMenu = j.value("searchStartMenu", true);
         cfg.includeHiddenFiles = j.value("includeHiddenFiles", false);
         cfg.zoneColumnSpacing = j.value("zoneColumnSpacing", 48);
         cfg.zoneRowSpacing = j.value("zoneRowSpacing", 72);
@@ -60,6 +61,7 @@ bool ConfigStore::Save() const {
     j["followSystemTheme"] = config_.followSystemTheme;
     j["searchDesktop"] = config_.searchDesktop;
     j["searchKnownFolders"] = config_.searchKnownFolders;
+    j["searchStartMenu"] = config_.searchStartMenu;
     j["includeHiddenFiles"] = config_.includeHiddenFiles;
     j["zoneColumnSpacing"] = config_.zoneColumnSpacing;
     j["zoneRowSpacing"] = config_.zoneRowSpacing;

@@ -58,6 +58,8 @@ private:
 
     bool EnsureD2DResources();
     void ReleaseD2DResources();
+    void RenderTick();
+    void RenderContentCache(int width, int contentHeight);
 
     HINSTANCE hInst_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -87,6 +89,23 @@ private:
     bool captureSet_ = false;
     bool geometryDirty_ = false;
     int scrollOffset_ = 0;
+    int scrollTarget_ = 0;   // 平滑滚动目标位置（滚轮只改目标，由渲染定时器插值逼近）
+    int wheelRemainder_ = 0; // 高分辨率滚轮的未满一格增量累积
+    // 统一渲染定时器：所有重绘（滚动/hover/数据变化）合并钳制在 ~60fps，消除重绘堆积
+    bool refreshPending_ = false;
+    UINT_PTR renderTimer_ = 0;
+    // 内容层缓存：磁贴内容渲染进中间位图，滚动帧只做一次 DrawBitmap 平移
+    ID2D1BitmapRenderTarget* contentRt_ = nullptr;
+    ID2D1Bitmap* contentBmp_ = nullptr;
+    int contentW_ = 0;
+    int contentH_ = 0;
+    bool contentDirty_ = true;
+    std::map<std::wstring, IDWriteTextLayout*> textLayoutCache_; // 名称布局只建一次
+    // 复用的 ULW 绘制 DIB（避免每帧 CreateDIBSection 造成滚动卡顿）
+    HBITMAP paintBmp_ = nullptr;
+    void* paintBits_ = nullptr;
+    int paintW_ = 0;
+    int paintH_ = 0;
     int columnSpacing_ = 48;
     int rowSpacing_ = 72;
     std::wstring draggingItem_;

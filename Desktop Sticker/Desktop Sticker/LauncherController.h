@@ -17,13 +17,26 @@ public:
 private:
     void EnsureWindow();
     void RunSearch();
+    void BuildGroup(const std::wstring& source, const wchar_t* title,
+                    std::vector<desktopsticker::SearchResult> const& raw);
+    void UpdateSelection();
+    void OpenIndex(int index);
+    winrt::fire_and_forget LoadTileIconAsync(std::wstring path,
+                                             winrt::Microsoft::UI::Xaml::Controls::Image image);
 
     Host* host_ = nullptr;
     bool visible_ = false;
     winrt::Microsoft::UI::Xaml::Window window_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBox searchBox_{ nullptr };
-    winrt::Microsoft::UI::Xaml::Controls::ListView resultList_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::StackPanel resultsPanel_{ nullptr };
+    // 结果按网格顺序存放；tiles_ 与 results_ 一一对应
     std::vector<desktopsticker::SearchResult> results_;
+    std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> tiles_;
+    int selectedIndex_ = -1;
+    winrt::Microsoft::UI::Xaml::Media::SolidColorBrush selectedBrush_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Media::SolidColorBrush hoverBrush_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Media::SolidColorBrush idleBrush_{ nullptr };
+    winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcher_{ nullptr };
 };
 
 } // namespace desktopsticker::app

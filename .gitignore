@@ -3,6 +3,7 @@
 
 # Visual Studio / build output
 .vs/
+.mimosa/
 .vscode/
 x64/
 Debug/
