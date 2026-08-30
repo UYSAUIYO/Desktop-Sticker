@@ -102,7 +102,8 @@
       <AdditionalDependencies>comctl32.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.Features.dll" "$(OutDir)"</Command>
+      <Command>xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.Features.dll" "$(OutDir)"
+xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">

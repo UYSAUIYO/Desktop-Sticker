@@ -1,8 +1,10 @@
 #pragma once
+#include <map>
 #include <string>
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include <wincodec.h>
 
 #include "desktopsticker/Export.h"
 #include "WeatherService.h"
@@ -17,6 +19,8 @@ struct DESKTOPSTICKER_API ClockText {
     static std::wstring WeatherDesc(int code);              // WMO 天气代码 → 中文
     static std::wstring WindText(int deg, double mps);      // 风向度数+风速 m/s → 西北风 3级
     static int MinutesOfDay(const std::wstring& hhmm);      // "06:32" → 392；非法 -1
+    // WMO 代码 → QWeather 图标代码（S2 图标集文件名，assets/weather/S2/<code>.png）
+    static int QWeatherIconCode(int wmo, bool night);
 };
 
 // 桌面时钟小组件：ULW 分层子窗口（与 ZoneWindow 同一渲染管线）。
@@ -47,7 +51,9 @@ private:
     void OnPaint();
     bool EnsureD2D();
     void ReleaseD2D();
-    // 天气图标：晴/多云/雨/雪/雷 按代码绘制
+    // QWeather S2 图标位图（按代码懒加载并缓存；文件缺失时返回 nullptr 走手绘兜底）
+    ID2D1Bitmap* IconBitmap(int qcode);
+    // 天气图标：晴/多云/雨/雪/雷 按代码绘制（S2 图标缺失时的兜底）
     void DrawWeatherIcon(int code, float cx, float cy);
 
     HINSTANCE hInst_ = nullptr;
@@ -65,6 +71,10 @@ private:
     int sunriseMin_ = -1;
     int sunsetMin_ = -1;
     int nowMin_ = 0;
+    int iconCode_ = 999; // QWeather S2 图标代码
+
+    std::map<int, ID2D1Bitmap*> iconBitmaps_; // QWeather S2 图标缓存（代码 → 位图）
+    IWICImagingFactory* wicFactory_ = nullptr;
 
     WeatherService weather_;
 

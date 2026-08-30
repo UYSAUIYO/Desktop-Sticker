@@ -84,6 +84,45 @@ int ClockText::MinutesOfDay(const std::wstring& hhmm) {
     return h * 60 + m;
 }
 
+int ClockText::QWeatherIconCode(int wmo, bool night) {
+    int day;
+    switch (wmo) {
+    case 0: day = 100; break;           // 晴
+    case 1: day = 102; break;           // 少云
+    case 2: day = 101; break;           // 多云
+    case 3: day = 104; break;           // 阴
+    case 45: case 48: day = 501; break; // 雾
+    case 51: case 53: case 55: day = 309; break; // 毛毛雨
+    case 56: case 57: case 66: case 67: day = 313; break; // 冻雨
+    case 61: day = 305; break;          // 小雨
+    case 63: day = 306; break;          // 中雨
+    case 65: day = 307; break;          // 大雨
+    case 71: day = 400; break;          // 小雪
+    case 73: day = 401; break;          // 中雪
+    case 75: day = 402; break;          // 大雪
+    case 77: day = 408; break;          // 雪粒
+    case 80: day = 300; break;          // 阵雨
+    case 81: day = 301; break;          // 强阵雨
+    case 82: day = 302; break;          // 强雷阵雨
+    case 85: case 86: day = 407; break; // 阵雪
+    case 95: day = 302; break;          // 雷阵雨
+    case 96: case 99: day = 304; break; // 雷阵雨伴冰雹
+    default: day = 999; break;          // 未知
+    }
+    if (!night) return day;
+    // 夜间变体（S2 图标集提供的夜间代码）
+    switch (day) {
+    case 100: return 150;
+    case 101: case 102: return 153; // 少云/多云（夜）
+    case 104: return 154;           // 阴（夜）
+    case 300: return 350;           // 阵雨（夜）
+    case 301: return 351;           // 强阵雨（夜）
+    case 407: return 456;           // 阵雪（夜）
+    case 408: return 457;           // 雪粒（夜）
+    default: return day;            // 雨/雪/雾等昼夜同图
+    }
+}
+
 bool ClockWidget::RegisterClass(HINSTANCE hInst) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -169,6 +208,12 @@ void ClockWidget::OnTick() {
         sunriseMin_ = sunsetMin_ = -1;
     }
     nowMin_ = st.wHour * 60 + st.wMinute;
+
+    // 图标代码：按日出日落判断昼夜，映射到 QWeather S2 图标
+    const bool night = (sunriseMin_ >= 0 && sunsetMin_ > sunriseMin_)
+                           ? (nowMin_ < sunriseMin_ || nowMin_ >= sunsetMin_)
+                           : (st.wHour >= 19 || st.wHour < 6);
+    iconCode_ = ClockText::QWeatherIconCode(weatherCode_, night);
 
     OnPaint(); // 常驻重绘：秒针扫动与太阳光晕呼吸
 }
@@ -310,6 +355,12 @@ void ClockWidget::ReleaseD2D() {
     if (target_) target_->Release();
     if (dwriteFactory_) dwriteFactory_->Release();
     if (factory_) factory_->Release();
+    for (auto& [code, bmp] : iconBitmaps_) {
+        if (bmp) bmp->Release();
+    }
+    iconBitmaps_.clear();
+    if (wicFactory_) wicFactory_->Release();
+    wicFactory_ = nullptr;
     fmtTime_ = nullptr; fmtSub_ = nullptr; fmtLoc_ = nullptr; fmtNum_ = nullptr;
     fmtCard_ = nullptr; fmtTemp_ = nullptr; fmtDesc_ = nullptr;
     timeGradBrush_ = nullptr; timeStops_ = nullptr;
@@ -358,6 +409,47 @@ void ClockWidget::DrawWeatherIcon(int code, float cx, float cy) {
         target_->DrawLine(D2D1::Point2F(cx + 2, cy + 12), D2D1::Point2F(cx - 4, cy + 18), orangeBrush_, 2.5f);
         target_->DrawLine(D2D1::Point2F(cx - 4, cy + 18), D2D1::Point2F(cx + 3, cy + 22), orangeBrush_, 2.5f);
     }
+}
+
+ID2D1Bitmap* ClockWidget::IconBitmap(int qcode) {
+    auto it = iconBitmaps_.find(qcode);
+    if (it != iconBitmaps_.end()) return it->second;
+    if (!wicFactory_) {
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                         IID_PPV_ARGS(&wicFactory_));
+        if (!wicFactory_) return nullptr;
+    }
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::filesystem::path dir =
+        std::filesystem::path(exe).parent_path() / L"assets" / L"weather" / L"S2";
+
+    // 精确代码 → 999 兜底；加载结果（含兜底命中）都缓存
+    for (int attempt : {qcode, 999}) {
+        const std::filesystem::path file = dir / (std::to_wstring(attempt) + L".png");
+        if (!std::filesystem::exists(file)) continue;
+        ID2D1Bitmap* bmp = nullptr;
+        IWICBitmapDecoder* dec = nullptr;
+        if (SUCCEEDED(wicFactory_->CreateDecoderFromFilename(file.c_str(), nullptr, GENERIC_READ,
+                                                             WICDecodeMetadataCacheOnDemand, &dec))) {
+            IWICBitmapFrameDecode* frame = nullptr;
+            IWICFormatConverter* conv = nullptr;
+            if (SUCCEEDED(dec->GetFrame(0, &frame)) &&
+                SUCCEEDED(wicFactory_->CreateFormatConverter(&conv)) &&
+                SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppPBGRA,
+                                           WICBitmapDitherTypeNone, nullptr, 0.0,
+                                           WICBitmapPaletteTypeCustom)) &&
+                SUCCEEDED(target_->CreateBitmapFromWicBitmap(conv, nullptr, &bmp))) {
+                iconBitmaps_[qcode] = bmp;
+                if (attempt == 999 && qcode != 999) iconBitmaps_[999] = bmp;
+            }
+            if (conv) conv->Release();
+            if (frame) frame->Release();
+            dec->Release();
+        }
+        if (bmp) return bmp;
+    }
+    return nullptr; // 交给手绘兜底
 }
 
 void ClockWidget::OnPaint() {
@@ -521,7 +613,13 @@ void ClockWidget::OnPaint() {
                        D2D1::RectF(350, 234, 436, 274), handBrush_);
     target_->DrawTextW(descText_.c_str(), static_cast<UINT32>(descText_.size()), fmtDesc_,
                        D2D1::RectF(350, 266, 504, 286), subBrush_);
-    DrawWeatherIcon(weatherCode_, 464, 244);
+    // QWeather S2 彩色图标；文件缺失时回退手绘
+    if (ID2D1Bitmap* bmp = IconBitmap(iconCode_)) {
+        target_->DrawBitmap(bmp, D2D1::RectF(444, 222, 498, 276), 1.0f,
+                            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        DrawWeatherIcon(weatherCode_, 464, 244);
+    }
 
     const HRESULT endHr = target_->EndDraw();
 

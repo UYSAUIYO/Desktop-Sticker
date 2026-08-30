@@ -54,3 +54,27 @@ TEST(Clock_MinutesOfDay) {
     ASSERT_EQ(-1, ClockText::MinutesOfDay(L"xx"));
     ASSERT_EQ(-1, ClockText::MinutesOfDay(L"25:00"));
 }
+
+TEST(Clock_QWeatherIconDay) {
+    ASSERT_EQ(100, ClockText::QWeatherIconCode(0, false));
+    ASSERT_EQ(101, ClockText::QWeatherIconCode(2, false));
+    ASSERT_EQ(104, ClockText::QWeatherIconCode(3, false));
+    ASSERT_EQ(501, ClockText::QWeatherIconCode(48, false));
+    ASSERT_EQ(309, ClockText::QWeatherIconCode(51, false));
+    ASSERT_EQ(306, ClockText::QWeatherIconCode(63, false));
+    ASSERT_EQ(402, ClockText::QWeatherIconCode(75, false));
+    ASSERT_EQ(302, ClockText::QWeatherIconCode(95, false));
+    ASSERT_EQ(304, ClockText::QWeatherIconCode(96, false));
+    ASSERT_EQ(999, ClockText::QWeatherIconCode(-1, false));
+}
+
+TEST(Clock_QWeatherIconNight) {
+    ASSERT_EQ(150, ClockText::QWeatherIconCode(0, true));
+    ASSERT_EQ(153, ClockText::QWeatherIconCode(2, true));
+    ASSERT_EQ(154, ClockText::QWeatherIconCode(3, true));
+    ASSERT_EQ(350, ClockText::QWeatherIconCode(80, true));
+    ASSERT_EQ(456, ClockText::QWeatherIconCode(85, true));
+    // 雨雪雾等昼夜同图
+    ASSERT_EQ(305, ClockText::QWeatherIconCode(61, true));
+    ASSERT_EQ(501, ClockText::QWeatherIconCode(48, true));
+}
