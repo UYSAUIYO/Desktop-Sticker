@@ -180,11 +180,15 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
     contentRt_->BeginDraw();
     contentRt_->Clear(D2D1::ColorF(0, 0)); // 透明底，卡片底色由帧层绘制
 
-    // 网格位置统一由 ZoneGrid 计算（与命中测试/滚动上限同一份实现）
+    // 网格位置统一由 ZoneGrid 计算（与命中测试/滚动上限同一份实现）。
+    // 图标与名称在列宽内水平居中：列距大于图标时左右留白对称，消除“图标靠左、右侧空一片”
     const int cols = zoneui::ColumnsForWidth(static_cast<float>(width), columnSpacing_);
+    const float iconOffset = (static_cast<float>(columnSpacing_) - zoneui::kIconSize) / 2.0f;
+    const float labelOffset = (static_cast<float>(columnSpacing_) - zoneui::kLabelWidth) / 2.0f;
     for (size_t itemIndex = 0; itemIndex < zone_.itemPaths.size(); ++itemIndex) {
         const auto& path = zone_.itemPaths[itemIndex];
-        const float x = zoneui::CellX(static_cast<int>(itemIndex) % cols, columnSpacing_);
+        const float cellX = zoneui::CellX(static_cast<int>(itemIndex) % cols, columnSpacing_);
+        const float x = cellX + iconOffset;
         const float y = zoneui::CellY(static_cast<int>(itemIndex) / cols, rowSpacing_);
         // 悬停/按下高亮（画进内容层，随内容一起滚动）
         if (path == hoverItem_ || path == pressedItem_) {
@@ -233,23 +237,18 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
             layout = layoutIt->second;
         } else if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
                        name.c_str(), static_cast<UINT32>(name.size()), labelFormat_,
-                       44.0f, 33.0f, &layout)) && layout) {
+                       zoneui::kLabelWidth, 33.0f, &layout)) && layout) {
             DWRITE_TRIMMING trimming{};
             trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
             layout->SetTrimming(&trimming, nullptr);
             layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            // 对齐方式与旧版一致：含空格两端对齐、短名居中、其余左对齐
-            if (name.find(L' ') != std::wstring::npos) {
-                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_JUSTIFIED);
-            } else if (name.size() <= 4) {
-                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            } else {
-                layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            }
+            // 统一居中对齐：旧版“含空格名称走两端对齐”会把字母拉出大间隙（如 A d o b e），观感差
+            layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             textLayoutCache_[path] = layout;
         }
         if (layout) {
-            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + zoneui::kLabelTop), layout, labelBrush_);
+            contentRt_->DrawTextLayout(D2D1::Point2F(cellX + labelOffset, y + zoneui::kLabelTop),
+                                       layout, labelBrush_);
         }
     }
     contentRt_->EndDraw();
@@ -268,7 +267,9 @@ std::wstring ZoneWindow::HitTestItem(int x, int y) const {
     const int cols = zoneui::ColumnsForWidth(width, columnSpacing_);
     const float tileYTop = zoneui::kTitleBand - static_cast<float>(scrollOffset_);
     for (size_t i = 0; i < zone_.itemPaths.size(); ++i) {
-        const float tileX = zoneui::CellX(static_cast<int>(i) % cols, columnSpacing_);
+        // 与渲染一致：命中的是“列内居中的图标框”，而不是整个列格
+        const float tileX = zoneui::CellX(static_cast<int>(i) % cols, columnSpacing_) +
+                            (static_cast<float>(columnSpacing_) - zoneui::kIconSize) / 2.0f;
         const float tileY = tileYTop + zoneui::CellY(static_cast<int>(i) / cols, rowSpacing_);
         if (x >= tileX && x <= tileX + zoneui::kIconSize &&
             y >= tileY && y <= tileY + zoneui::kIconSize) {

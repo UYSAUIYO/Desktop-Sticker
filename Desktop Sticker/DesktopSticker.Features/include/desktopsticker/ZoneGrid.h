@@ -13,6 +13,7 @@ inline constexpr int   kTitleHit = 40;         // 标题点击判定高度（拖
 inline constexpr float kGridLeft = 16.0f;      // 网格左缘
 inline constexpr float kIconSize = 32.0f;      // 磁贴图标边长（也是点击判定边长）
 inline constexpr float kLabelTop = 34.0f;      // 名称相对磁贴顶部的偏移
+inline constexpr float kLabelWidth = 44.0f;    // 名称排版宽度（窄于列距，居中放置）
 inline constexpr float kRowTextBottom = 67.0f; // 单行内容总高（名称底部）
 inline constexpr int   kScrollBottomGap = 8;   // 滚到底时末行名称与卡片底边的空隙
 inline constexpr int   kScrollStep = 40;       // 每格滚动的像素数
