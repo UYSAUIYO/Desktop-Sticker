@@ -133,6 +133,8 @@
     <ClInclude Include="Host.h" />
     <ClInclude Include="LauncherController.h" />
     <ClInclude Include="SettingsController.h" />
+    <ClInclude Include="AppLog.h" />
+    <ClInclude Include="WindowChrome.h" />
   </ItemGroup>
   <ItemGroup>
     <ApplicationDefinition Include="App.xaml" />

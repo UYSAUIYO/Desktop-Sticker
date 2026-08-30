@@ -23,7 +23,10 @@ struct DESKTOPSTICKER_API DesktopLayout {
     int version = 0;
     int classVersion = 0;
     std::vector<Zone> zones;
-    // 被收纳原生图标 -> 原始屏幕坐标（用于恢复）
+    // 被收纳原生图标 -> 原始屏幕坐标（用于恢复）。
+    // 不变量（破坏即"退出后图标丢失"）：
+    //   1) 重新分类不得清空本表，只能按路径更新；
+    //   2) 坐标 <= 屏幕外阈值(-30000) 视为历史污染数据，恢复时忽略并落到左上角空位。
     std::map<std::wstring, POINT> originalIconPositions;
     // 收纳前是否开启“自动排列图标”
     bool autoArrangeWasEnabled = false;

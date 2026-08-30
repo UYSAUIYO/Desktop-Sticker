@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "LauncherController.h"
 
+#include "AppLog.h"
+#include "WindowChrome.h"
+
 #include <microsoft.ui.xaml.window.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
@@ -31,18 +34,6 @@ namespace {
 constexpr int kColumns = 8;
 constexpr float kTileWidth = 76.0f;
 constexpr float kTileHeight = 78.0f;
-
-void UiLog(const char* msg) {
-    PWSTR appData = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
-    std::filesystem::path root(appData);
-    CoTaskMemFree(appData);
-    root /= L"DesktopSticker";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    std::ofstream out(root / L"debug.log", std::ios::app);
-    out << msg << std::endl;
-}
 
 Windows::Foundation::Collections::IVector<UIElement> PanelChildren(
     winrt::Microsoft::UI::Xaml::Controls::StackPanel const& panel) {
@@ -143,46 +134,25 @@ void LauncherController::EnsureWindow() {
     const int screenH = GetSystemMetrics(SM_CYSCREEN);
     window_.AppWindow().Move({(screenW - width) / 2, screenH / 5});
 
-    // 不在任务栏显示，且常驻置顶（显示层高于所有其他程序）
+    // 不在任务栏显示，且常驻置顶（显示层高于所有其他程序）；去边框白边 + 系统圆角
     HWND hwnd = nullptr;
     window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
-                      GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-
-    // 去掉系统/DWM 边框白边：改为 WS_POPUP 并强制圆角
-    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU);
-    style |= WS_POPUP;
-    SetWindowLongPtrW(hwnd, GWL_STYLE, style);
-    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-    using DwmSetWindowAttributeFn = HRESULT(WINAPI*)(HWND, DWORD, void*, DWORD);
-    static DwmSetWindowAttributeFn dwmSet = []() -> DwmSetWindowAttributeFn {
-        HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
-        return dwm ? reinterpret_cast<DwmSetWindowAttributeFn>(
-                         GetProcAddress(dwm, "DwmSetWindowAttribute"))
-                   : nullptr;
-    }();
-    if (dwmSet) {
-        UINT pref = 2; // DWMWCP_ROUND
-        dwmSet(hwnd, 33 /*DWMWA_WINDOW_CORNER_PREFERENCE*/, &pref, sizeof(pref));
-    }
+    MakeTopmostToolWindow(hwnd);
+    ApplyBorderlessRounded(hwnd);
 }
 
 void LauncherController::Show() {
     EnsureWindow();
-    if (!window_) { UiLog("launcher Show: no window!"); return; }
+    if (!window_) { AppLog("launcher", "launcher Show: no window!"); return; }
     visible_ = true;
-    UiLog("launcher Show begin");
+    AppLog("launcher", "launcher Show begin");
     HWND hwnd = nullptr;
     window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
 
     try {
         window_.AppWindow().Show();
-        UiLog("launcher Show: AppWindow.Show ok");
-    } catch (...) { UiLog("launcher Show: AppWindow.Show THREW"); }
+        AppLog("launcher", "launcher Show: AppWindow.Show ok");
+    } catch (...) { AppLog("launcher", "launcher Show: AppWindow.Show THREW"); }
 
     // 置顶并压过其他置顶窗口（GamePP 等 overlay）
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
@@ -201,14 +171,14 @@ void LauncherController::Show() {
 
     try {
         window_.Activate(); // XAML 层激活，焦点进搜索框
-        UiLog("launcher Show: Activate ok");
-    } catch (...) { UiLog("launcher Show: Activate THREW"); }
+        AppLog("launcher", "launcher Show: Activate ok");
+    } catch (...) { AppLog("launcher", "launcher Show: Activate THREW"); }
     try {
         searchBox_.Text(L"");
         RunSearch();
         searchBox_.Focus(FocusState::Programmatic);
-        UiLog("launcher Show: focus ok");
-    } catch (...) { UiLog("launcher Show: focus/search THREW"); }
+        AppLog("launcher", "launcher Show: focus ok");
+    } catch (...) { AppLog("launcher", "launcher Show: focus/search THREW"); }
 
     RECT rc{};
     GetWindowRect(hwnd, &rc);
@@ -218,7 +188,7 @@ void LauncherController::Show() {
              (void*)hwnd, IsWindowVisible(hwnd) ? 1 : 0,
              (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ? 1 : 0,
              GetForegroundWindow() == hwnd ? 1 : 0, rc.left, rc.top, rc.right, rc.bottom);
-    UiLog(buf);
+    AppLog("launcher", buf);
 }
 
 void LauncherController::Hide() {
@@ -226,7 +196,7 @@ void LauncherController::Hide() {
     visible_ = false;
     // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
     window_.AppWindow().Hide();
-    UiLog("launcher Hide");
+    AppLog("launcher", "launcher Hide");
 }
 
 void LauncherController::RunSearch() {

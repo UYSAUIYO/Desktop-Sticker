@@ -88,6 +88,11 @@
     <ClInclude Include="include\desktopsticker\FileUtil.h" />
     <ClInclude Include="include\desktopsticker\StringUtil.h" />
     <ClInclude Include="include\desktopsticker\SearchSources.h" />
+    <ClInclude Include="include\desktopsticker\IconClassifier.h" />
+    <ClInclude Include="include\desktopsticker\LayoutMath.h" />
+    <ClInclude Include="include\desktopsticker\ZoneGrid.h" />
+    <ClInclude Include="include\desktopsticker\MouseInputForwarder.h" />
+    <ClInclude Include="include\desktopsticker\RenameDialog.h" />
     <ClInclude Include="include\desktopsticker\IFeatureModule.h" />
     <ClInclude Include="include\desktopsticker\ConfigStore.h" />
     <ClInclude Include="include\desktopsticker\HotkeyService.h" />
@@ -114,6 +119,9 @@
     <ClCompile Include="src\IndexService.cpp" />
     <ClCompile Include="src\ShellLauncher.cpp" />
     <ClCompile Include="src\IconService.cpp" />
+    <ClCompile Include="src\IconClassifier.cpp" />
+    <ClCompile Include="src\MouseInputForwarder.cpp" />
+    <ClCompile Include="src\RenameDialog.cpp" />
     <ClCompile Include="src\ZoneModel.cpp" />
     <ClCompile Include="src\DesktopShellIntegration.cpp" />
     <ClCompile Include="src\ZoneWindow.cpp" />

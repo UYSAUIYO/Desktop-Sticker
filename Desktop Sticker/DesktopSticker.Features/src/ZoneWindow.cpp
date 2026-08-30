@@ -2,6 +2,7 @@
 #include "desktopsticker/ZoneWindow.h"
 #include "desktopsticker/IconService.h"
 #include "desktopsticker/Log.h"
+#include "desktopsticker/ZoneGrid.h"
 
 #include <cstdlib>
 #include <dwrite.h>
@@ -143,10 +144,10 @@ void ZoneWindow::Refresh() {
 }
 
 void ZoneWindow::RenderTick() {
-    // 滚动插值：每帧向目标位置指数趋近（45%，至少 1px），尾部自然减速
+    // 滚动插值：每帧向目标位置指数趋近（kScrollEase，至少 1px），尾部自然减速
     const int diff = scrollTarget_ - scrollOffset_;
     if (diff != 0) {
-        int step = static_cast<int>(diff * 0.45);
+        int step = static_cast<int>(diff * zoneui::kScrollEase);
         if (step == 0) step = diff > 0 ? 1 : -1;
         scrollOffset_ += step;
         if (std::abs(scrollTarget_ - scrollOffset_) <= 1) scrollOffset_ = scrollTarget_;
@@ -179,9 +180,12 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
     contentRt_->BeginDraw();
     contentRt_->Clear(D2D1::ColorF(0, 0)); // 透明底，卡片底色由帧层绘制
 
-    float x = 16.0f;
-    float y = 0.0f; // 内容层首行图标顶部对应主层 y = 48 - scrollOffset_
-    for (const auto& path : zone_.itemPaths) {
+    // 网格位置统一由 ZoneGrid 计算（与命中测试/滚动上限同一份实现）
+    const int cols = zoneui::ColumnsForWidth(static_cast<float>(width), columnSpacing_);
+    for (size_t itemIndex = 0; itemIndex < zone_.itemPaths.size(); ++itemIndex) {
+        const auto& path = zone_.itemPaths[itemIndex];
+        const float x = zoneui::CellX(static_cast<int>(itemIndex) % cols, columnSpacing_);
+        const float y = zoneui::CellY(static_cast<int>(itemIndex) / cols, rowSpacing_);
         // 悬停/按下高亮（画进内容层，随内容一起滚动）
         if (path == hoverItem_ || path == pressedItem_) {
             contentRt_->FillRoundedRectangle(
@@ -215,11 +219,11 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
                 }
             }
             if (bmp) {
-                contentRt_->DrawBitmap(bmp, D2D1::RectF(x, y, x + 32, y + 32),
+                contentRt_->DrawBitmap(bmp, D2D1::RectF(x, y, x + zoneui::kIconSize, y + zoneui::kIconSize),
                                        1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
             }
         } else {
-            contentRt_->FillRectangle(D2D1::RectF(x, y, x + 32, y + 32), bgBrush_);
+            contentRt_->FillRectangle(D2D1::RectF(x, y, x + zoneui::kIconSize, y + zoneui::kIconSize), bgBrush_);
         }
         // 名称：最多 3 行，超长省略号；布局按路径缓存，避免每帧重建（重建成本很高）
         const std::wstring name = std::filesystem::path(path).stem().wstring();
@@ -245,12 +249,7 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
             textLayoutCache_[path] = layout;
         }
         if (layout) {
-            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, labelBrush_);
-        }
-        x += static_cast<float>(columnSpacing_);
-        if (x + columnSpacing_ > static_cast<float>(width)) {
-            x = 16.0f;
-            y += static_cast<float>(rowSpacing_);
+            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + zoneui::kLabelTop), layout, labelBrush_);
         }
     }
     contentRt_->EndDraw();
@@ -265,17 +264,15 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
 
 std::wstring ZoneWindow::HitTestItem(int x, int y) const {
     if (zone_.collapsed) return L"";
-    float tileX = 16.0f;
-    float tileY = 48.0f - static_cast<float>(scrollOffset_);
     const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
-    for (const auto& path : zone_.itemPaths) {
-        if (x >= tileX && x <= tileX + 32 && y >= tileY && y <= tileY + 32) {
-            return path;
-        }
-        tileX += static_cast<float>(columnSpacing_);
-        if (tileX + columnSpacing_ > width) {
-            tileX = 16.0f;
-            tileY += static_cast<float>(rowSpacing_);
+    const int cols = zoneui::ColumnsForWidth(width, columnSpacing_);
+    const float tileYTop = zoneui::kTitleBand - static_cast<float>(scrollOffset_);
+    for (size_t i = 0; i < zone_.itemPaths.size(); ++i) {
+        const float tileX = zoneui::CellX(static_cast<int>(i) % cols, columnSpacing_);
+        const float tileY = tileYTop + zoneui::CellY(static_cast<int>(i) / cols, rowSpacing_);
+        if (x >= tileX && x <= tileX + zoneui::kIconSize &&
+            y >= tileY && y <= tileY + zoneui::kIconSize) {
+            return zone_.itemPaths[i];
         }
     }
     return L"";
@@ -397,30 +394,32 @@ void ZoneWindow::OnPaint() {
     // 内容层失效检测：数据/尺寸/间距变化才重建，滚动帧只做一次位图平移
     int contentH = 0;
     if (!zone_.collapsed) {
-        const int cols = std::max(1, w / std::max(1, columnSpacing_));
-        const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
-        contentH = 67 + (rows - 1) * rowSpacing_; // 含末行名称底部
+        const int cols = zoneui::ColumnsForWidth(width, columnSpacing_);
+        const int rows = zoneui::RowCountFor(zone_.itemPaths.size(), cols);
+        contentH = zoneui::ContentHeightFor(rows, rowSpacing_); // 含末行名称底部
         if (contentDirty_ || contentW_ != w || contentH_ != contentH) {
-            RenderContentCache(w, std::max(contentH, 1));
+            RenderContentCache(w, contentH);
             contentH = contentH_;
         }
     }
 
     // 卡片半透明底色（固定层），磁贴内容层在其上按滚动偏移平移
-    // Win11 圆角 8px：背景、描边、磁贴高亮统一
+    // Win11 圆角：背景、描边、磁贴高亮统一
     target_->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 8.0f, 8.0f), bgBrush_);
+        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1),
+                          zoneui::kCornerRadius, zoneui::kCornerRadius), bgBrush_);
     if (!zone_.collapsed && contentBmp_) {
-        const float yTop = 48.0f - static_cast<float>(scrollOffset_);
+        const float yTop = zoneui::kTitleBand - static_cast<float>(scrollOffset_);
         target_->DrawBitmap(contentBmp_,
                             D2D1::RectF(0, yTop, width, yTop + static_cast<float>(contentH_)));
     }
 
     std::wstring title = zone_.collapsed ? L"\x25B8 " + zone_.name : L"\x25BE " + zone_.name;
     target_->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat_,
-                         D2D1::RectF(16, 8, 400, 40), titleBrush_);
+                       D2D1::RectF(16, 8, 400, 40), titleBrush_);
     target_->DrawRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, width - 0.5f, height - 0.5f), 8.0f, 8.0f),
+        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, width - 0.5f, height - 0.5f),
+                          zoneui::kCornerRadius, zoneui::kCornerRadius),
         borderBrush_, 1.0f);
 
     const HRESULT endHr = target_->EndDraw();
@@ -536,15 +535,12 @@ void ZoneWindow::OnMouseWheel(int delta) {
 
     const float width = static_cast<float>(zone_.rect.right - zone_.rect.left);
     const float height = static_cast<float>(zone_.rect.bottom - zone_.rect.top);
-    const int cols = std::max(1, static_cast<int>(width) / std::max(1, columnSpacing_));
-    const int rows = static_cast<int>((zone_.itemPaths.size() + cols - 1) / cols);
-    // 最后一行名称底部（内容层坐标）= (rows-1)*rowSpacing + 67；
-    // 滚动到底时让名称底部与卡片底边之间留 8px 空隙
-    const int lastRowTextBottom = (rows - 1) * rowSpacing_ + 67;
-    const int maxScroll = std::max(0, lastRowTextBottom + 8 - (static_cast<int>(height) - 48));
+    const int cols = zoneui::ColumnsForWidth(width, columnSpacing_);
+    const int rows = zoneui::RowCountFor(zone_.itemPaths.size(), cols);
+    const int maxScroll = zoneui::MaxScrollFor(height, rows, rowSpacing_);
 
     // 滚轮只更新目标位置，由渲染定时器插值逼近，实现平滑滚动
-    scrollTarget_ -= notches * 40;
+    scrollTarget_ -= notches * zoneui::kScrollStep;
     scrollTarget_ = std::max(0, std::min(scrollTarget_, maxScroll));
     Refresh();
 }
@@ -567,8 +563,8 @@ void ZoneWindow::OnMouseMove(int x, int y) {
         if (top) r.top += dy;
         if (bottom) r.bottom += dy;
 
-        const int minW = 120;
-        const int minH = 80;
+        const int minW = zoneui::kMinCardW;
+        const int minH = zoneui::kMinCardH;
         if (r.right - r.left < minW) {
             if (left) r.left = r.right - minW;
             else r.right = r.left + minW;
@@ -638,7 +634,7 @@ void ZoneWindow::OnRButtonUp(int x, int y) {
     HMENU menu = CreatePopupMenu();
     std::wstring item = HitTestItem(x, y);
 
-    if (y < 40) {
+    if (y < zoneui::kTitleHit) {
         AppendMenuW(menu, MF_STRING, 1, L"重命名");
         AppendMenuW(menu, MF_STRING, 2, L"删除分区");
         int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
@@ -683,7 +679,7 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_LBUTTONDBLCLK: {
         const int cx = GET_X_LPARAM(lp);
         const int cy = GET_Y_LPARAM(lp);
-        if (cy < 40) {
+        if (cy < zoneui::kTitleHit) {
             // 标题栏双击：折叠/展开（单击标题保留给拖动卡片）
             if (self->onCollapseToggle) self->onCollapseToggle(self->zone_.id);
             return 0;
@@ -726,10 +722,10 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     case WM_NCHITTEST: {
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd, &pt);
-        if (pt.y < 40 || !self->HitTestItem(pt.x, pt.y).empty()) return HTCLIENT;
+        if (pt.y < zoneui::kTitleHit || !self->HitTestItem(pt.x, pt.y).empty()) return HTCLIENT;
         const LONG width = self->GetZone().rect.right - self->GetZone().rect.left;
         const LONG height = self->GetZone().rect.bottom - self->GetZone().rect.top;
-        const int edge = 8;
+        const int edge = zoneui::kResizeEdge;
         bool left = pt.x <= edge, right = pt.x >= width - edge;
         bool top = pt.y <= edge, bottom = pt.y >= height - edge;
         if (left && top) return HTTOPLEFT;
