@@ -495,13 +495,13 @@ void ClockWidget::OnPaint() {
     target_->DrawRoundedRectangle(
         D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, fw - 0.5f, fh - 0.5f), 8, 8), borderBrush_, 1.0f);
 
-    // —— 左：模拟表盘 ——
-    const float cx = 148.0f, cy = 122.0f, faceR = 96.0f;
+    // —— 左：模拟表盘（基准半径 96 的 0.85 倍） ——
+    const float cx = 148.0f, cy = 122.0f, faceR = 82.0f;
     target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), faceR, faceR), borderBrush_, 1.0f);
     for (int i = 0; i < 60; ++i) {
         const float a = i * 6.0f * kPi / 180.0f;
         const bool major = i % 5 == 0;
-        const float len = major ? 11.0f : 5.0f;
+        const float len = major ? 10.0f : 4.5f;
         const float r0 = faceR - 4.0f;
         target_->DrawLine(D2D1::Point2F(cx + sinf(a) * r0, cy - cosf(a) * r0),
                           D2D1::Point2F(cx + sinf(a) * (r0 - len), cy - cosf(a) * (r0 - len)),
@@ -512,8 +512,8 @@ void ClockWidget::OnPaint() {
         const float a = n * 30.0f * kPi / 180.0f;
         swprintf_s(num, L"%d", n);
         target_->DrawTextW(num, static_cast<UINT32>(wcslen(num)), fmtNum_,
-                           D2D1::RectF(cx + sinf(a) * 66 - 14, cy - cosf(a) * 66 - 11,
-                                       cx + sinf(a) * 66 + 14, cy - cosf(a) * 66 + 11),
+                           D2D1::RectF(cx + sinf(a) * 56 - 14, cy - cosf(a) * 56 - 11,
+                                       cx + sinf(a) * 56 + 14, cy - cosf(a) * 56 + 11),
                            handBrush_);
     }
 
@@ -525,12 +525,12 @@ void ClockWidget::OnPaint() {
     const float secDeg = (st.wSecond + ms / 1000.0f) * 6.0f;
     auto hand = [&](float deg, float len, float width, ID2D1SolidColorBrush* b) {
         const float a = deg * kPi / 180.0f;
-        target_->DrawLine(D2D1::Point2F(cx - sinf(a) * 12.0f, cy + cosf(a) * 12.0f),
+        target_->DrawLine(D2D1::Point2F(cx - sinf(a) * 10.0f, cy + cosf(a) * 10.0f),
                           D2D1::Point2F(cx + sinf(a) * len, cy - cosf(a) * len), b, width);
     };
-    hand(hourDeg, 46, 5.0f, handBrush_);
-    hand(minDeg, 70, 3.5f, handBrush_);
-    hand(secDeg, 80, 1.5f, orangeBrush_);
+    hand(hourDeg, 39, 4.5f, handBrush_);
+    hand(minDeg, 60, 3.0f, handBrush_);
+    hand(secDeg, 68, 1.5f, orangeBrush_);
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 4.5f, 4.5f), orangeBrush_);
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 2.0f, 2.0f), handBrush_);
 
@@ -613,9 +613,9 @@ void ClockWidget::OnPaint() {
                        D2D1::RectF(350, 234, 436, 274), handBrush_);
     target_->DrawTextW(descText_.c_str(), static_cast<UINT32>(descText_.size()), fmtDesc_,
                        D2D1::RectF(350, 266, 504, 286), subBrush_);
-    // QWeather S2 彩色图标；文件缺失时回退手绘
+    // QWeather S2 彩色图标（54px 基准 ×1.15）；文件缺失时回退手绘
     if (ID2D1Bitmap* bmp = IconBitmap(iconCode_)) {
-        target_->DrawBitmap(bmp, D2D1::RectF(444, 222, 498, 276), 1.0f,
+        target_->DrawBitmap(bmp, D2D1::RectF(440, 218, 502, 280), 1.0f,
                             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else {
         DrawWeatherIcon(weatherCode_, 464, 244);
