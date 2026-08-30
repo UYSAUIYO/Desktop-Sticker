@@ -92,13 +92,17 @@ namespace winrt::Desktop_Sticker::implementation
             DestroyMenu(menu);
             PostMessageW(m_hwnd, WM_NULL, 0, 0);
 
-            if (cmd == 1 && m_settings) {
-                m_settings->Show();
-            } else if (cmd == 2 && m_host && m_host->Module()) {
-                m_host->Module()->RestoreDesktop();
-            } else if (cmd == 3) {
-                // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）
-                Application::Current().Exit();
+            try {
+                if (cmd == 1 && m_settings) {
+                    m_settings->Show();
+                } else if (cmd == 2 && m_host && m_host->Module()) {
+                    m_host->Module()->RestoreDesktop();
+                } else if (cmd == 3) {
+                    // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）
+                    Application::Current().Exit();
+                }
+            } catch (...) {
+                // 托盘回调运行在原生窗口过程里：任何异常都会直接闪退进程
             }
         }
     }

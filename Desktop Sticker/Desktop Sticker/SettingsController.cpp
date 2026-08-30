@@ -29,10 +29,20 @@ SolidColorBrush Solid(BYTE a, BYTE r, BYTE g, BYTE b) {
 SettingsController::SettingsController(Host* host) : host_(host) {}
 
 void SettingsController::EnsureWindow() {
-    if (window_) return;
-
+    if (window_) {
+        if (!closed_) return;
+        // 上次被标题栏 X / WM_CLOSE 销毁：失效对象必须释放后全量重建，
+        // 对已销毁的 XAML Window 调 Show 会卡死并抛异常（曾导致再次打开闪退）
+        window_ = nullptr;
+        closed_ = false;
+    }
     loading_ = true; // 下面逐个赋值会触发 Toggled/SelectionChanged/ValueChanged → SaveConfig
     window_ = Window();
+    // 点 X 会销毁 XAML Window 而非隐藏：订阅 Closed 记录状态，Show 时重建
+    window_.Closed([this](auto&&, auto&&) {
+        closed_ = true;
+        visible_ = false;
+    });
     desktopsticker::app::AppLog("settings", "EnsureWindow begin");
 
     // Win11 设置页同款 Mica 背景材质（低版本运行时不支持时退回纯色底）
@@ -329,18 +339,27 @@ void SettingsController::EnsureWindow() {
 }
 
 void SettingsController::Show() {
-    EnsureWindow();
-    if (!window_) return;
-    visible_ = true;
-    window_.AppWindow().Show();
-    window_.Activate();
+    try {
+        EnsureWindow();
+        if (!window_) return;
+        visible_ = true;
+        window_.AppWindow().Show();
+        window_.Activate();
+    } catch (...) {
+        // 托盘菜单等原生路径会调用这里：异常不允许穿过窗口过程（会直接闪退）
+        desktopsticker::app::AppLog("settings", "Show FAILED (exception)");
+    }
 }
 
 void SettingsController::Hide() {
-    if (!window_) return;
-    visible_ = false;
-    // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
-    window_.AppWindow().Hide();
+    try {
+        if (!window_) return;
+        visible_ = false;
+        // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
+        window_.AppWindow().Hide();
+    } catch (...) {
+        desktopsticker::app::AppLog("settings", "Hide FAILED (exception)");
+    }
 }
 
 void SettingsController::RefreshApps() {

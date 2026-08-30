@@ -29,6 +29,7 @@ private:
 
     Host* host_ = nullptr;
     bool visible_ = false;
+    bool closed_ = false; // 窗口被外部 WM_CLOSE 销毁过，下次 Show 需全量重建
     winrt::Microsoft::UI::Xaml::Window window_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBox searchBox_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::StackPanel resultsPanel_{ nullptr };

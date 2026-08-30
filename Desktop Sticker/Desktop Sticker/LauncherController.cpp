@@ -45,9 +45,19 @@ Windows::Foundation::Collections::IVector<UIElement> PanelChildren(
 LauncherController::LauncherController(Host* host) : host_(host) {}
 
 void LauncherController::EnsureWindow() {
-    if (window_) return;
-
+    if (window_) {
+        if (!closed_) return;
+        // 窗口曾被外部 WM_CLOSE 销毁：释放失效引用并全量重建，
+        // 对已销毁的 XAML Window 调 Show 会卡死并抛异常
+        window_ = nullptr;
+        closed_ = false;
+    }
     window_ = Window();
+    // 订阅 Closed：无论窗口因什么原因被销毁，下次 Show 都能重建
+    window_.Closed([this](auto&&, auto&&) {
+        closed_ = true;
+        visible_ = false;
+    });
     dispatcher_ = window_.DispatcherQueue();
 
     // 无边框无标题栏的深色浮层（Win11 自带系统圆角）
@@ -142,12 +152,13 @@ void LauncherController::EnsureWindow() {
 }
 
 void LauncherController::Show() {
-    EnsureWindow();
-    if (!window_) { AppLog("launcher", "launcher Show: no window!"); return; }
-    visible_ = true;
-    AppLog("launcher", "launcher Show begin");
-    HWND hwnd = nullptr;
-    window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
+    try {
+        EnsureWindow();
+        if (!window_) { AppLog("launcher", "launcher Show: no window!"); return; }
+        visible_ = true;
+        AppLog("launcher", "launcher Show begin");
+        HWND hwnd = nullptr;
+        window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
 
     try {
         window_.AppWindow().Show();
@@ -189,14 +200,22 @@ void LauncherController::Show() {
              (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ? 1 : 0,
              GetForegroundWindow() == hwnd ? 1 : 0, rc.left, rc.top, rc.right, rc.bottom);
     AppLog("launcher", buf);
+    } catch (...) {
+        // 双击空格回调经 DLL 钩子线程转 UI 线程进入这里：异常不允许逃逸
+        AppLog("launcher", "launcher Show FAILED (exception)");
+    }
 }
 
 void LauncherController::Hide() {
-    if (!window_) return;
-    visible_ = false;
-    // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
-    window_.AppWindow().Hide();
-    AppLog("launcher", "launcher Hide");
+    try {
+        if (!window_) return;
+        visible_ = false;
+        // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
+        window_.AppWindow().Hide();
+        AppLog("launcher", "Hide");
+    } catch (...) {
+        AppLog("launcher", "Hide FAILED (exception)");
+    }
 }
 
 void LauncherController::RunSearch() {
