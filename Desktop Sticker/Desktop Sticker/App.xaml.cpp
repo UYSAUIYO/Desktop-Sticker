@@ -52,9 +52,9 @@ namespace winrt::Desktop_Sticker::implementation
         m_host->SetHotkeyCallback([this]() {
             if (m_dispatcher) {
                 m_dispatcher.TryEnqueue([this]() {
-                    if (m_launcher->Visible()) {
-                        m_launcher->Hide();
-                    } else {
+                    // 面板打开（含焦点在面板上）时双击空格不再关闭——避免搜索框输入
+                    // 空格/手抖多敲一下导致面板闪现即关；关闭只走 Esc
+                    if (!m_launcher->Visible()) {
                         m_launcher->Show();
                     }
                 });

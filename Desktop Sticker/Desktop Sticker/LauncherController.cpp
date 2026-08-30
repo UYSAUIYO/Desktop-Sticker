@@ -12,6 +12,8 @@
 #include <winrt/Windows.Storage.Streams.h>
 
 #include <cstring>
+#include <cstdio>
+#include <fstream>
 
 #pragma comment(lib, "gdi32.lib")
 
@@ -29,6 +31,18 @@ namespace {
 constexpr int kColumns = 8;
 constexpr float kTileWidth = 76.0f;
 constexpr float kTileHeight = 78.0f;
+
+void UiLog(const char* msg) {
+    PWSTR appData = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
+    std::filesystem::path root(appData);
+    CoTaskMemFree(appData);
+    root /= L"DesktopSticker";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    std::ofstream out(root / L"debug.log", std::ios::app);
+    out << msg << std::endl;
+}
 
 Windows::Foundation::Collections::IVector<UIElement> PanelChildren(
     winrt::Microsoft::UI::Xaml::Controls::StackPanel const& panel) {
@@ -129,11 +143,13 @@ void LauncherController::EnsureWindow() {
     const int screenH = GetSystemMetrics(SM_CYSCREEN);
     window_.AppWindow().Move({(screenW - width) / 2, screenH / 5});
 
-    // 不在任务栏显示
+    // 不在任务栏显示，且常驻置顶（显示层高于所有其他程序）
     HWND hwnd = nullptr;
     window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
-                      GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
+                      GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW | WS_EX_TOPMOST);
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
     // 去掉系统/DWM 边框白边：改为 WS_POPUP 并强制圆角
     LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -157,13 +173,52 @@ void LauncherController::EnsureWindow() {
 
 void LauncherController::Show() {
     EnsureWindow();
-    if (!window_) return;
+    if (!window_) { UiLog("launcher Show: no window!"); return; }
     visible_ = true;
-    window_.AppWindow().Show();
-    window_.Activate();
-    searchBox_.Text(L"");
-    RunSearch();
-    searchBox_.Focus(FocusState::Programmatic);
+    UiLog("launcher Show begin");
+    HWND hwnd = nullptr;
+    window_.as<::IWindowNative>()->get_WindowHandle(&hwnd);
+
+    try {
+        window_.AppWindow().Show();
+        UiLog("launcher Show: AppWindow.Show ok");
+    } catch (...) { UiLog("launcher Show: AppWindow.Show THREW"); }
+
+    // 置顶并压过其他置顶窗口（GamePP 等 overlay）
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    // 抢前台：桌面/其他程序为前台时，前台锁会拦住普通 Activate，
+    // 先把输入队列临时附加到前台线程再 SetForegroundWindow 即可绕过
+    HWND fg = GetForegroundWindow();
+    const DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD curThread = GetCurrentThreadId();
+    const bool attached = fgThread && fgThread != curThread &&
+                          AttachThreadInput(curThread, fgThread, TRUE);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    if (attached) AttachThreadInput(curThread, fgThread, FALSE);
+
+    try {
+        window_.Activate(); // XAML 层激活，焦点进搜索框
+        UiLog("launcher Show: Activate ok");
+    } catch (...) { UiLog("launcher Show: Activate THREW"); }
+    try {
+        searchBox_.Text(L"");
+        RunSearch();
+        searchBox_.Focus(FocusState::Programmatic);
+        UiLog("launcher Show: focus ok");
+    } catch (...) { UiLog("launcher Show: focus/search THREW"); }
+
+    RECT rc{};
+    GetWindowRect(hwnd, &rc);
+    char buf[192]{};
+    snprintf(buf, sizeof(buf),
+             "launcher Show end: hwnd=%p vis=%d topmost=%d fg=%d rect=(%ld,%ld)-(%ld,%ld)",
+             (void*)hwnd, IsWindowVisible(hwnd) ? 1 : 0,
+             (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ? 1 : 0,
+             GetForegroundWindow() == hwnd ? 1 : 0, rc.left, rc.top, rc.right, rc.bottom);
+    UiLog(buf);
 }
 
 void LauncherController::Hide() {
@@ -171,6 +226,7 @@ void LauncherController::Hide() {
     visible_ = false;
     // 用 Hide 而不是 Close：Close 会销毁 Window，再次 Show 会崩溃
     window_.AppWindow().Hide();
+    UiLog("launcher Hide");
 }
 
 void LauncherController::RunSearch() {

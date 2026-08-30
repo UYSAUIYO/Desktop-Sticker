@@ -19,8 +19,9 @@ struct DESKTOPSTICKER_API Zone {
 };
 
 struct DESKTOPSTICKER_API DesktopLayout {
-    // 分类规则版本：旧版本布局会自动重新分类
+    // 布局版本（4 = 左右侧列）；分类规则版本单独记录，旧规则布局会自动重新分类
     int version = 0;
+    int classVersion = 0;
     std::vector<Zone> zones;
     // 被收纳原生图标 -> 原始屏幕坐标（用于恢复）
     std::map<std::wstring, POINT> originalIconPositions;

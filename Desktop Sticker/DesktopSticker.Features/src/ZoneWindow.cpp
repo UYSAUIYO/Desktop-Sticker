@@ -259,7 +259,7 @@ void ZoneWindow::RenderContentCache(int width, int contentHeight) {
             textLayoutCache_[path] = layout;
         }
         if (layout) {
-            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, titleBrush_);
+            contentRt_->DrawTextLayout(D2D1::Point2F(x - 6, y + 34), layout, labelBrush_);
         }
         x += static_cast<float>(columnSpacing_);
         if (x + columnSpacing_ > static_cast<float>(width)) {
@@ -313,9 +313,12 @@ bool ZoneWindow::EnsureD2DResources() {
         factory_->CreateDCRenderTarget(&props, &target_);
         if (!target_) return false;
     }
-    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.78f), &bgBrush_);
-    if (!titleBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &titleBrush_);
-    if (!hoverBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.14f), &hoverBrush_);
+    // Win11 Fluent 风格：柔和深灰亚克力底、低透明度描边、次要文字降透明度
+    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x2B2B2B, 0.72f), &bgBrush_);
+    if (!titleBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.96f), &titleBrush_);
+    if (!labelBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.82f), &labelBrush_);
+    if (!borderBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.12f), &borderBrush_);
+    if (!hoverBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.09f), &hoverBrush_);
     if (!textFormat_) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -347,6 +350,8 @@ void ZoneWindow::ReleaseD2DResources() {
     if (labelFormat_) labelFormat_->Release();
     if (textFormat_) textFormat_->Release();
     if (hoverBrush_) hoverBrush_->Release();
+    if (borderBrush_) borderBrush_->Release();
+    if (labelBrush_) labelBrush_->Release();
     if (titleBrush_) titleBrush_->Release();
     if (bgBrush_) bgBrush_->Release();
     if (target_) target_->Release();
@@ -354,7 +359,8 @@ void ZoneWindow::ReleaseD2DResources() {
     if (wicFactory_) wicFactory_->Release();
     if (factory_) factory_->Release();
     labelFormat_ = nullptr; textFormat_ = nullptr;
-    hoverBrush_ = nullptr; titleBrush_ = nullptr; bgBrush_ = nullptr;
+    hoverBrush_ = nullptr; borderBrush_ = nullptr; labelBrush_ = nullptr;
+    titleBrush_ = nullptr; bgBrush_ = nullptr;
     target_ = nullptr; dwriteFactory_ = nullptr; wicFactory_ = nullptr; factory_ = nullptr;
 }
 
@@ -415,8 +421,9 @@ void ZoneWindow::OnPaint() {
     }
 
     // 卡片半透明底色（固定层），磁贴内容层在其上按滚动偏移平移
+    // Win11 圆角 8px：背景、描边、磁贴高亮统一
     target_->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f), bgBrush_);
+        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 8.0f, 8.0f), bgBrush_);
     if (!zone_.collapsed && contentBmp_) {
         const float yTop = 48.0f - static_cast<float>(scrollOffset_);
         target_->DrawBitmap(contentBmp_,
@@ -427,8 +434,8 @@ void ZoneWindow::OnPaint() {
     target_->DrawTextW(title.c_str(), static_cast<UINT32>(title.size()), textFormat_,
                          D2D1::RectF(16, 8, 400, 40), titleBrush_);
     target_->DrawRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(1, 1, width - 1, height - 1), 16.0f, 16.0f),
-        titleBrush_, 1.0f);
+        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, width - 0.5f, height - 0.5f), 8.0f, 8.0f),
+        borderBrush_, 1.0f);
 
     const HRESULT endHr = target_->EndDraw();
 

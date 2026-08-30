@@ -28,6 +28,15 @@ public:
     // 设置热键方案："double-space"（双击空格）或 "custom"（customHotkey 组合键，如 "Alt+Space"）
     void SetHotkeyMode(const std::wstring& mode, const std::wstring& customHotkey);
 
+    // 钩子线程记录任意非空格按键，用于“正在打字”判定
+    void NotifyOtherKeyDown() {
+        const long long now = DefaultClock();
+        lastTextKeyMs_.store(now);
+        if (keyDown_ && now - lastSpaceDownMs_ > 500) {
+            keyDown_ = false; // 已按下其他键 → 空格必然已抬起（key-up 丢失保护）
+        }
+    }
+
     void SetTextInputPredicate(TextInputPredicate pred) { textInputPredicate_ = std::move(pred); }
     void SetDoublePressWindowMs(long long ms) { windowMs_ = ms; }
     void SetOnDoublePress(std::function<void()> cb) { onDoublePress_ = std::move(cb); }
@@ -57,9 +66,11 @@ private:
 
     // 双击判定状态（仅钩子线程访问）
     bool keyDown_ = false;
+    long long lastSpaceDownMs_ = 0; // 丢失 key-up 保护用
     bool firstPressSeen_ = false;
     long long lastReleaseMs_ = 0;
-    long long windowMs_ = 250;
+    long long windowMs_ = 400; // 双击判定窗口：释放到再次按下
+    std::atomic<long long> lastTextKeyMs_{0}; // 最近一次非空格按键（用于“正在打字”判定）
 };
 
 } // namespace desktopsticker

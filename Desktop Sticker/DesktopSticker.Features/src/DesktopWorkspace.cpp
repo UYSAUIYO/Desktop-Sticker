@@ -17,6 +17,7 @@ namespace {
 // 图标“移到屏幕外”使用 (-32000,-32000)；小于该值视为无效/被污染的位置记录
 constexpr LONG kOffscreenCoord = -30000;
 const UINT kWatcherNotifyMsg = WM_APP + 2;
+constexpr int kClassVersion = 2; // 分类规则版本（扩充关键词 + 实用工具分区）
 
 DesktopWorkspace* g_mouseHookWorkspace = nullptr;
 
@@ -166,6 +167,7 @@ bool DesktopWorkspace::Initialize() {
                 }
             }
             if (model_.Layout().version < 2) needsReclassify = true;
+            if (model_.Layout().classVersion < kClassVersion) needsReclassify = true;
         }
         if (model_.Layout().zones.empty() || !hasItems || needsReclassify) {
             auto icons = iconManager_->EnumIcons();
@@ -181,6 +183,13 @@ bool DesktopWorkspace::Initialize() {
             for (auto& z : model_.Layout().zones) z.collapsed = false;
             model_.Layout().version = 3;
             SaveLayout();
+        }
+
+        // 布局版本 4：迁移为左右侧列排布（只重排位置，不动分类内容）
+        if (model_.Layout().version < 4) {
+            ApplySideColumnLayout();
+            SaveLayout();
+            DebugLog(root, L"layout migrated to side columns");
         }
 
         // 清理历史版本误记录的无效原始位置（-32000 是我们自己移出去的，恢复无意义）
@@ -316,33 +325,61 @@ std::wstring ToLowerCopy(std::wstring s) {
 std::wstring DesktopWorkspace::ClassifyPath(const std::wstring& path) {
     fs::path p(path);
     std::wstring name = ToLowerCopy(p.stem().wstring());
-    std::wstring fileName = ToLowerCopy(p.filename().wstring());
     std::wstring ext = ToLowerCopy(p.extension().wstring());
 
-    // 文件夹单独归为一类
-    if (fs::is_directory(p)) return L"文件夹";
+    if (fs::is_directory(p)) {
+        // 目录名自带语义的少量归入内容分区，其余为文件夹
+        if (name.find(L"游戏") != std::wstring::npos) return L"游戏";
+        if (name.find(L"电影") != std::wstring::npos || name.find(L"视频") != std::wstring::npos)
+            return L"影音娱乐";
+        return L"文件夹";
+    }
 
     const bool isApp = ext == L".lnk" || ext == L".exe" || ext == L".appref-ms" || ext == L".url";
     if (isApp) {
-        if (ContainsAnyLower(name, {L"visual studio", L"code", L"stm32", L"keil", L"git", L"python",
-                                    L"node", L"ide", L"idea", L"arduino", L"kicad", L"cube",
-                                    L"docker", L"terminal", L"qt", L"cmake", L"开发", L"编程",
-                                    L"compiler", L"ida", L"multisim", L"fusion"}))
+        // 个别与通用关键字冲突的先判（FL Studio 是音乐软件而非开发工具）
+        if (name.find(L"fl studio") != std::wstring::npos) return L"影音娱乐";
+
+        if (ContainsAnyLower(name, {L"visual studio", L"code", L"stm32", L"keil", L"git",
+                                    L"python", L"node", L"ide", L"idea", L"arduino", L"kicad",
+                                    L"cube", L"docker", L"terminal", L"qt", L"cmake",
+                                    L"开发", L"编程", L"compiler", L"ida", L"multisim", L"fusion",
+                                    L"android", L"studio", L"vmware", L"virtualbox", L"eda",
+                                    L"esp", L"idf", L"smartrf", L"matlab", L"labview", L"altium",
+                                    L"unity", L"unreal", L"jdk", L"java", L"pycharm", L"clion",
+                                    L"rider", L"postman", L"navicat", L"redis", L"nginx",
+                                    L"sdk", L"ndk", L"adb", L"烧录", L"调试", L"仿真",
+                                    L"单片机", L"嵌入式", L"串口", L"wireshark", L"proteus",
+                                    L"github", L"gitlab", L"putty", L"xshell", L"gradle", L"maven"}))
             return L"开发工具";
-        if (ContainsAnyLower(name, {L"chrome", L"edge", L"firefox", L"浏览器", L"brave", L"360安全浏览器",
-                                    L"qq浏览器", L"internet explorer"}))
+
+        if (ContainsAnyLower(name, {L"chrome", L"edge", L"firefox", L"浏览器", L"brave",
+                                    L"360安全浏览器", L"qq浏览器", L"internet explorer",
+                                    L"opera", L"vivaldi"}))
             return L"浏览器";
+
         if (ContainsAnyLower(name, {L"word", L"excel", L"powerpoint", L"office", L"wps", L"pdf",
                                     L"onenote", L"outlook", L"办公", L"officeai", L"wps office",
-                                    L"xls", L"doc"}))
+                                    L"xls", L"doc", L"xmind", L"思维导图", L"mindmaster",
+                                    L"visio", L"foxit", L"福昕", L"typora", L"markdown",
+                                    L"notion", L"obsidian", L"zotero", L"endnote", L"calibre",
+                                    L"sumatra", L"稻壳", L"ocr", L"文字识别"}))
             return L"办公软件";
+
         if (ContainsAnyLower(name, {L"potplayer", L"vlc", L"music", L"video", L"播放", L"音乐",
                                     L"网易云", L"qq音乐", L"spotify", L"bilibili", L"爱奇艺",
-                                    L"优酷", L"电影", L"影音", L"video lan"}))
+                                    L"优酷", L"电影", L"影音", L"video lan", L"酷狗", L"酷我",
+                                    L"喜马拉雅", L"抖音", L"快手", L"腾讯视频", L"芒果",
+                                    L"央视频", L"cctv", L"kmplayer", L"foobar", L"aimp",
+                                    L"musicbee", L"咪咕", L"obs", L"直播", L"录屏", L"剪辑",
+                                    L"剪映", L"premiere", L"davinci", L"audacity"}))
             return L"影音娱乐";
+
         if (ContainsAnyLower(name, {L"微信", L"wechat", L"qq", L"discord", L"telegram", L"钉钉",
-                                    L"企业微信", L"slack", L"社交", L"聊天"}))
+                                    L"企业微信", L"slack", L"社交", L"聊天", L"teams", L"飞书",
+                                    L"whatsapp", L"微博"}))
             return L"社交聊天";
+
         if (ContainsAnyLower(name, {L"steam", L"epic games", L"wegame", L"origin", L"battle.net",
                                     L"uplay", L"riot", L"valorant", L"gta", L"grand theft auto",
                                     L"minecraft", L"守望先锋", L"绝地求生", L"csgo", L"counter-strike",
@@ -350,8 +387,28 @@ std::wstring DesktopWorkspace::ClassifyPath(const std::wstring& path) {
                                     L"honkai", L"星穹铁道", L"王者荣耀", L"和平精英", L"英雄联盟",
                                     L"league of legends", L"lol", L"炉石", L"魔兽", L"暗黑",
                                     L"暴雪", L"战网", L"育碧", L"playstation", L"xbox", L"game",
-                                    L"games", L"游戏", L"模拟器", L"emulator"}))
+                                    L"games", L"游戏", L"模拟器", L"emulator", L"战地",
+                                    L"battlefield", L"使命召唤", L"call of duty", L"永劫无间",
+                                    L"糖豆人", L"fall guys", L"赛博朋克", L"cyberpunk",
+                                    L"艾尔登法环", L"elden ring", L"黑暗之魂", L"dark souls",
+                                    L"极品飞车", L"need for speed", L"游戏加加"}))
             return L"游戏";
+
+        // 实用工具：下载/网盘/远控/压缩/驱动/加速等日常工具
+        if (ContainsAnyLower(name, {L"idm", L"fdm", L"迅雷", L"thunder", L"aria2", L"motrix",
+                                    L"下载", L"download", L"everything", L"listary", L"utools",
+                                    L"quicker", L"snipaste", L"截图", L"sharex", L"picpick",
+                                    L"bandizip", L"7-zip", L"winrar", L"压缩", L"解压",
+                                    L"wallpaper", L"壁纸", L"向日葵", L"todesk", L"teamviewer",
+                                    L"anydesk", L"rustdesk", L"远控", L"clash", L"v2ray",
+                                    L"加速", L"百度网盘", L"阿里云盘", L"坚果云", L"onedrive",
+                                    L"dropbox", L"网盘", L"云盘", L"dock", L"驱动", L"driver",
+                                    L"鲁大师", L"aida64", L"hwmonitor", L"硬盘", L"磁盘",
+                                    L"清理", L"管家", L"360", L"沙盒", L"sandboxie", L"输入法",
+                                    L"搜狗", L"diskgenius", L"recuva", L"恢复", L"备份",
+                                    L"daemon", L"ultraiso", L"rufus", L"ventoy", L"刻录"}))
+            return L"实用工具";
+
         return L"应用";
     }
 
@@ -371,28 +428,55 @@ size_t DesktopWorkspace::CountZoneItems() const {
     return n;
 }
 
+void DesktopWorkspace::ApplySideColumnLayout() {
+    // 目标排布：卡片只占主屏幕左右两侧，垂直方向围绕中线均匀分布，中间留给壁纸
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    const int margin = 24;
+    const int gap = 16;
+    const int cardW = 320;
+    auto& zones = model_.Layout().zones;
+    const int n = static_cast<int>(zones.size());
+    if (n == 0 || screenW <= 0 || screenH <= 0) return;
+
+    const int nLeft = (n + 1) / 2; // 左列多放一张
+    const int nRight = n - nLeft;
+    const int availH = screenH - 2 * margin;
+    int cardH = (availH - (nLeft - 1) * gap) / nLeft;
+    cardH = std::max(cardH, 150); // 过小屏不无限压缩
+
+    auto place = [&](int beginIdx, int count, int x) {
+        const int total = count * cardH + (count - 1) * gap;
+        int y = (screenH - total) / 2; // 沿垂直中线居中展开
+        for (int i = 0; i < count; ++i) {
+            zones[beginIdx + i].rect = RECT{x, y, x + cardW, y + cardH};
+            zones[beginIdx + i].monitorIndex = 0;
+            y += cardH + gap;
+        }
+    };
+    place(0, nLeft, margin);
+    place(nLeft, nRight, screenW - margin - cardW);
+    model_.Layout().version = 4; // 侧列布局版本
+}
+
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
-    // 重新分类时先清空旧分区，避免重复
+    // 重新分类时清空旧分区（原图标位置记录保留，恢复桌面依赖它）
     model_.Layout().zones.clear();
-    model_.Layout().originalIconPositions.clear();
     DebugLog(config_->GetRootDir(), L"AutoClassify icons=" + std::to_wstring(icons.size()));
 
     const wchar_t* names[] = {L"应用", L"开发工具", L"办公软件", L"浏览器",
-                              L"影音娱乐", L"社交聊天", L"游戏", L"文件夹", L"其他"};
+                              L"影音娱乐", L"实用工具", L"社交聊天", L"游戏",
+                              L"文件夹", L"其他"};
     model_.Layout().version = 2; // 当前分类规则版本
-    int monitorIndex = 0;
-    int x = 40;
-    int y = 60;
     for (const wchar_t* name : names) {
         Zone z;
         z.id = model_.GenerateZoneId();
         z.name = name;
-        z.monitorIndex = monitorIndex;
-        z.rect = RECT{x, y, x + 340, y + 240};
-        x += 380;
-        if (x > 1400) { x = 40; y += 280; }
+        z.monitorIndex = 0;
         model_.AddZone(std::move(z));
     }
+    ApplySideColumnLayout(); // 侧列布局
+    model_.Layout().classVersion = kClassVersion;
 
     for (const auto& icon : icons) {
         if (icon.path.empty()) continue;

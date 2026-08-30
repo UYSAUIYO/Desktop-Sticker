@@ -1,29 +1,44 @@
 #include "pch.h"
 #include "desktopsticker/HotkeyService.h"
 
+#include "desktopsticker/Utf8.h"
+
 namespace desktopsticker {
 
 namespace {
 HotkeyService* g_instance = nullptr;
 const UINT kReconfigureMsg = WM_APP + 7;
 
-bool IsTextInputForeground() {
-    HWND foreground = GetForegroundWindow();
-    if (!foreground) return false;
-    DWORD threadId = GetWindowThreadProcessId(foreground, nullptr);
-    GUITHREADINFO gti{};
-    gti.cbSize = sizeof(gti);
-    if (!GetGUIThreadInfo(threadId, &gti)) return false;
-    return gti.hwndCaret != nullptr; // 有插入符 → 正在文本输入
+bool IsTextKey(UINT vk) {
+    // 字母/数字/小键盘数字/常用标点，视为“正在输入文字”；修饰键与功能键不算
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return true;
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return true;
+    if ((vk >= 0xBA && vk <= 0xC0) || (vk >= 0xDB && vk <= 0xE2)) return true; // OEM 标点
+    return false;
+}
+
+void HotkeyLog(const std::wstring& msg) {
+    PWSTR appData = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
+    std::filesystem::path root(appData);
+    CoTaskMemFree(appData);
+    root /= L"DesktopSticker";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    std::ofstream out(root / L"debug.log", std::ios::app);
+    out << ToUtf8(msg) << std::endl;
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION && g_instance && g_instance->IsEnabled() &&
         g_instance->IsDoubleSpaceMode()) { // 自定义热键模式下不监听双击空格
         auto* info = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         if (info->vkCode == VK_SPACE) {
-            const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
             g_instance->HandleKeyEvent(down, HotkeyService::DefaultClock());
+        } else if (down && IsTextKey(info->vkCode)) {
+            // 记录“正在打字”：双击空格只在近期确实输入过文字时才被抑制
+            g_instance->NotifyOtherKeyDown();
         }
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -31,7 +46,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 } // namespace
 
 HotkeyService::HotkeyService(Clock clock)
-    : clock_(std::move(clock)), textInputPredicate_(IsTextInputForeground) {}
+    : clock_(std::move(clock)) {}
 
 long long HotkeyService::DefaultClock() {
     return static_cast<long long>(GetTickCount64());
@@ -44,18 +59,33 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
         return false;
     }
 
-    if (keyDown_) return false; // 忽略长按重复
-
+    if (keyDown_) {
+        // 丢失 key-up 保护：超过 2 秒仍“按住”，说明抬起事件被其他钩子吞掉，强制复位
+        if (nowMs - lastSpaceDownMs_ > 2000) {
+            keyDown_ = false;
+            HotkeyLog(L"[space] stuck keyDown -> reset");
+        } else {
+            return false; // 长按重复
+        }
+    }
+    lastSpaceDownMs_ = nowMs;
     keyDown_ = true;
-    if (textInputPredicate_ && textInputPredicate_()) {
+
+    // 打字保护：最近 1.2 秒内确实在输入文字时不触发（不再按“是否有光标”判断，
+    // 那会在桌面/很多窗口上误判，导致双击空格触发不了）
+    const bool typingRecently = lastTextKeyMs_.load() != 0 &&
+                                (nowMs - lastTextKeyMs_.load()) <= 1200;
+    if (typingRecently || (textInputPredicate_ && textInputPredicate_())) {
         firstPressSeen_ = false;
         lastReleaseMs_ = 0;
+        HotkeyLog(L"[space] suppress (typing recently)");
         return false;
     }
 
     if (!firstPressSeen_) {
         firstPressSeen_ = true;
         lastReleaseMs_ = 0;
+        HotkeyLog(L"[space] armed");
         return false;
     }
 
@@ -63,12 +93,14 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
     if (lastReleaseMs_ != 0 && (nowMs - lastReleaseMs_) <= windowMs_) {
         firstPressSeen_ = false;
         lastReleaseMs_ = 0;
+        HotkeyLog(L"[space] TRIGGER");
         if (onDoublePress_) onDoublePress_();
         return true;
     }
 
     firstPressSeen_ = true;
     lastReleaseMs_ = 0;
+    HotkeyLog(L"[space] re-arm (too slow)");
     return false;
 }
 

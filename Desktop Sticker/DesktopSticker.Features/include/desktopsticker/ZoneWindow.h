@@ -73,6 +73,8 @@ private:
     ID2D1DCRenderTarget* target_ = nullptr;
     ID2D1SolidColorBrush* bgBrush_ = nullptr;
     ID2D1SolidColorBrush* titleBrush_ = nullptr;
+    ID2D1SolidColorBrush* labelBrush_ = nullptr;    // 磁贴名称（次要文字）
+    ID2D1SolidColorBrush* borderBrush_ = nullptr;   // Fluent 低透明度描边
     ID2D1SolidColorBrush* hoverBrush_ = nullptr;
     IDWriteFactory* dwriteFactory_ = nullptr;
     IDWriteTextFormat* textFormat_ = nullptr;
