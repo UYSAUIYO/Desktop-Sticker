@@ -14,7 +14,9 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 
 ## Build & test (Release x64 only)
 
-No cmake; build with MSBuild (VS2022):
+一键编译：仓库根目录 `build.bat`（双击或 `build.bat test`，含还原、编译、关停运行中的实例、可选跑测试）。
+
+手动编译：No cmake; build with MSBuild (VS2022):
 
 ```bash
 "D:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe" \
