@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "desktopsticker/HotkeyService.h"
 
-#include "desktopsticker/Utf8.h"
+#include "desktopsticker/Log.h"
 
 namespace desktopsticker {
 
@@ -15,18 +15,6 @@ bool IsTextKey(UINT vk) {
     if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return true;
     if ((vk >= 0xBA && vk <= 0xC0) || (vk >= 0xDB && vk <= 0xE2)) return true; // OEM 标点
     return false;
-}
-
-void HotkeyLog(const std::wstring& msg) {
-    PWSTR appData = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
-    std::filesystem::path root(appData);
-    CoTaskMemFree(appData);
-    root /= L"DesktopSticker";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    std::ofstream out(root / L"debug.log", std::ios::app);
-    out << ToUtf8(msg) << std::endl;
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -63,7 +51,7 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
         // 丢失 key-up 保护：超过 2 秒仍“按住”，说明抬起事件被其他钩子吞掉，强制复位
         if (nowMs - lastSpaceDownMs_ > 2000) {
             keyDown_ = false;
-            HotkeyLog(L"[space] stuck keyDown -> reset");
+            dstklog::Write(L"hotkey", L"[space] stuck keyDown -> reset");
         } else {
             return false; // 长按重复
         }
@@ -78,14 +66,14 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
     if (typingRecently || (textInputPredicate_ && textInputPredicate_())) {
         firstPressSeen_ = false;
         lastReleaseMs_ = 0;
-        HotkeyLog(L"[space] suppress (typing recently)");
+        dstklog::Write(L"hotkey", L"[space] suppress (typing recently)");
         return false;
     }
 
     if (!firstPressSeen_) {
         firstPressSeen_ = true;
         lastReleaseMs_ = 0;
-        HotkeyLog(L"[space] armed");
+        dstklog::Write(L"hotkey", L"[space] armed");
         return false;
     }
 
@@ -93,14 +81,14 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
     if (lastReleaseMs_ != 0 && (nowMs - lastReleaseMs_) <= windowMs_) {
         firstPressSeen_ = false;
         lastReleaseMs_ = 0;
-        HotkeyLog(L"[space] TRIGGER");
+        dstklog::Write(L"hotkey", L"[space] TRIGGER");
         if (onDoublePress_) onDoublePress_();
         return true;
     }
 
     firstPressSeen_ = true;
     lastReleaseMs_ = 0;
-    HotkeyLog(L"[space] re-arm (too slow)");
+    dstklog::Write(L"hotkey", L"[space] re-arm (too slow)");
     return false;
 }
 

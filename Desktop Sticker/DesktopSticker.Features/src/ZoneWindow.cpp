@@ -1,13 +1,11 @@
 #include "pch.h"
 #include "desktopsticker/ZoneWindow.h"
 #include "desktopsticker/IconService.h"
-#include "desktopsticker/Utf8.h"
+#include "desktopsticker/Log.h"
 
 #include <cstdlib>
 #include <dwrite.h>
-#include <fstream>
 #include <map>
-#include <shlobj.h>
 
 namespace desktopsticker {
 
@@ -15,18 +13,6 @@ namespace {
 const wchar_t kZoneWindowClass[] = L"DesktopSticker.ZoneWindow";
 constexpr UINT_PTR kRenderTimerId = 1; // 统一渲染/滚动插值定时器（~60fps）
 std::map<HWND, ZoneWindow*> g_windows;
-
-void ZoneDebugLog(const std::wstring& msg) {
-    PWSTR appData = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) return;
-    std::filesystem::path root(appData);
-    CoTaskMemFree(appData);
-    root /= L"DesktopSticker";
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    std::ofstream out(root / L"debug.log", std::ios::app);
-    out << ToUtf8(msg) << std::endl;
-}
 
 void ApplyAcrylic(HWND hwnd) {
     enum AccentState { ACCENT_DISABLED = 0, ACCENT_ENABLE_BLURBEHIND = 3, ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 };
@@ -708,7 +694,7 @@ LRESULT CALLBACK ZoneWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             const DWORD_PTR code = reinterpret_cast<DWORD_PTR>(se);
             if (code <= 32) {
                 // 打开失败：记录返回码便于定位（>32 为成功句柄）
-                ZoneDebugLog(L"[open fail] zone=" + self->zone_.name +
+                dstklog::Write(L"open-fail", L"zone=" + self->zone_.name +
                              L" se=" + std::to_wstring(code) +
                              L" gle=" + std::to_wstring(GetLastError()) +
                              L" path=" + item);

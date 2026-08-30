@@ -6,6 +6,7 @@
 #include "desktopsticker/ConfigStore.h"
 #include "desktopsticker/Export.h"
 #include "desktopsticker/PinyinMapper.h"
+#include "desktopsticker/SearchSources.h"
 
 namespace desktopsticker {
 

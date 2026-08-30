@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "FeatureModule.h"
 
+#include "desktopsticker/KnownFolders.h"
 #include "desktopsticker/ShellLauncher.h"
 
 namespace desktopsticker {
@@ -14,12 +15,10 @@ FeatureModule::~FeatureModule() {
 bool FeatureModule::Init(const FeatureEvents& events) {
     events_ = events;
 
-    PWSTR appData = nullptr;
+    // 数据根目录：%APPDATA%\DesktopSticker；解析失败退回临时目录（功能可用但不持久）
     std::filesystem::path root = std::filesystem::temp_directory_path() / L"DesktopSticker";
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
-        root = std::filesystem::path(appData) / L"DesktopSticker";
-        CoTaskMemFree(appData);
-    }
+    const std::wstring appData = GetKnownPath(FOLDERID_RoamingAppData);
+    if (!appData.empty()) root = std::filesystem::path(appData) / L"DesktopSticker";
 
     config_ = std::make_unique<ConfigStore>(root);
     config_->Load();

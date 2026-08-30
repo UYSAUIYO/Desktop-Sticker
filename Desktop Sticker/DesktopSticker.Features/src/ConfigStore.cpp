@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "desktopsticker/FileUtil.h"
 #include "desktopsticker/Utf8.h"
 
 namespace fs = std::filesystem;
@@ -66,15 +67,8 @@ bool ConfigStore::Save() const {
     j["zoneColumnSpacing"] = config_.zoneColumnSpacing;
     j["zoneRowSpacing"] = config_.zoneRowSpacing;
 
-    const fs::path tmp = configPath_.wstring() + L".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) return false;
-        out << j.dump(2);
-        out.flush();
-    }
-    // 原子替换
-    return MoveFileExW(tmp.c_str(), configPath_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    // 原子替换（tmp + MoveFileEx 统一封装）
+    return WriteFileAtomic(configPath_, j.dump(2));
 }
 
 } // namespace desktopsticker

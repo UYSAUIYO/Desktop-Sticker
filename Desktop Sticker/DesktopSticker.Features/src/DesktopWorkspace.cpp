@@ -6,7 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "desktopsticker/Utf8.h"
+#include "desktopsticker/KnownFolders.h"
+#include "desktopsticker/Log.h"
 
 namespace fs = std::filesystem;
 
@@ -20,13 +21,6 @@ const UINT kWatcherNotifyMsg = WM_APP + 2;
 constexpr int kClassVersion = 2; // 分类规则版本（扩充关键词 + 实用工具分区）
 
 DesktopWorkspace* g_mouseHookWorkspace = nullptr;
-
-void DebugLog(const std::filesystem::path& root, const std::wstring& msg) {
-    std::error_code ec;
-    std::filesystem::create_directories(root, ec);
-    std::ofstream out(root / L"debug.log", std::ios::app);
-    out << ToUtf8(msg) << std::endl;
-}
 
 struct PromptState {
     std::wstring value;
@@ -126,16 +120,15 @@ DesktopWorkspace::~DesktopWorkspace() {
 }
 
 bool DesktopWorkspace::Initialize() {
-    const auto root = config_->GetRootDir();
-    DebugLog(root, L"Initialize begin");
+    dstklog::Write(L"workspace", L"Initialize begin");
     try {
         oleInitialized_ = SUCCEEDED(OleInitialize(nullptr));
 
         if (!shell_.Initialize()) {
-            DebugLog(root, L"shell_.Initialize() = false (degraded)");
+            dstklog::Write(L"workspace", L"shell_.Initialize() = false (degraded)");
         } else {
             const auto& w = shell_.Windows();
-            DebugLog(root, L"shell ok: progman=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.progman)) +
+            dstklog::Write(L"workspace", L"shell ok: progman=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.progman)) +
                            L" workerw=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.workerw)) +
                            L" defView=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.defView)) +
                            L" listView=" + std::to_wstring(reinterpret_cast<uintptr_t>(w.listView)) +
@@ -150,10 +143,10 @@ bool DesktopWorkspace::Initialize() {
         if (iconManager_->ListView() && IsWindow(iconManager_->ListView())) {
             LONG_PTR style = GetWindowLongPtrW(iconManager_->ListView(), GWL_STYLE);
             model_.Layout().autoArrangeWasEnabled = (style & LVS_AUTOARRANGE) != 0;
-            DebugLog(root, L"listview found, autoArrange=" +
+            dstklog::Write(L"workspace", L"listview found, autoArrange=" +
                            std::to_wstring(model_.Layout().autoArrangeWasEnabled ? 1 : 0));
         } else {
-            DebugLog(root, L"listview NOT found");
+            dstklog::Write(L"workspace", L"listview NOT found");
         }
 
         // 已有布局则加载；若没有图标、仍是旧分类名、或分类版本过旧则重新自动分类
@@ -171,11 +164,11 @@ bool DesktopWorkspace::Initialize() {
         }
         if (model_.Layout().zones.empty() || !hasItems || needsReclassify) {
             auto icons = iconManager_->EnumIcons();
-            DebugLog(root, L"desktop icons count=" + std::to_wstring(icons.size()));
+            dstklog::Write(L"workspace", L"desktop icons count=" + std::to_wstring(icons.size()));
             AutoClassify(icons);
             SaveLayout();
         }
-        DebugLog(root, L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
+        dstklog::Write(L"workspace", L"zones=" + std::to_wstring(model_.Layout().zones.size()) +
                        L" items=" + std::to_wstring(CountZoneItems()));
 
         // 布局版本升级：旧布局默认展开全部分区，避免“折叠后看不到图标”造成困惑
@@ -189,7 +182,7 @@ bool DesktopWorkspace::Initialize() {
         if (model_.Layout().version < 4) {
             ApplySideColumnLayout();
             SaveLayout();
-            DebugLog(root, L"layout migrated to side columns");
+            dstklog::Write(L"workspace", L"layout migrated to side columns");
         }
 
         // 清理历史版本误记录的无效原始位置（-32000 是我们自己移出去的，恢复无意义）
@@ -210,34 +203,33 @@ bool DesktopWorkspace::Initialize() {
         // 直接隐藏整个桌面图标列表（比逐图标移出更简单可靠）
         {
             const bool hid = iconManager_->HideAllIcons(true);
-            DebugLog(root, L"hide desktop icons=" + std::to_wstring(hid ? 1 : 0));
+            dstklog::Write(L"workspace", L"hide desktop icons=" + std::to_wstring(hid ? 1 : 0));
         }
 
         CreateMessageWindow();
         CreateZoneWindows();
         StartMouseHook();
         StartDesktopWatcher();
-        DebugLog(root, L"Initialize end, zoneWindows=" + std::to_wstring(zoneWindows_.size()));
+        dstklog::Write(L"workspace", L"Initialize end, zoneWindows=" + std::to_wstring(zoneWindows_.size()));
         return true;
     } catch (const std::exception& e) {
-        DebugLog(root, L"Initialize exception: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        dstklog::Write(L"workspace", L"Initialize exception: " + std::wstring(e.what(), e.what() + strlen(e.what())));
         return false;
     } catch (...) {
-        DebugLog(root, L"Initialize unknown exception");
+        dstklog::Write(L"workspace", L"Initialize unknown exception");
         return false;
     }
 }
 
 void DesktopWorkspace::Shutdown() {
-    const auto root = config_->GetRootDir();
-    DebugLog(root, L"Shutdown begin");
+    dstklog::Write(L"workspace", L"Shutdown begin");
     try {
         desktopWatcher_.reset();
         StopMouseHook();
         DestroyZoneWindows();
         RestoreDesktop();
     } catch (...) {
-        DebugLog(root, L"Shutdown cleanup exception");
+        dstklog::Write(L"workspace", L"Shutdown cleanup exception");
     }
     if (msgHwnd_) {
         DestroyWindow(msgHwnd_);
@@ -250,7 +242,7 @@ void DesktopWorkspace::Shutdown() {
         OleUninitialize();
         oleInitialized_ = false;
     }
-    DebugLog(root, L"Shutdown end");
+    dstklog::Write(L"workspace", L"Shutdown end");
 }
 
 void DesktopWorkspace::Refresh() {
@@ -462,7 +454,7 @@ void DesktopWorkspace::ApplySideColumnLayout() {
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
     // 重新分类时清空旧分区（原图标位置记录保留，恢复桌面依赖它）
     model_.Layout().zones.clear();
-    DebugLog(config_->GetRootDir(), L"AutoClassify icons=" + std::to_wstring(icons.size()));
+    dstklog::Write(L"workspace", L"AutoClassify icons=" + std::to_wstring(icons.size()));
 
     const wchar_t* names[] = {L"应用", L"开发工具", L"办公软件", L"浏览器",
                               L"影音娱乐", L"实用工具", L"社交聊天", L"游戏",
@@ -490,7 +482,7 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
         }
         iconManager_->MoveIconOffscreen(icon.index);
     }
-    DebugLog(config_->GetRootDir(), L"AutoClassify done items=" + std::to_wstring(CountZoneItems()));
+    dstklog::Write(L"workspace", L"AutoClassify done items=" + std::to_wstring(CountZoneItems()));
 }
 
 void DesktopWorkspace::CollectIntoZone(const std::wstring& zoneId, const std::wstring& path) {
@@ -603,10 +595,10 @@ void DesktopWorkspace::CreateZoneWindows() {
         };
 
         if (!win->Create()) {
-            DebugLog(config_->GetRootDir(), L"ZoneWindow create FAILED: " + zone.name);
+            dstklog::Write(L"workspace", L"ZoneWindow create FAILED: " + zone.name);
             continue;
         }
-        DebugLog(config_->GetRootDir(),
+        dstklog::Write(L"workspace",
                  L"ZoneWindow created: " + zone.name +
                  L" parent=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))) +
                  L" owner=" + std::to_wstring(reinterpret_cast<uintptr_t>(GetWindow(win->Hwnd(), GW_OWNER))));
@@ -619,7 +611,7 @@ void DesktopWorkspace::CreateZoneWindows() {
             // 转成真正的 WS_CHILD 子窗口：被裁剪在桌面范围内，不会遮挡普通窗口
             LONG_PTR style = GetWindowLongPtrW(win->Hwnd(), GWL_STYLE);
             SetWindowLongPtrW(win->Hwnd(), GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD);
-            DebugLog(config_->GetRootDir(),
+            dstklog::Write(L"workspace",
                      L"  after SetParent parent=" +
                      std::to_wstring(reinterpret_cast<uintptr_t>(GetParent(win->Hwnd()))) +
                      L" ancestor=" +
@@ -634,7 +626,7 @@ void DesktopWorkspace::CreateZoneWindows() {
             }
             RECT rc{};
             GetWindowRect(win->Hwnd(), &rc);
-            DebugLog(config_->GetRootDir(),
+            dstklog::Write(L"workspace",
                      L"ZoneWindow embed: " + zone.name +
                      L" oldParent=" + std::to_wstring(reinterpret_cast<uintptr_t>(oldParent)) +
                      L" err=" + std::to_wstring(err) +
@@ -646,7 +638,7 @@ void DesktopWorkspace::CreateZoneWindows() {
         } else {
             SetWindowPos(win->Hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            DebugLog(config_->GetRootDir(), L"ZoneWindow fallback bottom: " + zone.name);
+            dstklog::Write(L"workspace", L"ZoneWindow fallback bottom: " + zone.name);
         }
 
         // 接收 Shell 拖放（原生图标/文件拖入分区）
@@ -732,7 +724,7 @@ void DesktopWorkspace::RestoreDesktop() {
         ++restored;
     }
     iconManager_->HideAllIcons(false); // 显示原生桌面图标（启动时隐藏了整个列表）
-    DebugLog(config_->GetRootDir(), L"RestoreDesktop restored=" + std::to_wstring(restored));
+    dstklog::Write(L"workspace", L"RestoreDesktop restored=" + std::to_wstring(restored));
 }
 
 void DesktopWorkspace::SaveLayout() {
@@ -740,8 +732,8 @@ void DesktopWorkspace::SaveLayout() {
 }
 
 void DesktopWorkspace::StartDesktopWatcher() {
-    PWSTR desktopPath = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) return;
+    const std::wstring desktopPath = GetKnownPath(FOLDERID_Desktop);
+    if (desktopPath.empty()) return;
 
     // watcher 回调在后台线程触发，这里只投递消息，实际收集逻辑封送回 UI 线程执行，
     // 避免后台线程与交互操作并发读写 layout 数据
@@ -749,7 +741,6 @@ void DesktopWorkspace::StartDesktopWatcher() {
         if (msgHwnd_) PostMessageW(msgHwnd_, kWatcherNotifyMsg, 0, 0);
     });
     desktopWatcher_->Start();
-    CoTaskMemFree(desktopPath);
 }
 
 void DesktopWorkspace::CollectNewDesktopIcons() {

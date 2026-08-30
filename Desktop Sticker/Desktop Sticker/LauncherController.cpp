@@ -240,11 +240,16 @@ void LauncherController::RunSearch() {
     const auto raw = host_->Module()->Search(query.c_str(), 30);
     if (raw.empty()) return;
 
-    // 按来源分组展示（与截图面板一致：组标题 + 图标网格）
+    // 按来源分组展示（组标题 + 图标网格）；来源标识以 IFeatureModule.h 的 sources 常量为准
     static const struct { const wchar_t* source; const wchar_t* title; } kGroups[] = {
-        {L"Apps", L"手动添加"},      {L"StartMenu", L"开始菜单"}, {L"Desktop", L"桌面"},
-        {L"Documents", L"文档"},    {L"Downloads", L"下载"},     {L"Pictures", L"图片"},
-        {L"Videos", L"视频"},       {L"Music", L"音乐"},
+        {desktopsticker::sources::kApps, L"手动添加"},
+        {desktopsticker::sources::kStartMenu, L"开始菜单"},
+        {desktopsticker::sources::kDesktop, L"桌面"},
+        {desktopsticker::sources::kDocuments, L"文档"},
+        {desktopsticker::sources::kDownloads, L"下载"},
+        {desktopsticker::sources::kPictures, L"图片"},
+        {desktopsticker::sources::kVideos, L"视频"},
+        {desktopsticker::sources::kMusic, L"音乐"},
     };
     for (const auto& g : kGroups) {
         BuildGroup(g.source, g.title, raw);

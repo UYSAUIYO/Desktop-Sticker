@@ -3,9 +3,8 @@
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
 
+#include "desktopsticker/FileUtil.h"
 #include "desktopsticker/Utf8.h"
 
 namespace fs = std::filesystem;
@@ -95,16 +94,8 @@ bool ZoneModel::Save(const fs::path& layoutPath) const {
     }
     j["originalIconPositions"] = positions;
 
-    std::error_code ec;
-    fs::create_directories(layoutPath.parent_path(), ec);
-    const fs::path tmp = layoutPath.wstring() + L".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) return false;
-        out << j.dump(2);
-        out.flush();
-    }
-    return MoveFileExW(tmp.c_str(), layoutPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    // 原子替换（tmp + MoveFileEx 统一封装）；originalIconPositions 丢失会导致桌面图标无法还原，落盘必须可靠
+    return WriteFileAtomic(layoutPath, j.dump(2));
 }
 
 Zone* ZoneModel::FindZone(const std::wstring& id) {

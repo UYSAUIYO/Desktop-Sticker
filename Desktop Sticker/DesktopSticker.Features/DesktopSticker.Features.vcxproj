@@ -83,6 +83,11 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="include\desktopsticker\Export.h" />
     <ClInclude Include="include\desktopsticker\Utf8.h" />
+    <ClInclude Include="include\desktopsticker\KnownFolders.h" />
+    <ClInclude Include="include\desktopsticker\Log.h" />
+    <ClInclude Include="include\desktopsticker\FileUtil.h" />
+    <ClInclude Include="include\desktopsticker\StringUtil.h" />
+    <ClInclude Include="include\desktopsticker\SearchSources.h" />
     <ClInclude Include="include\desktopsticker\IFeatureModule.h" />
     <ClInclude Include="include\desktopsticker\ConfigStore.h" />
     <ClInclude Include="include\desktopsticker\HotkeyService.h" />

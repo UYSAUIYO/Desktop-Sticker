@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "desktopsticker/ConfigStore.h"
+#include "desktopsticker/SearchSources.h"
 
 namespace desktopsticker {
 

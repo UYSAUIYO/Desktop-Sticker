@@ -7,6 +7,9 @@
 #include <fstream>
 #include <set>
 
+#include "desktopsticker/FileUtil.h"
+#include "desktopsticker/KnownFolders.h"
+#include "desktopsticker/StringUtil.h"
 #include "desktopsticker/Utf8.h"
 
 namespace fs = std::filesystem;
@@ -15,11 +18,6 @@ using json = nlohmann::json;
 namespace desktopsticker {
 
 namespace {
-
-std::wstring ToLower(std::wstring s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return std::towlower(c); });
-    return s;
-}
 
 bool IsHidden(const fs::path& p) {
     const DWORD attrs = GetFileAttributesW(p.c_str());
@@ -55,7 +53,7 @@ bool IndexService::Rebuild() {
         item.path = app;
         item.name = fs::path(app).filename().wstring();
         if (item.name.empty()) item.name = app;
-        item.source = L"Apps";
+        item.source = sources::kApps;
         item.pinyin = PinyinMapper::GetInitials(item.name);
         item.isApp = true;
         items_.push_back(std::move(item));
@@ -67,41 +65,33 @@ bool IndexService::Rebuild() {
 }
 
 void IndexService::ScanDesktop() {
-    PWSTR desktopPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPath))) {
-        ScanDirectory(desktopPath, L"Desktop");
-        CoTaskMemFree(desktopPath);
+    const auto app = desktopsticker::GetKnownPath(FOLDERID_Desktop);
+    if (!app.empty()) {
+        ScanDirectory(app, sources::kDesktop);
     }
 }
 
 void IndexService::ScanKnownFolders() {
     struct Folder { KNOWNFOLDERID id; const wchar_t* name; };
     const Folder folders[] = {
-        {FOLDERID_Documents, L"Documents"},
-        {FOLDERID_Downloads, L"Downloads"},
-        {FOLDERID_Pictures, L"Pictures"},
-        {FOLDERID_Videos, L"Videos"},
-        {FOLDERID_Music, L"Music"},
+        {FOLDERID_Documents, sources::kDocuments},
+        {FOLDERID_Downloads, sources::kDownloads},
+        {FOLDERID_Pictures, sources::kPictures},
+        {FOLDERID_Videos, sources::kVideos},
+        {FOLDERID_Music, sources::kMusic},
     };
     for (const auto& f : folders) {
-        PWSTR path = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(f.id, 0, nullptr, &path))) {
-            ScanDirectory(path, f.name);
-            CoTaskMemFree(path);
-        }
+        const std::wstring path = GetKnownPath(f.id);
+        if (!path.empty()) ScanDirectory(path, f.name);
     }
 }
 
 void IndexService::ScanStartMenu() {
     // 用户与公共开始菜单是已安装应用快捷方式的主要来源（如 QQ/微信的 .lnk）
-    PWSTR user = nullptr;
-    PWSTR common = nullptr;
-    SHGetKnownFolderPath(FOLDERID_StartMenu, 0, nullptr, &user);
-    SHGetKnownFolderPath(FOLDERID_CommonStartMenu, 0, nullptr, &common);
-    if (user) ScanStartMenuDir(std::filesystem::path(user) / L"Programs", 0);
-    if (common) ScanStartMenuDir(std::filesystem::path(common) / L"Programs", 0);
-    CoTaskMemFree(user);
-    CoTaskMemFree(common);
+    const std::wstring user = GetKnownPath(FOLDERID_StartMenu);
+    const std::wstring common = GetKnownPath(FOLDERID_CommonStartMenu);
+    if (!user.empty()) ScanStartMenuDir(fs::path(user) / L"Programs", 0);
+    if (!common.empty()) ScanStartMenuDir(fs::path(common) / L"Programs", 0);
 }
 
 void IndexService::ScanStartMenuDir(const std::filesystem::path& dir, int depth) {
@@ -114,12 +104,12 @@ void IndexService::ScanStartMenuDir(const std::filesystem::path& dir, int depth)
             if (depth < 3) ScanStartMenuDir(p, depth + 1);
             continue;
         }
-        const std::wstring extLower = ToLower(p.extension().wstring());
+        const std::wstring extLower = ToLowerCopy(p.extension().wstring());
         if (extLower != L".lnk" && extLower != L".url") continue;
         IndexedItem item;
         item.name = p.stem().wstring(); // 快捷方式显示为去扩展名的名称
         item.path = p.wstring();
-        item.source = L"StartMenu";
+        item.source = sources::kStartMenu;
         item.pinyin = PinyinMapper::GetInitials(item.name);
         item.isApp = true;
         items_.push_back(std::move(item));
@@ -168,17 +158,7 @@ bool IndexService::SaveApps() const {
     }
     json root;
     root["apps"] = j;
-
-    std::error_code ec;
-    fs::create_directories(rootDir_, ec);
-    const fs::path tmp = appsPath_.wstring() + L".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open()) return false;
-        out << root.dump(2);
-        out.flush();
-    }
-    return MoveFileExW(tmp.c_str(), appsPath_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    return WriteFileAtomic(appsPath_, root.dump(2));
 }
 
 bool IndexService::AddApp(const std::wstring& path) {
@@ -200,12 +180,12 @@ bool IndexService::RemoveApp(const std::wstring& path) {
 std::vector<IndexedItem> IndexService::Search(const std::wstring& query, size_t maxResults) const {
     if (query.empty()) return {};
 
-    const std::wstring queryLower = ToLower(query);
+    const std::wstring queryLower = ToLowerCopy(query);
     std::vector<std::pair<int, const IndexedItem*>> scored;
 
     for (const auto& item : items_) {
-        const std::wstring nameLower = ToLower(item.name);
-        const std::wstring pinyinLower = ToLower(item.pinyin);
+        const std::wstring nameLower = ToLowerCopy(item.name);
+        const std::wstring pinyinLower = ToLowerCopy(item.pinyin);
         const int score = MatchScore(nameLower, pinyinLower, queryLower);
         if (score >= 0) {
             scored.emplace_back(score, &item);
