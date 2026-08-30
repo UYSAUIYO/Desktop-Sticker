@@ -13,8 +13,6 @@
 namespace desktopsticker {
 
 namespace {
-const wchar_t kLocateIpApi[] =
-    L"http://ip-api.com/json/?lang=zh-CN&fields=status,country,city,lat,lon";
 const wchar_t kLocateBaidu[] =
     L"https://qifu-api.baidubce.com/ip/local/geo/v1/district";
 const wchar_t kGeocodeFmt[] =
@@ -51,11 +49,14 @@ WeatherInfo WeatherService::Snapshot() const {
     return info_;
 }
 
-bool WeatherService::HttpGet(const std::wstring& url, std::string& out) {
-    // WinINet：自动跟随重定向、走系统代理（Clash 等）、TLS 无坑（WinHTTP 在本机对
-    // open-meteo 的 HTTPS QueryDataAvailable 会返回 E_ABORT，已弃用）
+bool WeatherService::HttpGet(const std::wstring& url, std::string& out, bool direct) {
+    // WinINet：自动跟随重定向、TLS 无坑（WinHTTP 在本机对 open-meteo 的 HTTPS
+    // QueryDataAvailable 会返回 E_ABORT，已弃用）。
+    // direct=true 用 INTERNET_OPEN_TYPE_DIRECT 直连：绕过系统代理取真实 IP 位置；
+    // 天气按坐标查询与出口无关，走系统代理保证可达。
     bool ok = false;
-    HINTERNET session = InternetOpenW(L"DesktopSticker/1.0", INTERNET_OPEN_TYPE_PRECONFIG,
+    HINTERNET session = InternetOpenW(L"DesktopSticker/1.0",
+                                      direct ? INTERNET_OPEN_TYPE_DIRECT : INTERNET_OPEN_TYPE_PRECONFIG,
                                       nullptr, nullptr, 0);
     HINTERNET handle = session ? InternetOpenUrlW(session, url.c_str(), nullptr, 0,
                                                   INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD,
@@ -76,9 +77,15 @@ bool WeatherService::HttpGet(const std::wstring& url, std::string& out) {
     return ok;
 }
 
-bool WeatherService::LocateIpApi(double& lat, double& lon, std::wstring& country, std::wstring& city) {
+bool WeatherService::LocateIpApi(bool direct, double& lat, double& lon,
+                                 std::wstring& country, std::wstring& region, std::wstring& city) {
     std::string body;
-    if (!HttpGet(kLocateIpApi, body)) return false;
+    if (!HttpGet(direct
+                     ? L"http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon"
+                     : L"http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,lat,lon",
+                 body, direct)) {
+        return false;
+    }
     auto j = nlohmann::json::parse(body, nullptr, false);
     if (j.is_discarded() || j.value("status", "") != "success") {
         dstklog::Write(L"weather", L"ip-api fail size=" + std::to_wstring(body.size()) +
@@ -90,6 +97,7 @@ bool WeatherService::LocateIpApi(double& lat, double& lon, std::wstring& country
     lat = j.value("lat", 0.0);
     lon = j.value("lon", 0.0);
     country = FromUtf8(j.value("country", std::string()));
+    region = FromUtf8(j.value("regionName", std::string()));
     city = c;
     return true;
 }
@@ -97,9 +105,10 @@ bool WeatherService::LocateIpApi(double& lat, double& lon, std::wstring& country
 bool WeatherService::GeocodeCity(const std::wstring& city, double& lat, double& lon, std::wstring& country) {
     wchar_t url[512]{};
     swprintf_s(url, kGeocodeFmt, city.c_str());
+    // 城市名来自真实 IP：先直连，直连不可达再走代理
     std::string body;
-    if (!HttpGet(url, body)) {
-        dstklog::Write(L"weather", L"geocode http FAILED");
+    if (!HttpGet(url, body, /*direct=*/true) && !HttpGet(url, body, /*direct=*/false)) {
+        dstklog::Write(L"weather", L"geocode http FAILED (direct+proxy)");
         return false;
     }
     auto j = nlohmann::json::parse(body, nullptr, false);
@@ -116,9 +125,10 @@ bool WeatherService::GeocodeCity(const std::wstring& city, double& lat, double& 
     return lat != 0.0 || lon != 0.0;
 }
 
-bool WeatherService::LocateBaidu(double& lat, double& lon, std::wstring& country, std::wstring& city) {
+bool WeatherService::LocateBaidu(bool direct, double& lat, double& lon,
+                                 std::wstring& country, std::wstring& region, std::wstring& city) {
     std::string body;
-    if (!HttpGet(kLocateBaidu, body)) return false;
+    if (!HttpGet(kLocateBaidu, body, direct)) return false;
     auto j = nlohmann::json::parse(body, nullptr, false);
     if (j.is_discarded() || j.value("code", "") != "Success" || !j.contains("data")) {
         dstklog::Write(L"weather", L"baidu parse/code fail size=" + std::to_wstring(body.size()));
@@ -136,7 +146,8 @@ bool WeatherService::LocateBaidu(double& lat, double& lon, std::wstring& country
     std::wstring geoCountry;
     if (!GeocodeCity(c, lat, lon, geoCountry)) return false;
     country = geoCountry.empty() ? FromUtf8(data.value("country", "")) : geoCountry;
-    city = FromUtf8(data.value("prov", "")) + L"·" + c;
+    region = FromUtf8(data.value("prov", ""));
+    city = c;
     return true;
 }
 
@@ -177,25 +188,25 @@ bool WeatherService::FetchWeather(double lat, double lon, WeatherInfo& out) {
 void WeatherService::Run() {
     bool located = false;
     double lat = 0, lon = 0;
-    std::wstring country, city;
+    std::wstring country, region, city;
     int failures = 0;
 
     for (;;) {
         WeatherInfo local;
         if (!located) {
-            if (LocateIpApi(lat, lon, country, city)) {
+            // 定位一律直连（绕过代理）：取真实 IP 的位置
+            if (LocateIpApi(/*direct=*/true, lat, lon, country, region, city) ||
+                LocateBaidu(/*direct=*/true, lat, lon, country, region, city)) {
                 located = true;
-                dstklog::Write(L"weather", L"located via ip-api: " + city);
-            } else if (LocateBaidu(lat, lon, country, city)) {
-                located = true;
-                dstklog::Write(L"weather", L"located via baidu+geocode: " + city);
+                dstklog::Write(L"weather", L"located: " + country + L" " + region + L" " + city);
             } else {
-                dstklog::Write(L"weather", L"locate failed (both sources)");
+                dstklog::Write(L"weather", L"locate failed (both sources, direct)");
             }
         }
         if (located) {
             local.located = true;
             local.country = country;
+            local.region = region;
             local.city = city;
             if (FetchWeather(lat, lon, local)) {
                 failures = 0;

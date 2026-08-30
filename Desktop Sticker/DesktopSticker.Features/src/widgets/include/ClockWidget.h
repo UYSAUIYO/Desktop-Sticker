@@ -56,9 +56,9 @@ private:
     bool painted_ = false;
     std::wstring timeText_;   // HH:MM:SS
     std::wstring dateText_;
-    std::wstring locText_;    // 国家 · 城市
-    std::wstring sunText_;    // 日出 HH:MM
-    std::wstring setText_;    // 日落 HH:MM
+    std::wstring locText_;    // 国家 · 省 · 市
+    std::wstring sunText_;    // 日出时刻 HH:MM
+    std::wstring setText_;    // 日落时刻 HH:MM
     std::wstring tempText_;   // 26°
     std::wstring descText_;   // 晴 · 西北风 3级
     int weatherCode_ = -1;
@@ -88,6 +88,7 @@ private:
     IDWriteTextFormat* fmtLoc_ = nullptr;
     IDWriteTextFormat* fmtNum_ = nullptr;
     IDWriteTextFormat* fmtCard_ = nullptr;
+    IDWriteTextFormat* fmtVal_ = nullptr;
     IDWriteTextFormat* fmtTemp_ = nullptr;
     IDWriteTextFormat* fmtDesc_ = nullptr;
 

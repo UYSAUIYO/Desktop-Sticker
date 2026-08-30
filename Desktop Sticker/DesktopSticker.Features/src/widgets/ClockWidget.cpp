@@ -144,10 +144,14 @@ void ClockWidget::OnTick() {
     dateText_ = ClockText::DateText(st);
 
     const WeatherInfo wx = weather_.Snapshot();
-    locText_ = wx.located ? (wx.country + L" · " + wx.city) : L"本地时间";
+    locText_ = wx.located ? wx.country : L"本地时间";
+    if (wx.located) {
+        if (!wx.region.empty() && wx.region != locText_) locText_ += L" · " + wx.region;
+        if (!wx.city.empty() && wx.city != wx.region) locText_ += L" · " + wx.city;
+    }
     if (wx.valid) {
-        sunText_ = L"日出 " + wx.sunrise;
-        setText_ = L"日落 " + wx.sunset;
+        sunText_ = wx.sunrise;
+        setText_ = wx.sunset;
         wchar_t buf[16]{};
         swprintf_s(buf, L"%.0f°", wx.temp);
         tempText_ = buf;
@@ -242,7 +246,7 @@ bool ClockWidget::EnsureD2D() {
     if (fmtLoc_ == nullptr) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                         17.0f, L"zh-cn", &fmtLoc_);
+                                         15.0f, L"zh-cn", &fmtLoc_);
         if (fmtLoc_) {
             fmtLoc_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             fmtLoc_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
@@ -262,6 +266,11 @@ bool ClockWidget::EnsureD2D() {
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                                          14.0f, L"zh-cn", &fmtCard_);
     }
+    if (fmtVal_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         16.0f, L"zh-cn", &fmtVal_);
+    }
     if (fmtTemp_ == nullptr) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -274,7 +283,7 @@ bool ClockWidget::EnsureD2D() {
     }
     return bgBrush_ && borderBrush_ && cardBrush_ && handBrush_ && subBrush_ && orangeBrush_ &&
            timeGradBrush_ && sunCoreBrush_ && sunGlowBrush_ &&
-           fmtTime_ && fmtSub_ && fmtLoc_ && fmtNum_ && fmtCard_ && fmtTemp_ && fmtDesc_;
+           fmtTime_ && fmtSub_ && fmtLoc_ && fmtNum_ && fmtCard_ && fmtVal_ && fmtTemp_ && fmtDesc_;
 }
 
 void ClockWidget::ReleaseD2D() {
@@ -283,6 +292,7 @@ void ClockWidget::ReleaseD2D() {
     if (fmtLoc_) fmtLoc_->Release();
     if (fmtNum_) fmtNum_->Release();
     if (fmtCard_) fmtCard_->Release();
+    if (fmtVal_) fmtVal_->Release();
     if (fmtTemp_) fmtTemp_->Release();
     if (fmtDesc_) fmtDesc_->Release();
     if (timeGradBrush_) timeGradBrush_->Release();
@@ -442,73 +452,66 @@ void ClockWidget::OnPaint() {
     target_->DrawTextW(locText_.c_str(), static_cast<UINT32>(locText_.size()), fmtLoc_,
                        D2D1::RectF(260, 132, 520, 164), handBrush_);
 
-    // —— 底部左：日出日落 ——
+    // —— 底部左：太阳-行星轨道（3D 遮挡）+ 日出日落时间（横向布局） ——
     target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(24, 206, 322, 288), 8, 8), cardBrush_);
-    target_->DrawTextW(sunText_.c_str(), static_cast<UINT32>(sunText_.size()), fmtCard_,
-                       D2D1::RectF(38, 214, 172, 238), handBrush_);
-    target_->DrawTextW(setText_.c_str(), static_cast<UINT32>(setText_.size()), fmtCard_,
-                       D2D1::RectF(176, 214, 306, 238), handBrush_);
 
-    // 太阳：光晕呼吸动画 + 径向渐变球（径向刷半径固定，位置/缩放走画刷变换）
-    const float phase = (st.wSecond * 1000.0f + ms) / 1000.0f;
-    const float glowR = 30.0f + sinf(phase * 2.2f) * 3.0f;
-    const D2D1_MATRIX_3X2_F atSun =
-        D2D1::Matrix3x2F::Scale(glowR / 33.0f, glowR / 33.0f) * D2D1::Matrix3x2F::Translation(78, 264);
-    sunGlowBrush_->SetTransform(atSun);
-    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(78, 264), glowR, glowR), sunGlowBrush_);
-    sunCoreBrush_->SetTransform(D2D1::Matrix3x2F::Translation(78, 264));
-    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(78, 264), 19, 19), sunCoreBrush_);
-
-    // 弧线：从日出到日落的进度（左端 → 顶 → 右端）
-    const float arcX = 212.0f, arcY = 274.0f, arcR = 40.0f;
-    float t = 0.0f;
-    if (sunriseMin_ >= 0 && sunsetMin_ > sunriseMin_) {
-        t = (static_cast<float>(nowMin_) - sunriseMin_) / (sunsetMin_ - sunriseMin_);
-        t = std::max(0.0f, std::min(1.0f, t));
-    }
-    const float endDeg = (180.0f - t * 180.0f) * kPi / 180.0f;
-    D2D1_POINT_2F arcStart{arcX - arcR, arcY};
-    D2D1_POINT_2F arcEnd{arcX + cosf(endDeg) * arcR, arcY - sinf(endDeg) * arcR};
-    ID2D1PathGeometry* geo = nullptr;
-    if (SUCCEEDED(factory_->CreatePathGeometry(&geo))) {
-        ID2D1GeometrySink* sink = nullptr;
-        if (SUCCEEDED(geo->Open(&sink))) {
-            sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
-            D2D1_ARC_SEGMENT seg{};
-            seg.point = arcEnd;
-            seg.size = D2D1::SizeF(arcR, arcR);
-            seg.rotationAngle = 0.0f;
-            seg.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-            seg.arcSize = D2D1_ARC_SIZE_SMALL;
-            sink->AddArc(seg);
-            sink->EndFigure(D2D1_FIGURE_END_OPEN);
-            sink->Close();
-            sink->Release();
-            target_->DrawGeometry(geo, subBrush_, 4.0f); // 基线弧
-        }
-        geo->Release();
-    }
-    // 进度弧（橙色）：从左端画到当前进度点
-    if (t > 0.01f) {
-        ID2D1PathGeometry* pgeo = nullptr;
-        if (SUCCEEDED(factory_->CreatePathGeometry(&pgeo))) {
+    const float sx = 104.0f, sy = 250.0f;
+    const float phase = (st.wSecond * 1000.0f + ms) / 1000.0f; // 秒内相位（动画用）
+    const float orbRx = 54.0f, orbRy = 17.0f, orbRotDeg = -18.0f;
+    const float orbRot = orbRotDeg * kPi / 180.0f;
+    const float orbitU = phase * 2.0f * kPi / 40.0f; // 行星 40 秒绕一圈
+    auto orbitPoint = [&](float u) {
+        const float x0 = orbRx * cosf(u), y0 = orbRy * sinf(u);
+        return D2D1_POINT_2F{sx + x0 * cosf(orbRot) - y0 * sinf(orbRot),
+                             sy + x0 * sinf(orbRot) + y0 * cosf(orbRot)};
+    };
+    // 轨道半环：参数角 u0→u1（屏幕顺时针 = 参数角递增），rot 为椭圆长轴旋转
+    auto orbitArc = [&](float u0, float u1, float width, ID2D1SolidColorBrush* b) {
+        ID2D1PathGeometry* geo = nullptr;
+        if (SUCCEEDED(factory_->CreatePathGeometry(&geo))) {
             ID2D1GeometrySink* sink = nullptr;
-            if (SUCCEEDED(pgeo->Open(&sink))) {
-                sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
+            if (SUCCEEDED(geo->Open(&sink))) {
+                sink->BeginFigure(orbitPoint(u0), D2D1_FIGURE_BEGIN_HOLLOW);
                 D2D1_ARC_SEGMENT seg{};
-                seg.point = arcEnd;
-                seg.size = D2D1::SizeF(arcR, arcR);
+                seg.point = orbitPoint(u1);
+                seg.size = D2D1::SizeF(orbRx, orbRy);
+                seg.rotationAngle = orbRotDeg;
                 seg.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                seg.arcSize = D2D1_ARC_SIZE_LARGE;
                 sink->AddArc(seg);
                 sink->EndFigure(D2D1_FIGURE_END_OPEN);
                 sink->Close();
                 sink->Release();
-                target_->DrawGeometry(pgeo, orangeBrush_, 4.5f);
+                target_->DrawGeometry(geo, b, width);
             }
-            pgeo->Release();
+            geo->Release();
         }
+    };
+    const bool planetFront = sinf(orbitU) > 0; // 参数下半圈在椭圆近侧（前景）
+    orbitArc(kPi, 2.0f * kPi, 1.5f, subBrush_); // 远侧半环（画在太阳后）
+    if (!planetFront) {
+        target_->FillEllipse(D2D1::Ellipse(orbitPoint(orbitU), 4.5f, 4.5f), subBrush_);
     }
-    target_->FillEllipse(D2D1::Ellipse(arcEnd, 4.0f, 4.0f), orangeBrush_); // 进度点
+    // 太阳：光晕呼吸 + 径向渐变球（径向刷半径固定，位置/缩放走画刷变换）
+    const float glowR = 26.0f + sinf(phase * 2.2f) * 3.0f;
+    const D2D1_MATRIX_3X2_F atSun =
+        D2D1::Matrix3x2F::Scale(glowR / 33.0f, glowR / 33.0f) * D2D1::Matrix3x2F::Translation(sx, sy);
+    sunGlowBrush_->SetTransform(atSun);
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), glowR, glowR), sunGlowBrush_);
+    sunCoreBrush_->SetTransform(D2D1::Matrix3x2F::Translation(sx, sy));
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 19, 19), sunCoreBrush_);
+    orbitArc(0.0f, kPi, 1.8f, handBrush_); // 近侧半环（压在太阳前）
+    if (planetFront) {
+        target_->FillEllipse(D2D1::Ellipse(orbitPoint(orbitU), 4.5f, 4.5f), handBrush_);
+    }
+
+    // 右侧：日出 / 日落时刻（纵向两行）
+    target_->DrawTextW(L"日出", 2, fmtCard_, D2D1::RectF(172, 216, 214, 240), subBrush_);
+    target_->DrawTextW(sunText_.c_str(), static_cast<UINT32>(sunText_.size()), fmtVal_,
+                       D2D1::RectF(214, 214, 312, 242), handBrush_);
+    target_->DrawTextW(L"日落", 2, fmtCard_, D2D1::RectF(172, 252, 214, 276), subBrush_);
+    target_->DrawTextW(setText_.c_str(), static_cast<UINT32>(setText_.size()), fmtVal_,
+                       D2D1::RectF(214, 250, 312, 278), handBrush_);
 
     // —— 底部右：当前小时天气 ——
     target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(338, 206, 516, 288), 8, 8), cardBrush_);
