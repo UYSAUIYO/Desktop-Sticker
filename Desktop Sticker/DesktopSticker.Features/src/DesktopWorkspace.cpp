@@ -91,11 +91,11 @@ bool DesktopWorkspace::Initialize() {
             SaveLayout();
         }
 
-        // 布局版本 4：迁移为左右侧列排布（只重排位置，不动分类内容）
-        if (model_.Layout().version < 4) {
-            ApplySideColumnLayout();
+        // 布局版本 5：迁移为四列紧凑初始布局（只重排位置，不动分类内容；旧的 2/3/4 版一并升级）
+        if (model_.Layout().version < 5) {
+            ApplyCompactColumnLayout();
             SaveLayout();
-            dstklog::Write(L"workspace", L"layout migrated to side columns");
+            dstklog::Write(L"workspace", L"layout migrated to compact quad columns");
         }
 
         // 清理历史版本误记录的无效原始位置（-32000 是我们自己移出去的，恢复无意义）
@@ -221,17 +221,18 @@ size_t DesktopWorkspace::CountZoneItems() const {
     return n;
 }
 
-void DesktopWorkspace::ApplySideColumnLayout() {
-    // 目标排布：卡片只占主屏幕左右两侧，垂直方向围绕中线均匀分布，中间留给壁纸。
+void DesktopWorkspace::ApplyCompactColumnLayout() {
+    // 目标排布（用户指定初始布局）：左右各两列贴边，卡片固定紧凑高度（约两行磁贴+标题），
+    // 超出部分在卡片内滚动；中间大面积留给壁纸。
     // 分布数学在 LayoutMath.h（纯函数，可单测），这里只负责写回 zones。
-    SideColumnParams params{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
-    const auto rects = ComputeSideColumnRects(static_cast<int>(model_.Layout().zones.size()), params);
+    QuadColumnParams params{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    const auto rects = ComputeQuadColumnRects(static_cast<int>(model_.Layout().zones.size()), params);
     auto& zones = model_.Layout().zones;
     for (size_t i = 0; i < rects.size() && i < zones.size(); ++i) {
         zones[i].rect = rects[i];
         zones[i].monitorIndex = 0;
     }
-    model_.Layout().version = 4; // 侧列布局版本
+    model_.Layout().version = 5; // 紧凑四列布局版本
 }
 
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
@@ -250,7 +251,7 @@ void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
         z.monitorIndex = 0;
         model_.AddZone(std::move(z));
     }
-    ApplySideColumnLayout(); // 侧列布局
+    ApplyCompactColumnLayout(); // 紧凑四列布局
     model_.Layout().classVersion = kClassVersion;
 
     for (const auto& icon : icons) {

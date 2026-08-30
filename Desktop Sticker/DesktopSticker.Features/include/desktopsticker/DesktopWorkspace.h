@@ -35,7 +35,7 @@ public:
 private:
     size_t CountZoneItems() const;
     void AutoClassify(const std::vector<DesktopIconInfo>& icons);
-    void ApplySideColumnLayout(); // 左右两列贴边、沿垂直中线均匀分布（布局版本 4）
+    void ApplyCompactColumnLayout(); // 左右各两列贴边、紧凑卡片高度（布局版本 5）
     void CollectIntoZone(const std::wstring& zoneId, const std::wstring& path);
     void RemoveFromZone(const std::wstring& zoneId, const std::wstring& path);
     void CreateZoneWindows();

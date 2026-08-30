@@ -8,38 +8,55 @@
 
 namespace desktopsticker {
 
-struct SideColumnParams {
+struct QuadColumnParams {
     int screenW = 0;
     int screenH = 0;
-    int margin = 24;    // 贴边留白
-    int gap = 16;       // 卡片间距
+    int marginX = 24;  // 贴边留白
+    int marginY = 24;
+    int gapX = 16;     // 水平卡片间距
+    int gapY = 20;     // 垂直卡片间距
     int cardW = 320;
-    int minCardH = 150; // 过小屏不无限压缩
+    int cardH = 192;   // 紧凑高度：标题带 + 两行磁贴 + 第三行露头，超出在卡片内滚动
 };
 
-// 侧列布局纯函数：卡片只占主屏左右两侧，垂直方向围绕中线均匀分布，左列多放一张。
-// 独立成纯函数以便对分布数学做单元测试；调用方负责写回 zones 的 rect/monitorIndex。
-inline std::vector<RECT> ComputeSideColumnRects(int count, const SideColumnParams& p) {
+// 初始四列布局纯函数：左右各两列贴边、卡片固定紧凑高度、中间大面积留给壁纸。
+// 分配规则（与用户指定的初始截图一致，标准 10 分区时）：
+//   左贴边列 = 前半区前 4 张，左内列 = 前半区其余；
+//   右内列 = 后半区最后 4 张，右贴边列 = 后半区其余。
+// 屏幕太窄放不下四列时退化为左右两列贴边。调用方负责写回 zones。
+inline std::vector<RECT> ComputeQuadColumnRects(int count, const QuadColumnParams& p) {
     std::vector<RECT> rects;
     if (count <= 0 || p.screenW <= 0 || p.screenH <= 0) return rects;
     rects.resize(static_cast<size_t>(count));
 
-    const int nLeft = (count + 1) / 2; // 左列多放一张
-    const int nRight = count - nLeft;
-    const int availH = p.screenH - 2 * p.margin;
-    int cardH = (availH - (nLeft - 1) * p.gap) / nLeft;
-    cardH = (std::max)(cardH, p.minCardH); // (std::max) 加括号：免疫 windows.h 的 max 宏
+    const int half = (count + 1) / 2;
+    const int xLEdge = p.marginX;
+    const int xLInner = p.marginX + p.cardW + p.gapX;
+    const int xREdge = p.screenW - p.marginX - p.cardW;
+    const int xRInner = xREdge - p.gapX - p.cardW;
+    const bool wideEnough = xRInner > xLInner + p.cardW; // 四列互不重叠才启用内列
 
-    auto place = [&](int beginIdx, int n, int x) {
-        const int total = n * cardH + (n - 1) * p.gap;
-        int y = (p.screenH - total) / 2; // 沿垂直中线居中展开
-        for (int i = 0; i < n; ++i) {
-            rects[static_cast<size_t>(beginIdx + i)] = RECT{x, y, x + p.cardW, y + cardH};
-            y += cardH + p.gap;
+    std::vector<int> colLEdge, colLInner, colRInner, colREdge;
+    for (int i = 0; i < half; ++i) {
+        if (!wideEnough || static_cast<int>(colLEdge.size()) < 4) colLEdge.push_back(i);
+        else colLInner.push_back(i);
+    }
+    for (int i = half; i < count; ++i) {
+        if (wideEnough && (count - i) <= 4) colRInner.push_back(i); // 后半区最后 4 张进内列
+        else colREdge.push_back(i);
+    }
+
+    auto place = [&](const std::vector<int>& idxs, int x) {
+        int y = p.marginY;
+        for (int idx : idxs) {
+            rects[static_cast<size_t>(idx)] = RECT{x, y, x + p.cardW, y + p.cardH};
+            y += p.cardH + p.gapY;
         }
     };
-    place(0, nLeft, p.margin);
-    if (nRight > 0) place(nLeft, nRight, p.screenW - p.margin - p.cardW);
+    place(colLEdge, xLEdge);
+    place(colLInner, xLInner);
+    place(colRInner, xRInner);
+    place(colREdge, xREdge);
     return rects;
 }
 
