@@ -40,6 +40,15 @@ long long HotkeyService::DefaultClock() {
     return static_cast<long long>(GetTickCount64());
 }
 
+void HotkeyService::NotifyOtherKeyDown() {
+    const long long now = clock_();
+    lastTextKeyMs_.store(now);
+    if (keyDown_ && now - lastSpaceDownMs_ > 500) {
+        keyDown_ = false; // 已按下其他键 → 空格必然已抬起（key-up 丢失保护）
+        dstklog::Write(L"hotkey", L"[space] stuck keyDown (other key) -> reset");
+    }
+}
+
 bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
     if (!isKeyDown) {
         keyDown_ = false;

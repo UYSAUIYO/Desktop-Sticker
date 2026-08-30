@@ -703,6 +703,9 @@ void DesktopWorkspace::ToggleCleanDesktop() {
 
 void DesktopWorkspace::RestoreDesktop() {
     if (!iconManager_) return;
+    // 干净桌面模式下先恢复分区显示，避免托盘“恢复桌面”后 cleanMode_ 与实际显隐脱节
+    // （否则下次双击桌面空白的行为会反一次）
+    if (cleanMode_) ToggleCleanDesktop();
     // 退出/还原：把仍在屏幕外的图标按记录的原始位置放回去，再显示列表。
     // 只动“还在屏幕外”的图标，用户手动整理过的位置不受影响；无位置记录的放到左上角空位。
     auto icons = iconManager_->EnumIcons();

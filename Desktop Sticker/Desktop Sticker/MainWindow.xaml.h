@@ -21,6 +21,7 @@ namespace winrt::Desktop_Sticker::implementation
 
         void AttachHost(desktopsticker::app::Host* host, desktopsticker::app::SettingsController* settings);
         void AttachSettings(desktopsticker::app::SettingsController* settings);
+        void ShowTrayWarning(const wchar_t* text); // 初始化失败等异常的用户可见提示
         HWND Hwnd() const { return m_hwnd; }
 
         int32_t MyProperty();

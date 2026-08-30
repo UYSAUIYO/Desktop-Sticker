@@ -28,14 +28,9 @@ public:
     // 设置热键方案："double-space"（双击空格）或 "custom"（customHotkey 组合键，如 "Alt+Space"）
     void SetHotkeyMode(const std::wstring& mode, const std::wstring& customHotkey);
 
-    // 钩子线程记录任意非空格按键，用于“正在打字”判定
-    void NotifyOtherKeyDown() {
-        const long long now = DefaultClock();
-        lastTextKeyMs_.store(now);
-        if (keyDown_ && now - lastSpaceDownMs_ > 500) {
-            keyDown_ = false; // 已按下其他键 → 空格必然已抬起（key-up 丢失保护）
-        }
-    }
+    // 钩子线程记录任意非空格按键，用于“正在打字”判定；
+    // 时钟统一走注入的 clock_（与 HandleKeyEvent 同源，测试可控）
+    void NotifyOtherKeyDown();
 
     void SetTextInputPredicate(TextInputPredicate pred) { textInputPredicate_ = std::move(pred); }
     void SetDoublePressWindowMs(long long ms) { windowMs_ = ms; }

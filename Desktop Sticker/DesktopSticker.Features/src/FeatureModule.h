@@ -17,7 +17,7 @@ public:
     ~FeatureModule() override;
 
     bool Init(const FeatureEvents& events) override;
-    void Start() override;
+    bool Start() override;
     void Stop() override;
     void Shutdown() override;
 

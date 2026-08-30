@@ -37,6 +37,21 @@ namespace winrt::Desktop_Sticker::implementation
         m_settings = settings;
     }
 
+    void MainWindow::ShowTrayWarning(const wchar_t* text)
+    {
+        // 托盘气泡：初始化失败时用户唯一的可见反馈（主窗口常驻隐藏，无其他 UI）
+        if (!m_hwnd || !m_trayAdded) return;
+        NOTIFYICONDATAW nid{};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = m_hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_WARNING;
+        wcscpy_s(nid.szInfoTitle, L"Desktop Sticker");
+        wcsncpy_s(nid.szInfo, text, _TRUNCATE);
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+
     void MainWindow::AddTrayIcon()
     {
         if (!m_hwnd || m_trayAdded) return;

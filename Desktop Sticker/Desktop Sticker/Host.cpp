@@ -2,6 +2,7 @@
 #include "Host.h"
 
 #include <filesystem>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -37,15 +38,21 @@ bool Host::LoadFeatures() {
         return false;
     }
 
-    module_ = create();
-
+    // DLL 内 new/初始化可能抛异常：任何失败都必须收干净资源并返回 false，
+    // 由调用方（App）向用户提示，不允许异常穿透到 OnLaunched
     desktopsticker::FeatureEvents events;
     events.hotkeyTriggered = [this]() {
         if (hotkeyCallback_) hotkeyCallback_();
     };
-    if (!module_->Init(events)) {
-        destroy(module_);
-        module_ = nullptr;
+    try {
+        module_ = create();
+        if (!module_) throw std::runtime_error("CreateFeatureModule returned null");
+        if (!module_->Init(events)) throw std::runtime_error("Init failed");
+    } catch (...) {
+        if (module_) {
+            if (destroy) destroy(module_);
+            module_ = nullptr;
+        }
         FreeLibrary(dll_);
         dll_ = nullptr;
         return false;
@@ -69,8 +76,7 @@ void Host::UnloadFeatures() {
 
 bool Host::Start() {
     if (!module_) return false;
-    module_->Start();
-    return true;
+    return module_->Start(); // 失败说明桌面分区初始化异常，App 会向用户提示
 }
 
 void Host::Stop() {

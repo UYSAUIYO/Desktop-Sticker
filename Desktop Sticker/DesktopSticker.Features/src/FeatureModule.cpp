@@ -2,6 +2,7 @@
 #include "FeatureModule.h"
 
 #include "desktopsticker/KnownFolders.h"
+#include "desktopsticker/Log.h"
 #include "desktopsticker/ShellLauncher.h"
 
 namespace desktopsticker {
@@ -15,37 +16,50 @@ FeatureModule::~FeatureModule() {
 bool FeatureModule::Init(const FeatureEvents& events) {
     events_ = events;
 
-    // 数据根目录：%APPDATA%\DesktopSticker；解析失败退回临时目录（功能可用但不持久）
-    std::filesystem::path root = std::filesystem::temp_directory_path() / L"DesktopSticker";
-    const std::wstring appData = GetKnownPath(FOLDERID_RoamingAppData);
-    if (!appData.empty()) root = std::filesystem::path(appData) / L"DesktopSticker";
+    try {
+        // 数据根目录：%APPDATA%\DesktopSticker；解析失败退回临时目录（功能可用但不持久）
+        std::filesystem::path root = std::filesystem::temp_directory_path() / L"DesktopSticker";
+        const std::wstring appData = GetKnownPath(FOLDERID_RoamingAppData);
+        if (!appData.empty()) root = std::filesystem::path(appData) / L"DesktopSticker";
 
-    config_ = std::make_unique<ConfigStore>(root);
-    config_->Load();
+        config_ = std::make_unique<ConfigStore>(root);
+        config_->Load();
 
-    index_ = std::make_unique<IndexService>(config_.get());
-    index_->Rebuild();
+        index_ = std::make_unique<IndexService>(config_.get());
+        index_->Rebuild();
 
-    hotkey_ = std::make_unique<HotkeyService>();
-    hotkey_->SetOnDoublePress([this]() {
-        if (events_.hotkeyTriggered) events_.hotkeyTriggered();
-    });
-    // 应用配置的热键方案（双击空格 / 自定义组合键）
-    hotkey_->SetHotkeyMode(config_->GetConfig().hotkeyMode, config_->GetConfig().customHotkey);
+        hotkey_ = std::make_unique<HotkeyService>();
+        hotkey_->SetOnDoublePress([this]() {
+            if (events_.hotkeyTriggered) events_.hotkeyTriggered();
+        });
+        // 应用配置的热键方案（双击空格 / 自定义组合键）
+        hotkey_->SetHotkeyMode(config_->GetConfig().hotkeyMode, config_->GetConfig().customHotkey);
 
-    workspace_ = std::make_unique<DesktopWorkspace>(config_.get(), [this]() {
-        if (events_.zonesChanged) events_.zonesChanged();
-    });
+        workspace_ = std::make_unique<DesktopWorkspace>(config_.get(), [this]() {
+            if (events_.zonesChanged) events_.zonesChanged();
+        });
+    } catch (const std::exception& e) {
+        dstklog::Write(L"module", std::wstring(L"Init exception: ") +
+                                       std::wstring(e.what(), e.what() + strlen(e.what())));
+        return false;
+    } catch (...) {
+        dstklog::Write(L"module", L"Init unknown exception");
+        return false;
+    }
 
     initialized_ = true;
     return true;
 }
 
-void FeatureModule::Start() {
-    if (!initialized_) return;
+bool FeatureModule::Start() {
+    if (!initialized_) return false;
     hotkey_->SetEnabled(true);
     hotkey_->Start();
-    workspace_->Initialize();
+    if (!workspace_->Initialize()) {
+        dstklog::Write(L"module", L"workspace Initialize FAILED (zones unavailable)");
+        return false;
+    }
+    return true;
 }
 
 void FeatureModule::Stop() {
@@ -103,11 +117,17 @@ AppConfig FeatureModule::GetConfig() {
 
 void FeatureModule::SetConfig(const AppConfig& config) {
     if (!config_) return;
+    const AppConfig old = config_->GetConfig();
     config_->SetConfig(config);
     config_->Save();
     if (hotkey_) hotkey_->SetHotkeyMode(config.hotkeyMode, config.customHotkey);
     if (workspace_) workspace_->SetZoneSpacing(config.zoneColumnSpacing, config.zoneRowSpacing);
-    if (index_) index_->Rebuild();
+    // 只有搜索范围相关变化才重建索引：设置页拖动间距/换主题不应触发全盘扫描
+    const bool searchChanged = old.searchDesktop != config.searchDesktop ||
+                               old.searchKnownFolders != config.searchKnownFolders ||
+                               old.searchStartMenu != config.searchStartMenu ||
+                               old.includeHiddenFiles != config.includeHiddenFiles;
+    if (searchChanged && index_) index_->Rebuild();
 }
 
 void FeatureModule::OpenItem(const std::wstring& path) {

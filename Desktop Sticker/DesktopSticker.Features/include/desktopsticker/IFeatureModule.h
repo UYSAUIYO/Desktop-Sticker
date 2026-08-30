@@ -6,6 +6,9 @@
 #include "desktopsticker/ConfigStore.h"
 #include "desktopsticker/SearchSources.h"
 
+// ABI 约束：EXE 与 DLL 必须由同一份源码同时编译。
+// 本头文件及 AppConfig 的任何字段/虚函数变更都是 ABI 断裂，两端必须同步重编。
+
 namespace desktopsticker {
 
 struct FeatureEvents {
@@ -28,7 +31,8 @@ class IFeatureModule {
 public:
     virtual ~IFeatureModule() = default;
     virtual bool Init(const FeatureEvents& events) = 0;
-    virtual void Start() = 0;
+    // 返回 false 表示启动失败（如桌面嵌入初始化异常），宿主应向用户提示而不是静默
+    virtual bool Start() = 0;
     virtual void Stop() = 0;
     virtual void Shutdown() = 0;
 
