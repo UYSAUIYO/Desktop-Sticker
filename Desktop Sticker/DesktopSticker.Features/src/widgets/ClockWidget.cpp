@@ -9,6 +9,18 @@ namespace desktopsticker {
 namespace {
 const wchar_t kClockWindowClass[] = L"DesktopSticker.ClockWindow";
 constexpr UINT_PTR kClockTimerId = 1;
+constexpr float kPi = 3.14159265f;
+
+// WMO 天气代码族：0 晴 1 云 2 雾 3 雨 4 雪 5 雷
+int WeatherFamily(int code) {
+    if (code < 0) return -1;
+    if (code <= 1) return 0;
+    if (code <= 3) return 1;
+    if (code <= 48) return 2;
+    if (code <= 67 || (code >= 80 && code <= 82)) return 3;
+    if (code <= 77 || code == 85 || code == 86) return 4;
+    return 5;
+}
 } // namespace
 
 std::wstring ClockText::TimeText(const SYSTEMTIME& st) {
@@ -17,11 +29,59 @@ std::wstring ClockText::TimeText(const SYSTEMTIME& st) {
     return buf;
 }
 
+std::wstring ClockText::TimeSecText(const SYSTEMTIME& st) {
+    wchar_t buf[16]{};
+    swprintf_s(buf, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+    return buf;
+}
+
 std::wstring ClockText::DateText(const SYSTEMTIME& st) {
     static const wchar_t* kWeekday[] = {L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六"};
     wchar_t buf[64]{};
     swprintf_s(buf, L"%d年%d月%d日 %s", st.wYear, st.wMonth, st.wDay, kWeekday[st.wDayOfWeek % 7]);
     return buf;
+}
+
+std::wstring ClockText::WeatherDesc(int code) {
+    switch (code) {
+    case 0: return L"晴";
+    case 1: case 2: case 3: return L"多云";
+    case 45: case 48: return L"雾";
+    case 51: case 53: case 55: return L"毛毛雨";
+    case 56: case 57: return L"冻毛毛雨";
+    case 61: case 63: case 65: return L"雨";
+    case 66: case 67: return L"冻雨";
+    case 71: case 73: case 75: return L"雪";
+    case 77: return L"雪粒";
+    case 80: case 81: case 82: return L"阵雨";
+    case 85: case 86: return L"阵雪";
+    case 95: return L"雷雨";
+    case 96: case 99: return L"雷雨伴冰雹";
+    default: return L"未知";
+    }
+}
+
+std::wstring ClockText::WindText(int deg, double mps) {
+    static const wchar_t* kDir[] = {L"北", L"东北", L"东", L"东南", L"南", L"西南", L"西", L"西北"};
+    static const double kLevel[] = {0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7};
+    int level = 0;
+    for (double t : kLevel) {
+        if (mps >= t) ++level;
+        else break;
+    }
+    if (level == 0) return L"无风";
+    wchar_t buf[32]{};
+    swprintf_s(buf, L"%s风 %d级", kDir[((deg % 360) + 360 + 22) % 360 / 45], level);
+    return buf;
+}
+
+int ClockText::MinutesOfDay(const std::wstring& hhmm) {
+    const size_t colon = hhmm.find(L':');
+    if (colon == std::wstring::npos || colon == 0 || colon + 1 >= hhmm.size()) return -1;
+    const int h = _wtoi(hhmm.substr(0, colon).c_str());
+    const int m = _wtoi(hhmm.substr(colon + 1).c_str());
+    if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
+    return h * 60 + m;
 }
 
 bool ClockWidget::RegisterClass(HINSTANCE hInst) {
@@ -43,8 +103,7 @@ ClockWidget::~ClockWidget() {
 
 bool ClockWidget::Create() {
     if (hwnd_) return true;
-    // 与磁贴同款分层子窗口：外观由 ULW 逐像素 alpha 决定（禁用 SLWA），禁用 WS_EX_TRANSPARENT
-    // （本机实测其会连带禁掉分层子窗口的合成）；时钟忽略输入，点击行为等同桌面
+    // 与磁贴同款分层子窗口：外观由 ULW 逐像素 alpha 决定（禁用 SLWA）
     hwnd_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                             kClockWindowClass, L"",
                             WS_POPUP | WS_VISIBLE,
@@ -52,13 +111,10 @@ bool ClockWidget::Create() {
                             nullptr, nullptr, hInst_, this);
     if (!hwnd_) return false;
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-    SetTimer(hwnd_, kClockTimerId, 1000, nullptr);
+    // 100ms：秒针平滑扫动 + 太阳光晕呼吸都靠这帧率
+    SetTimer(hwnd_, kClockTimerId, 100, nullptr);
+    weather_.Start();
     return true;
-}
-
-void ClockWidget::Refresh() {
-    painted_ = false; // 强制重绘（SetParent/样式切换会重置分层表面）
-    OnTick();
 }
 
 void ClockWidget::Destroy() {
@@ -67,6 +123,7 @@ void ClockWidget::Destroy() {
         DestroyWindow(hwnd_);
     }
     hwnd_ = nullptr;
+    weather_.Stop();
     if (paintBmp_) {
         DeleteObject(paintBmp_);
         paintBmp_ = nullptr;
@@ -75,15 +132,41 @@ void ClockWidget::Destroy() {
     paintW_ = paintH_ = 0;
 }
 
+void ClockWidget::Refresh() {
+    painted_ = false; // 强制重绘（SetParent/样式切换会重置分层表面）
+    OnTick();
+}
+
 void ClockWidget::OnTick() {
     SYSTEMTIME st;
     GetLocalTime(&st);
-    const std::wstring t = ClockText::TimeText(st);
-    const std::wstring d = ClockText::DateText(st);
-    if (painted_ && t == timeText_ && d == dateText_) return; // 分钟未变不重绘
-    timeText_ = t;
-    dateText_ = d;
-    OnPaint();
+    timeText_ = ClockText::TimeSecText(st);
+    dateText_ = ClockText::DateText(st);
+
+    const WeatherInfo wx = weather_.Snapshot();
+    locText_ = wx.located ? (wx.country + L" · " + wx.city) : L"本地时间";
+    if (wx.valid) {
+        sunText_ = L"日出 " + wx.sunrise;
+        setText_ = L"日落 " + wx.sunset;
+        wchar_t buf[16]{};
+        swprintf_s(buf, L"%.0f°", wx.temp);
+        tempText_ = buf;
+        descText_ = ClockText::WeatherDesc(wx.weatherCode) + L" · " +
+                    ClockText::WindText(wx.windDir, wx.windSpeed);
+        weatherCode_ = wx.weatherCode;
+        sunriseMin_ = wx.sunriseMin;
+        sunsetMin_ = wx.sunsetMin;
+    } else {
+        sunText_ = L"日出 --:--";
+        setText_ = L"日落 --:--";
+        tempText_ = L"--°";
+        descText_ = L"天气获取中…";
+        weatherCode_ = -1;
+        sunriseMin_ = sunsetMin_ = -1;
+    }
+    nowMin_ = st.wHour * 60 + st.wMinute;
+
+    OnPaint(); // 常驻重绘：秒针扫动与太阳光晕呼吸
 }
 
 bool ClockWidget::EnsureD2D() {
@@ -101,36 +184,170 @@ bool ClockWidget::EnsureD2D() {
         factory_->CreateDCRenderTarget(&props, &target_);
         if (!target_) return false;
     }
-    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x2B2B2B, 0.72f), &bgBrush_);
+    if (!bgBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0x25272E, 0.78f), &bgBrush_);
     if (!borderBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.12f), &borderBrush_);
-    if (!timeBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.96f), &timeBrush_);
-    if (!dateBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.60f), &dateBrush_);
-    if (!timeFormat_) {
+    if (!cardBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.06f), &cardBrush_);
+    if (!handBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.92f), &handBrush_);
+    if (!subBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 0.55f), &subBrush_);
+    if (!orangeBrush_) target_->CreateSolidColorBrush(D2D1::ColorF(0xFFA43C, 0.95f), &orangeBrush_);
+    if (timeStops_ == nullptr) {
+        const D2D1_GRADIENT_STOP stops[] = {
+            {0.0f, D2D1::ColorF(0xFFC26E)}, {0.55f, D2D1::ColorF(0xFFA43C)}, {1.0f, D2D1::ColorF(0xF07E1A)}};
+        target_->CreateGradientStopCollection(stops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &timeStops_);
+        if (timeStops_) {
+            target_->CreateLinearGradientBrush(
+                D2D1::LinearGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(1, 0)),
+                timeStops_, &timeGradBrush_);
+        }
+    }
+    if (sunCoreStops_ == nullptr) {
+        const D2D1_GRADIENT_STOP stops[] = {
+            {0.0f, D2D1::ColorF(0xFFEDC4)}, {0.6f, D2D1::ColorF(0xFFB054)}, {1.0f, D2D1::ColorF(0xFF9430)}};
+        target_->CreateGradientStopCollection(stops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &sunCoreStops_);
+        if (sunCoreStops_) {
+            // 径向刷半径只能在创建时给定；位置/缩放由画刷变换在绘制时设置
+            target_->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, -3), 19, 19),
+                sunCoreStops_, &sunCoreBrush_);
+        }
+    }
+    if (sunGlowStops_ == nullptr) {
+        const D2D1_GRADIENT_STOP stops[] = {
+            {0.0f, D2D1::ColorF(0xFFA43C, 0.45f)}, {1.0f, D2D1::ColorF(0xFFA43C, 0.0f)}};
+        target_->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &sunGlowStops_);
+        if (sunGlowStops_) {
+            target_->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, 0), 33, 33),
+                sunGlowStops_, &sunGlowBrush_);
+        }
+    }
+    if (fmtTime_ == nullptr) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                         42.0f, L"zh-cn", &timeFormat_);
+                                         54.0f, L"zh-cn", &fmtTime_);
+        if (fmtTime_) {
+            fmtTime_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtTime_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
-    if (!dateFormat_) {
+    if (fmtSub_ == nullptr) {
         dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                         15.0f, L"zh-cn", &dateFormat_);
+                                         13.0f, L"zh-cn", &fmtSub_);
+        if (fmtSub_) {
+            fmtSub_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtSub_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
     }
-    return bgBrush_ && borderBrush_ && timeBrush_ && dateBrush_ && timeFormat_ && dateFormat_;
+    if (fmtLoc_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         17.0f, L"zh-cn", &fmtLoc_);
+        if (fmtLoc_) {
+            fmtLoc_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtLoc_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+    }
+    if (fmtNum_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         15.0f, L"zh-cn", &fmtNum_);
+        if (fmtNum_) {
+            fmtNum_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmtNum_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
+    }
+    if (fmtCard_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         14.0f, L"zh-cn", &fmtCard_);
+    }
+    if (fmtTemp_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         30.0f, L"zh-cn", &fmtTemp_);
+    }
+    if (fmtDesc_ == nullptr) {
+        dwriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                         12.0f, L"zh-cn", &fmtDesc_);
+    }
+    return bgBrush_ && borderBrush_ && cardBrush_ && handBrush_ && subBrush_ && orangeBrush_ &&
+           timeGradBrush_ && sunCoreBrush_ && sunGlowBrush_ &&
+           fmtTime_ && fmtSub_ && fmtLoc_ && fmtNum_ && fmtCard_ && fmtTemp_ && fmtDesc_;
 }
 
 void ClockWidget::ReleaseD2D() {
-    if (timeFormat_) timeFormat_->Release();
-    if (dateFormat_) dateFormat_->Release();
-    if (dateBrush_) dateBrush_->Release();
-    if (timeBrush_) timeBrush_->Release();
+    if (fmtTime_) fmtTime_->Release();
+    if (fmtSub_) fmtSub_->Release();
+    if (fmtLoc_) fmtLoc_->Release();
+    if (fmtNum_) fmtNum_->Release();
+    if (fmtCard_) fmtCard_->Release();
+    if (fmtTemp_) fmtTemp_->Release();
+    if (fmtDesc_) fmtDesc_->Release();
+    if (timeGradBrush_) timeGradBrush_->Release();
+    if (timeStops_) timeStops_->Release();
+    if (sunCoreBrush_) sunCoreBrush_->Release();
+    if (sunCoreStops_) sunCoreStops_->Release();
+    if (sunGlowBrush_) sunGlowBrush_->Release();
+    if (sunGlowStops_) sunGlowStops_->Release();
     if (borderBrush_) borderBrush_->Release();
     if (bgBrush_) bgBrush_->Release();
+    if (cardBrush_) cardBrush_->Release();
+    if (handBrush_) handBrush_->Release();
+    if (subBrush_) subBrush_->Release();
+    if (orangeBrush_) orangeBrush_->Release();
     if (target_) target_->Release();
     if (dwriteFactory_) dwriteFactory_->Release();
     if (factory_) factory_->Release();
-    timeFormat_ = nullptr; dateFormat_ = nullptr;
-    dateBrush_ = nullptr; timeBrush_ = nullptr; borderBrush_ = nullptr; bgBrush_ = nullptr;
+    fmtTime_ = nullptr; fmtSub_ = nullptr; fmtLoc_ = nullptr; fmtNum_ = nullptr;
+    fmtCard_ = nullptr; fmtTemp_ = nullptr; fmtDesc_ = nullptr;
+    timeGradBrush_ = nullptr; timeStops_ = nullptr;
+    sunCoreBrush_ = nullptr; sunCoreStops_ = nullptr;
+    sunGlowBrush_ = nullptr; sunGlowStops_ = nullptr;
+    borderBrush_ = nullptr; bgBrush_ = nullptr; cardBrush_ = nullptr;
+    handBrush_ = nullptr; subBrush_ = nullptr; orangeBrush_ = nullptr;
     target_ = nullptr; dwriteFactory_ = nullptr; factory_ = nullptr;
+}
+
+void ClockWidget::DrawWeatherIcon(int code, float cx, float cy) {
+    const int fam = WeatherFamily(code);
+    // 云朵底（雨/雪/雷/雾与多云共用）
+    auto cloud = [&]() {
+        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 8, cy - 6), 12, 10), handBrush_);
+        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + 6, cy - 4), 10, 8), handBrush_);
+        target_->FillRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(cx - 19, cy - 4, cx + 14, cy + 10), 8, 8), handBrush_);
+    };
+    if (fam == 0) { // 晴：太阳 + 光芒
+        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 10, 10), orangeBrush_);
+        for (int i = 0; i < 8; ++i) {
+            const float a = i * kPi / 4.0f;
+            const float c = cosf(a), s = sinf(a);
+            target_->DrawLine(D2D1::Point2F(cx + c * 14, cy + s * 14),
+                              D2D1::Point2F(cx + c * 20, cy + s * 20), orangeBrush_, 2.0f);
+        }
+        return;
+    }
+    if (fam == 1) { // 多云：小太阳 + 云
+        target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + 11, cy - 12), 6, 6), orangeBrush_);
+        cloud();
+        return;
+    }
+    cloud();
+    if (fam == 3) { // 雨
+        for (int i = 0; i < 3; ++i) {
+            const float x = cx - 12 + i * 10;
+            target_->DrawLine(D2D1::Point2F(x, cy + 13), D2D1::Point2F(x - 3, cy + 21), subBrush_, 2.0f);
+        }
+    } else if (fam == 4) { // 雪
+        for (int i = 0; i < 3; ++i) {
+            target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx - 12 + i * 10, cy + 16), 2, 2), handBrush_);
+        }
+    } else if (fam == 5) { // 雷
+        target_->DrawLine(D2D1::Point2F(cx + 2, cy + 12), D2D1::Point2F(cx - 4, cy + 18), orangeBrush_, 2.5f);
+        target_->DrawLine(D2D1::Point2F(cx - 4, cy + 18), D2D1::Point2F(cx + 3, cy + 22), orangeBrush_, 2.5f);
+    }
 }
 
 void ClockWidget::OnPaint() {
@@ -145,12 +362,8 @@ void ClockWidget::OnPaint() {
 
     HDC hdcScreen = GetDC(nullptr);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
-
     if (!paintBmp_ || paintW_ != w || paintH_ != h) {
-        if (paintBmp_) {
-            DeleteObject(paintBmp_);
-            paintBmp_ = nullptr;
-        }
+        if (paintBmp_) DeleteObject(paintBmp_);
         BITMAPINFO bmi{};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = w;
@@ -171,20 +384,141 @@ void ClockWidget::OnPaint() {
 
     target_->BindDC(hdcMem, &rc);
     target_->BeginDraw();
-    target_->Clear(D2D1::ColorF(0, 0)); // 圆角外透空
+    target_->Clear(D2D1::ColorF(0, 0));
 
     const float fw = static_cast<float>(w);
     const float fh = static_cast<float>(h);
     target_->FillRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(1, 1, fw - 1, fh - 1), 8.0f, 8.0f), bgBrush_);
+        D2D1::RoundedRect(D2D1::RectF(1, 1, fw - 1, fh - 1), 8, 8), bgBrush_);
     target_->DrawRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, fw - 0.5f, fh - 0.5f), 8.0f, 8.0f),
-        borderBrush_, 1.0f);
+        D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, fw - 0.5f, fh - 0.5f), 8, 8), borderBrush_, 1.0f);
 
-    target_->DrawTextW(timeText_.c_str(), static_cast<UINT32>(timeText_.size()), timeFormat_,
-                       D2D1::RectF(0, 8, fw, 62), timeBrush_);
-    target_->DrawTextW(dateText_.c_str(), static_cast<UINT32>(dateText_.size()), dateFormat_,
-                       D2D1::RectF(0, 58, fw, fh - 8), dateBrush_);
+    // —— 左：模拟表盘 ——
+    const float cx = 148.0f, cy = 122.0f, faceR = 96.0f;
+    target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), faceR, faceR), borderBrush_, 1.0f);
+    for (int i = 0; i < 60; ++i) {
+        const float a = i * 6.0f * kPi / 180.0f;
+        const bool major = i % 5 == 0;
+        const float len = major ? 11.0f : 5.0f;
+        const float r0 = faceR - 4.0f;
+        target_->DrawLine(D2D1::Point2F(cx + sinf(a) * r0, cy - cosf(a) * r0),
+                          D2D1::Point2F(cx + sinf(a) * (r0 - len), cy - cosf(a) * (r0 - len)),
+                          major ? handBrush_ : subBrush_, major ? 2.5f : 1.0f);
+    }
+    wchar_t num[4]{};
+    for (int n = 1; n <= 12; ++n) {
+        const float a = n * 30.0f * kPi / 180.0f;
+        swprintf_s(num, L"%d", n);
+        target_->DrawTextW(num, static_cast<UINT32>(wcslen(num)), fmtNum_,
+                           D2D1::RectF(cx + sinf(a) * 66 - 14, cy - cosf(a) * 66 - 11,
+                                       cx + sinf(a) * 66 + 14, cy - cosf(a) * 66 + 11),
+                           handBrush_);
+    }
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    const float ms = static_cast<float>(st.wMilliseconds);
+    const float hourDeg = ((st.wHour % 12) + st.wMinute / 60.0f + st.wSecond / 3600.0f) * 30.0f;
+    const float minDeg = (st.wMinute + st.wSecond / 60.0f) * 6.0f;
+    const float secDeg = (st.wSecond + ms / 1000.0f) * 6.0f;
+    auto hand = [&](float deg, float len, float width, ID2D1SolidColorBrush* b) {
+        const float a = deg * kPi / 180.0f;
+        target_->DrawLine(D2D1::Point2F(cx - sinf(a) * 12.0f, cy + cosf(a) * 12.0f),
+                          D2D1::Point2F(cx + sinf(a) * len, cy - cosf(a) * len), b, width);
+    };
+    hand(hourDeg, 46, 5.0f, handBrush_);
+    hand(minDeg, 70, 3.5f, handBrush_);
+    hand(secDeg, 80, 1.5f, orangeBrush_);
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 4.5f, 4.5f), orangeBrush_);
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 2.0f, 2.0f), handBrush_);
+
+    // —— 右：日期 + 数字时间 + 地区 ——
+    target_->DrawTextW(dateText_.c_str(), static_cast<UINT32>(dateText_.size()), fmtSub_,
+                       D2D1::RectF(260, 28, 520, 52), subBrush_);
+    timeGradBrush_->SetStartPoint(D2D1::Point2F(270, 0));
+    timeGradBrush_->SetEndPoint(D2D1::Point2F(515, 0));
+    target_->DrawTextW(timeText_.c_str(), static_cast<UINT32>(timeText_.size()), fmtTime_,
+                       D2D1::RectF(260, 52, 520, 128), timeGradBrush_);
+    target_->DrawTextW(locText_.c_str(), static_cast<UINT32>(locText_.size()), fmtLoc_,
+                       D2D1::RectF(260, 132, 520, 164), handBrush_);
+
+    // —— 底部左：日出日落 ——
+    target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(24, 206, 322, 288), 8, 8), cardBrush_);
+    target_->DrawTextW(sunText_.c_str(), static_cast<UINT32>(sunText_.size()), fmtCard_,
+                       D2D1::RectF(38, 214, 172, 238), handBrush_);
+    target_->DrawTextW(setText_.c_str(), static_cast<UINT32>(setText_.size()), fmtCard_,
+                       D2D1::RectF(176, 214, 306, 238), handBrush_);
+
+    // 太阳：光晕呼吸动画 + 径向渐变球（径向刷半径固定，位置/缩放走画刷变换）
+    const float phase = (st.wSecond * 1000.0f + ms) / 1000.0f;
+    const float glowR = 30.0f + sinf(phase * 2.2f) * 3.0f;
+    const D2D1_MATRIX_3X2_F atSun =
+        D2D1::Matrix3x2F::Scale(glowR / 33.0f, glowR / 33.0f) * D2D1::Matrix3x2F::Translation(78, 264);
+    sunGlowBrush_->SetTransform(atSun);
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(78, 264), glowR, glowR), sunGlowBrush_);
+    sunCoreBrush_->SetTransform(D2D1::Matrix3x2F::Translation(78, 264));
+    target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(78, 264), 19, 19), sunCoreBrush_);
+
+    // 弧线：从日出到日落的进度（左端 → 顶 → 右端）
+    const float arcX = 212.0f, arcY = 274.0f, arcR = 40.0f;
+    float t = 0.0f;
+    if (sunriseMin_ >= 0 && sunsetMin_ > sunriseMin_) {
+        t = (static_cast<float>(nowMin_) - sunriseMin_) / (sunsetMin_ - sunriseMin_);
+        t = std::max(0.0f, std::min(1.0f, t));
+    }
+    const float endDeg = (180.0f - t * 180.0f) * kPi / 180.0f;
+    D2D1_POINT_2F arcStart{arcX - arcR, arcY};
+    D2D1_POINT_2F arcEnd{arcX + cosf(endDeg) * arcR, arcY - sinf(endDeg) * arcR};
+    ID2D1PathGeometry* geo = nullptr;
+    if (SUCCEEDED(factory_->CreatePathGeometry(&geo))) {
+        ID2D1GeometrySink* sink = nullptr;
+        if (SUCCEEDED(geo->Open(&sink))) {
+            sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
+            D2D1_ARC_SEGMENT seg{};
+            seg.point = arcEnd;
+            seg.size = D2D1::SizeF(arcR, arcR);
+            seg.rotationAngle = 0.0f;
+            seg.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+            seg.arcSize = D2D1_ARC_SIZE_SMALL;
+            sink->AddArc(seg);
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            target_->DrawGeometry(geo, subBrush_, 4.0f); // 基线弧
+        }
+        geo->Release();
+    }
+    // 进度弧（橙色）：从左端画到当前进度点
+    if (t > 0.01f) {
+        ID2D1PathGeometry* pgeo = nullptr;
+        if (SUCCEEDED(factory_->CreatePathGeometry(&pgeo))) {
+            ID2D1GeometrySink* sink = nullptr;
+            if (SUCCEEDED(pgeo->Open(&sink))) {
+                sink->BeginFigure(arcStart, D2D1_FIGURE_BEGIN_HOLLOW);
+                D2D1_ARC_SEGMENT seg{};
+                seg.point = arcEnd;
+                seg.size = D2D1::SizeF(arcR, arcR);
+                seg.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
+                sink->AddArc(seg);
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                sink->Release();
+                target_->DrawGeometry(pgeo, orangeBrush_, 4.5f);
+            }
+            pgeo->Release();
+        }
+    }
+    target_->FillEllipse(D2D1::Ellipse(arcEnd, 4.0f, 4.0f), orangeBrush_); // 进度点
+
+    // —— 底部右：当前小时天气 ——
+    target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(338, 206, 516, 288), 8, 8), cardBrush_);
+    target_->DrawTextW(L"当前小时", 4, fmtDesc_,
+                       D2D1::RectF(350, 214, 440, 234), subBrush_);
+    target_->DrawTextW(tempText_.c_str(), static_cast<UINT32>(tempText_.size()), fmtTemp_,
+                       D2D1::RectF(350, 234, 436, 274), handBrush_);
+    target_->DrawTextW(descText_.c_str(), static_cast<UINT32>(descText_.size()), fmtDesc_,
+                       D2D1::RectF(350, 266, 504, 286), subBrush_);
+    DrawWeatherIcon(weatherCode_, 464, 244);
 
     const HRESULT endHr = target_->EndDraw();
 
@@ -207,8 +541,7 @@ void ClockWidget::OnPaint() {
         UpdateLayeredWindow(hwnd_, hdcScreen, &ptDst, &size, hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
         painted_ = true;
     } else {
-        // 设备丢失：释放资源，下个 tick 重建，否则永久黑屏
-        ReleaseD2D();
+        ReleaseD2D(); // 设备丢失：下个 tick 重建
     }
 
     SelectObject(hdcMem, oldBmp);

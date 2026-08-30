@@ -333,7 +333,7 @@ void SettingsController::EnsureWindow() {
 
     clockSwitch_ = ToggleSwitch();
     placeRight(makeCard(widgetGroup, L"\uE823", L"桌面时钟",
-                        L"在桌面顶部中间显示时间与日期；点击穿透，不挡桌面操作"),
+                        L"在桌面顶部中间显示时间、日出日落与当前小时天气"),
                clockSwitch_);
     clockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
 
