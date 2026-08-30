@@ -588,19 +588,19 @@ void ClockWidget::OnPaint() {
     const float sx = 104.0f, sy = 250.0f;
     const float orbRx = 56.0f, orbRy = 20.0f, orbRotDeg = -22.0f;
     const float orbRot = orbRotDeg * kPi / 180.0f;
-    // 公转角 = 一天中的时刻锚定到轨道：日出(左端)→正午(顶)→日落(右端)为昼弧，
-    // 夜里沿下半圈（右端→底→左端）回到日出点，昼夜时长按真实日出日落数据分配
+    // 公转角 = 一天中的时刻锚定到轨道：亮弧（近侧）是白天——日出(左端)→正午(底)→日落(右端)；
+    // 暗弧（远侧）是夜间——日落(右端)→午夜(顶)→日出(左端)。昼夜时长按真实日出日落数据分配
     float orbitU = static_cast<float>(nowMin_) / 1440.0f * 2.0f * kPi; // 无日出数据时的兜底
     if (sunriseMin_ >= 0 && sunsetMin_ > sunriseMin_) {
         if (nowMin_ >= sunriseMin_ && nowMin_ <= sunsetMin_) {
             const float t = static_cast<float>(nowMin_ - sunriseMin_) /
                             static_cast<float>(sunsetMin_ - sunriseMin_);
-            orbitU = kPi + t * kPi; // 昼弧：日出左端 → 正午顶 → 日落右端
+            orbitU = kPi * (1.0f - t); // 白天走亮弧：日出左端 → 正午底 → 日落右端
         } else {
             const int nightLen = 1440 - (sunsetMin_ - sunriseMin_);
             const int nowNight = nowMin_ >= sunsetMin_ ? nowMin_ - sunsetMin_
                                                        : nowMin_ + 1440 - sunsetMin_;
-            orbitU = (static_cast<float>(nowNight) / nightLen) * kPi; // 夜弧：右端 → 底 → 左端
+            orbitU = 2.0f * kPi - (static_cast<float>(nowNight) / nightLen) * kPi; // 夜走暗弧：日落右端 → 午夜顶 → 日出左端
         }
     }
     auto orbitPoint = [&](float u) {
@@ -644,7 +644,7 @@ void ClockWidget::OnPaint() {
                              subBrush_, 0.8f); // 大气层薄边
     };
 
-    // 远侧：暗环段（先画，经过太阳圆面的段落会被太阳自然遮挡）
+    // 远侧：暗环段 = 夜间（先画，经过太阳圆面的段落会被太阳自然遮挡）
     constexpr int kSegs = 48;
     const bool planetFront = sinf(orbitU) > 0; // 参数下半圈在椭圆近侧（前景）
     for (int i = kSegs / 2; i < kSegs; ++i) {
@@ -666,7 +666,7 @@ void ClockWidget::OnPaint() {
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 19, 19), sunCoreBrush_);
     target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 18.6f, 18.6f), orangeBrush_, 1.1f);
 
-    // 近侧：亮环段（粗且亮，压在太阳前）+ 近侧行星
+    // 近侧：亮环段 = 白天（粗且亮，压在太阳前）+ 地球（白天走在亮弧上）
     for (int i = 0; i < kSegs / 2; ++i) {
         const float u0 = i * 2.0f * kPi / kSegs;
         const float u1 = (i + 1) * 2.0f * kPi / kSegs;
