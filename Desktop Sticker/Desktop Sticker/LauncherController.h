@@ -1,6 +1,9 @@
 #pragma once
+#include <map>
 #include <string>
 #include <vector>
+
+#include <winrt/Windows.Graphics.Imaging.h>
 
 #include "Host.h"
 
@@ -37,6 +40,8 @@ private:
     winrt::Microsoft::UI::Xaml::Media::SolidColorBrush hoverBrush_{ nullptr };
     winrt::Microsoft::UI::Xaml::Media::SolidColorBrush idleBrush_{ nullptr };
     winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcher_{ nullptr };
+    // 图标位图缓存（路径 → 48px SoftwareBitmap）：重复搜索/重复结果不再走提取管线
+    std::map<std::wstring, winrt::Windows::Graphics::Imaging::SoftwareBitmap> iconCache_;
 };
 
 } // namespace desktopsticker::app

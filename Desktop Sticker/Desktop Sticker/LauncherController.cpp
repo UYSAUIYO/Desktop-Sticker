@@ -357,81 +357,58 @@ void LauncherController::OpenIndex(int index) {
 
 winrt::fire_and_forget LauncherController::LoadTileIconAsync(std::wstring path, Image image) {
     apartment_context ui;
+    using winrt::Windows::Graphics::Imaging::SoftwareBitmap;
 
-    // 后台线程：提取图标并转成 Bgra8 预乘软件位图
-    winrt::Windows::Graphics::Imaging::SoftwareBitmap sb{ nullptr };
-    auto makeFromBytes = [&](std::vector<uint8_t>& bits, UINT w, UINT h) {
-        auto buffer = winrt::Windows::Storage::Streams::Buffer(static_cast<uint32_t>(bits.size()));
-        std::memcpy(buffer.data(), bits.data(), bits.size());
-        buffer.Length(static_cast<uint32_t>(bits.size()));
-        sb = winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
-            buffer,
-            winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
-            static_cast<int>(w), static_cast<int>(h),
-            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
-    };
-    co_await winrt::resume_background();
-    {
-        HICON icon = nullptr;
-        // mp4/mp3 等关联 UWP 应用的类型 SHDefExtractIcon 提取不到，记下失败走 Shell 兜底
-        const bool extracted = SUCCEEDED(SHDefExtractIconW(path.c_str(), 0, 0, &icon, nullptr, 48)) && icon;
-        if (extracted) {
-            winrt::com_ptr<IWICImagingFactory> wic;
-            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                           IID_PPV_ARGS(wic.put())))) {
-                winrt::com_ptr<IWICBitmap> wicBmp;
-                winrt::com_ptr<IWICFormatConverter> conv;
-                if (SUCCEEDED(wic->CreateBitmapFromHICON(icon, wicBmp.put())) &&
-                    SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
-                    SUCCEEDED(conv->Initialize(wicBmp.get(), GUID_WICPixelFormat32bppPBGRA,
-                                               WICBitmapDitherTypeNone, nullptr, 0.0,
-                                               WICBitmapPaletteTypeCustom))) {
-                    UINT w = 0, h = 0;
-                    conv->GetSize(&w, &h);
-                    const UINT stride = w * 4;
-                    std::vector<uint8_t> bits(static_cast<size_t>(stride) * h);
-                    if (w > 0 && h > 0 &&
-                        SUCCEEDED(conv->CopyPixels(nullptr, stride, static_cast<UINT>(bits.size()), bits.data()))) {
-                        makeFromBytes(bits, w, h);
+    // 图标提取统一走功能模块的三级兜底管线（SHDefExtract → SHGetFileInfo → Shell 图像工厂），
+    // EXE 只负责 HICON → SoftwareBitmap 的格式转换；HICON 归模块缓存，不得 DestroyIcon
+    if (iconCache_.find(path) == iconCache_.end()) {
+        SoftwareBitmap sb{ nullptr };
+        auto makeFromBytes = [&](std::vector<uint8_t>& bits, UINT w, UINT h) {
+            auto buffer = winrt::Windows::Storage::Streams::Buffer(static_cast<uint32_t>(bits.size()));
+            std::memcpy(buffer.data(), bits.data(), bits.size());
+            buffer.Length(static_cast<uint32_t>(bits.size()));
+            sb = SoftwareBitmap::CreateCopyFromBuffer(
+                buffer,
+                winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+                static_cast<int>(w), static_cast<int>(h),
+                winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+        };
+        co_await winrt::resume_background();
+        {
+            HICON icon = (host_ && host_->Module()) ? host_->Module()->GetIcon(path, 48) : nullptr;
+            if (icon) {
+                winrt::com_ptr<IWICImagingFactory> wic;
+                if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                               IID_PPV_ARGS(wic.put())))) {
+                    winrt::com_ptr<IWICBitmap> wicBmp;
+                    winrt::com_ptr<IWICFormatConverter> conv;
+                    if (SUCCEEDED(wic->CreateBitmapFromHICON(icon, wicBmp.put())) &&
+                        SUCCEEDED(wic->CreateFormatConverter(conv.put())) &&
+                        SUCCEEDED(conv->Initialize(wicBmp.get(), GUID_WICPixelFormat32bppPBGRA,
+                                                   WICBitmapDitherTypeNone, nullptr, 0.0,
+                                                   WICBitmapPaletteTypeCustom))) {
+                        UINT w = 0, h = 0;
+                        conv->GetSize(&w, &h);
+                        const UINT stride = w * 4;
+                        std::vector<uint8_t> bits(static_cast<size_t>(stride) * h);
+                        if (w > 0 && h > 0 &&
+                            SUCCEEDED(conv->CopyPixels(nullptr, stride, static_cast<UINT>(bits.size()), bits.data()))) {
+                            makeFromBytes(bits, w, h);
+                        }
                     }
                 }
-            }
-            DestroyIcon(icon);
-        } else {
-            // Shell 图像工厂能解析 UWP 应用图标（仅取图标不取缩略图）
-            IShellItemImageFactory* factory = nullptr;
-            if (SUCCEEDED(SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory)))) {
-                HBITMAP hbm = nullptr;
-                const SIZE size{48, 48};
-                if (SUCCEEDED(factory->GetImage(size, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &hbm)) && hbm) {
-                    BITMAP bm{};
-                    if (GetObjectW(hbm, sizeof(bm), &bm) && bm.bmWidth > 0 && bm.bmHeight > 0) {
-                        const int w = bm.bmWidth;
-                        const int h = std::abs(bm.bmHeight);
-                        BITMAPINFO bmi{};
-                        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                        bmi.bmiHeader.biWidth = w;
-                        bmi.bmiHeader.biHeight = -h; // top-down
-                        bmi.bmiHeader.biPlanes = 1;
-                        bmi.bmiHeader.biBitCount = 32;
-                        bmi.bmiHeader.biCompression = BI_RGB;
-                        std::vector<uint8_t> bits(static_cast<size_t>(w) * h * 4);
-                        HDC hdc = GetDC(nullptr);
-                        const int copied = GetDIBits(hdc, hbm, 0, h, bits.data(), &bmi, DIB_RGB_COLORS);
-                        ReleaseDC(nullptr, hdc);
-                        if (copied) makeFromBytes(bits, static_cast<UINT>(w), static_cast<UINT>(h));
-                    }
-                    DeleteObject(hbm);
-                }
-                factory->Release();
             }
         }
+        co_await ui; // 回 UI 线程写入缓存并设置图像源
+        if (!sb) co_return;
+        if (iconCache_.size() > 256) iconCache_.clear(); // 简单上限防膨胀
+        iconCache_.emplace(path, std::move(sb));
     }
-    if (!sb) co_return;
 
-    co_await ui; // 回 UI 线程设置图像源
+    auto it = iconCache_.find(path);
+    if (it == iconCache_.end()) co_return;
     SoftwareBitmapSource src;
-    co_await src.SetBitmapAsync(sb);
+    co_await src.SetBitmapAsync(it->second);
     image.Source(src);
 }
 

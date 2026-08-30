@@ -111,8 +111,9 @@ bool PromptText(HWND owner, const std::wstring& title, std::wstring& value) {
 
 } // namespace
 
-DesktopWorkspace::DesktopWorkspace(ConfigStore* config, const std::function<void()>& zonesChanged)
-    : config_(config), zonesChanged_(zonesChanged),
+DesktopWorkspace::DesktopWorkspace(ConfigStore* config, IconService* icons,
+                                   const std::function<void()>& zonesChanged)
+    : config_(config), iconService_(icons), zonesChanged_(zonesChanged),
       layoutPath_(config->GetRootDir() / L"layout.json") {}
 
 DesktopWorkspace::~DesktopWorkspace() {
@@ -137,7 +138,6 @@ bool DesktopWorkspace::Initialize() {
         }
 
         iconManager_ = std::make_unique<DesktopIconManager>(&shell_);
-        iconService_ = std::make_unique<IconService>();
 
         // 记录自动排列状态（但不要跨进程修改 Explorer 窗口样式，会崩 Explorer）
         if (iconManager_->ListView() && IsWindow(iconManager_->ListView())) {
@@ -235,7 +235,6 @@ void DesktopWorkspace::Shutdown() {
         DestroyWindow(msgHwnd_);
         msgHwnd_ = nullptr;
     }
-    iconService_->ClearCache();
     iconManager_.reset();
     shell_.Shutdown();
     if (oleInitialized_) {
@@ -538,7 +537,7 @@ void DesktopWorkspace::CreateZoneWindows() {
     const auto& cfg = config_->GetConfig();
     for (const auto& zone : model_.Layout().zones) {
         auto win = std::make_unique<ZoneWindow>(GetModuleHandleW(L"DesktopSticker.Features.dll"),
-                                                zone, iconService_.get(),
+                                                zone, iconService_,
                                                 cfg.zoneColumnSpacing, cfg.zoneRowSpacing);
 
         win->onCollapseToggle = [this](const std::wstring& zoneId) {

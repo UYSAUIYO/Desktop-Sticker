@@ -8,6 +8,7 @@
 #include "desktopsticker/DesktopWorkspace.h"
 #include "desktopsticker/HotkeyService.h"
 #include "desktopsticker/IndexService.h"
+#include "desktopsticker/IconService.h"
 
 namespace desktopsticker {
 
@@ -29,6 +30,7 @@ public:
     void SetConfig(const AppConfig& config) override;
     void OpenItem(const std::wstring& path) override;
     void RestoreDesktop() override;
+    HICON GetIcon(const std::wstring& path, int size) override;
 
 private:
     FeatureEvents events_;
@@ -37,6 +39,8 @@ private:
     std::unique_ptr<ConfigStore> config_;
     std::unique_ptr<IndexService> index_;
     std::unique_ptr<HotkeyService> hotkey_;
+    // 图标缓存归 FeatureModule 所有：磁贴窗口与 EXE 搜索面板共用，生命周期覆盖两者
+    std::unique_ptr<IconService> iconService_;
     std::unique_ptr<DesktopWorkspace> workspace_;
 };
 

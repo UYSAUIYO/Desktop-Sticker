@@ -44,6 +44,9 @@ public:
     virtual void SetConfig(const AppConfig& config) = 0;
     virtual void OpenItem(const std::wstring& path) = 0;
     virtual void RestoreDesktop() = 0;
+    // 取文件/快捷方式关联图标（磁贴与搜索面板共用的统一提取管线，含 UWP 关联类型兜底）。
+    // 返回的 HICON 由模块缓存持有，调用方不得 DestroyIcon。
+    virtual HICON GetIcon(const std::wstring& path, int size) = 0;
 };
 
 } // namespace desktopsticker

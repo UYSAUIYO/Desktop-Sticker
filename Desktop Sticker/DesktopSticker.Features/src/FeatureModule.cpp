@@ -35,7 +35,8 @@ bool FeatureModule::Init(const FeatureEvents& events) {
         // 应用配置的热键方案（双击空格 / 自定义组合键）
         hotkey_->SetHotkeyMode(config_->GetConfig().hotkeyMode, config_->GetConfig().customHotkey);
 
-        workspace_ = std::make_unique<DesktopWorkspace>(config_.get(), [this]() {
+        iconService_ = std::make_unique<IconService>();
+        workspace_ = std::make_unique<DesktopWorkspace>(config_.get(), iconService_.get(), [this]() {
             if (events_.zonesChanged) events_.zonesChanged();
         });
     } catch (const std::exception& e) {
@@ -70,7 +71,8 @@ void FeatureModule::Stop() {
 
 void FeatureModule::Shutdown() {
     Stop();
-    workspace_.reset();
+    workspace_.reset(); // 先于 iconService_ 析构：分区窗口持有 IconService 裸指针
+    iconService_.reset();
     hotkey_.reset();
     index_.reset();
     config_.reset();
@@ -136,6 +138,10 @@ void FeatureModule::OpenItem(const std::wstring& path) {
 
 void FeatureModule::RestoreDesktop() {
     if (workspace_) workspace_->RestoreDesktop();
+}
+
+HICON FeatureModule::GetIcon(const std::wstring& path, int size) {
+    return iconService_ ? iconService_->GetIcon(path, size) : nullptr;
 }
 
 } // namespace desktopsticker

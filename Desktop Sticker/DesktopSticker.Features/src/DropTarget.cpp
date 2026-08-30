@@ -56,9 +56,11 @@ std::vector<std::wstring> DropTarget::GetPaths(IDataObject* data) {
     if (drop) {
         const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
         for (UINT i = 0; i < count; ++i) {
-            wchar_t buf[MAX_PATH]{};
-            DragQueryFileW(drop, i, buf, MAX_PATH);
-            paths.emplace_back(buf);
+            // 长路径（>260）支持：先探长度再取，固定 MAX_PATH 会把长路径截断成坏路径
+            const UINT len = DragQueryFileW(drop, i, nullptr, 0);
+            std::wstring buf(len, L'\0');
+            if (len > 0) DragQueryFileW(drop, i, buf.data(), len + 1);
+            paths.push_back(std::move(buf));
         }
         GlobalUnlock(medium.hGlobal);
     }

@@ -18,7 +18,8 @@ namespace desktopsticker {
 
 class DesktopWorkspace {
 public:
-    DesktopWorkspace(ConfigStore* config, const std::function<void()>& zonesChanged);
+    // icons 由 FeatureModule 持有并传入（磁贴渲染与 EXE 搜索面板共用同一图标缓存）
+    DesktopWorkspace(ConfigStore* config, IconService* icons, const std::function<void()>& zonesChanged);
     ~DesktopWorkspace();
 
     bool Initialize();
@@ -61,7 +62,7 @@ private:
 
     DesktopShellIntegration shell_;
     std::unique_ptr<DesktopIconManager> iconManager_;
-    std::unique_ptr<IconService> iconService_;
+    IconService* iconService_ = nullptr; // 非所有权：归 FeatureModule
     std::unique_ptr<DirectoryWatcher> desktopWatcher_;
     ZoneModel model_;
     std::vector<std::unique_ptr<ZoneWindow>> zoneWindows_;
