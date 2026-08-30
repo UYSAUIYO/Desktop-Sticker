@@ -91,8 +91,8 @@ bool DesktopWorkspace::Initialize() {
             SaveLayout();
         }
 
-        // 布局版本 5：迁移为四列紧凑初始布局（只重排位置，不动分类内容；旧的 2/3/4 版一并升级）
-        if (model_.Layout().version < 5) {
+        // 布局版本 6：四列紧凑布局，右侧与左侧镜像（只重排位置，不动分类内容；旧版一并升级）
+        if (model_.Layout().version < 6) {
             ApplyCompactColumnLayout();
             SaveLayout();
             dstklog::Write(L"workspace", L"layout migrated to compact quad columns");
@@ -232,7 +232,7 @@ void DesktopWorkspace::ApplyCompactColumnLayout() {
         zones[i].rect = rects[i];
         zones[i].monitorIndex = 0;
     }
-    model_.Layout().version = 5; // 紧凑四列布局版本
+    model_.Layout().version = 6; // 紧凑四列布局版本（右侧镜像）
 }
 
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {

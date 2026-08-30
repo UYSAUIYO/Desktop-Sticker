@@ -20,9 +20,9 @@ struct QuadColumnParams {
 };
 
 // 初始四列布局纯函数：左右各两列贴边、卡片固定紧凑高度、中间大面积留给壁纸。
-// 分配规则（与用户指定的初始截图一致，标准 10 分区时）：
+// 分配规则（左右镜像对称，标准 10 分区时）：
 //   左贴边列 = 前半区前 4 张，左内列 = 前半区其余；
-//   右内列 = 后半区最后 4 张，右贴边列 = 后半区其余。
+//   右贴边列 = 后半区前 4 张，右内列 = 后半区其余（与左侧镜像）。
 // 屏幕太窄放不下四列时退化为左右两列贴边。调用方负责写回 zones。
 inline std::vector<RECT> ComputeQuadColumnRects(int count, const QuadColumnParams& p) {
     std::vector<RECT> rects;
@@ -41,9 +41,10 @@ inline std::vector<RECT> ComputeQuadColumnRects(int count, const QuadColumnParam
         if (!wideEnough || static_cast<int>(colLEdge.size()) < 4) colLEdge.push_back(i);
         else colLInner.push_back(i);
     }
+    // 右半区与左侧镜像：贴边列先放满 4 张，其余进内列
     for (int i = half; i < count; ++i) {
-        if (wideEnough && (count - i) <= 4) colRInner.push_back(i); // 后半区最后 4 张进内列
-        else colREdge.push_back(i);
+        if (!wideEnough || static_cast<int>(colREdge.size()) < 4) colREdge.push_back(i);
+        else colRInner.push_back(i);
     }
 
     auto place = [&](const std::vector<int>& idxs, int x) {
