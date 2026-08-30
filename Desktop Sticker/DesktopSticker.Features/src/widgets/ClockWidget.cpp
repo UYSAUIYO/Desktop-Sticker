@@ -250,15 +250,18 @@ bool ClockWidget::EnsureD2D() {
         }
     }
     if (sunCoreStops_ == nullptr) {
+        // 边缘减光（limb darkening）：边缘更暗更饱和 → 球体立体感
         const D2D1_GRADIENT_STOP stops[] = {
-            {0.0f, D2D1::ColorF(0xFFEDC4)}, {0.6f, D2D1::ColorF(0xFFB054)}, {1.0f, D2D1::ColorF(0xFF9430)}};
-        target_->CreateGradientStopCollection(stops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &sunCoreStops_);
-        if (sunCoreStops_) {
-            // 径向刷半径只能在创建时给定；位置/缩放由画刷变换在绘制时设置
-            target_->CreateRadialGradientBrush(
-                D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, -3), 19, 19),
-                sunCoreStops_, &sunCoreBrush_);
-        }
+            {0.0f, D2D1::ColorF(0xFFF9E3)}, {0.5f, D2D1::ColorF(0xFFD066)},
+            {0.8f, D2D1::ColorF(0xFF9F3A)}, {1.0f, D2D1::ColorF(0xF0731C)}};
+        target_->CreateGradientStopCollection(stops, 4, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &sunCoreStops_);
+    if (sunCoreStops_) {
+        // 径向刷半径只能在创建时给定；位置/缩放由画刷变换在绘制时设置。
+        // 四段色 stop：中心亮黄 → 橙 → 深橙，边缘略暗（limb darkening，立体感）
+        target_->CreateRadialGradientBrush(
+            D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, -3), 19, 19),
+            sunCoreStops_, &sunCoreBrush_);
+    }
     }
     if (sunGlowStops_ == nullptr) {
         const D2D1_GRADIENT_STOP stops[] = {
@@ -268,6 +271,21 @@ bool ClockWidget::EnsureD2D() {
             target_->CreateRadialGradientBrush(
                 D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(0, 0), 33, 33),
                 sunGlowStops_, &sunGlowBrush_);
+        }
+    }
+    if (ringBrush_ == nullptr) {
+        target_->CreateSolidColorBrush(D2D1::ColorF(0xFFFFFF, 1.0f), &ringBrush_);
+    }
+    if (planetStops_ == nullptr) {
+        // 地球受光渐变：亮面（昼）在画刷空间 +x 方向（绘制时旋转向太阳），背面深海军蓝
+        const D2D1_GRADIENT_STOP stops[] = {
+            {0.0f, D2D1::ColorF(0xE8F6FF)}, {0.35f, D2D1::ColorF(0x5EA0E8)},
+            {0.7f, D2D1::ColorF(0x1E4FA8)}, {1.0f, D2D1::ColorF(0x0D1633)}};
+        target_->CreateGradientStopCollection(stops, 4, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &planetStops_);
+        if (planetStops_) {
+            target_->CreateRadialGradientBrush(
+                D2D1::RadialGradientBrushProperties(D2D1::Point2F(0, 0), D2D1::Point2F(3, 0), 6, 6),
+                planetStops_, &planetBrush_);
         }
     }
     if (fmtTime_ == nullptr) {
@@ -327,6 +345,7 @@ bool ClockWidget::EnsureD2D() {
                                          12.0f, L"zh-cn", &fmtDesc_);
     }
     return bgBrush_ && borderBrush_ && cardBrush_ && handBrush_ && subBrush_ && orangeBrush_ &&
+           ringBrush_ && planetBrush_ &&
            timeGradBrush_ && sunCoreBrush_ && sunGlowBrush_ &&
            fmtTime_ && fmtSub_ && fmtLoc_ && fmtNum_ && fmtCard_ && fmtVal_ && fmtTemp_ && fmtDesc_;
 }
@@ -346,6 +365,9 @@ void ClockWidget::ReleaseD2D() {
     if (sunCoreStops_) sunCoreStops_->Release();
     if (sunGlowBrush_) sunGlowBrush_->Release();
     if (sunGlowStops_) sunGlowStops_->Release();
+    if (ringBrush_) ringBrush_->Release();
+    if (planetBrush_) planetBrush_->Release();
+    if (planetStops_) planetStops_->Release();
     if (borderBrush_) borderBrush_->Release();
     if (bgBrush_) bgBrush_->Release();
     if (cardBrush_) cardBrush_->Release();
@@ -366,6 +388,7 @@ void ClockWidget::ReleaseD2D() {
     timeGradBrush_ = nullptr; timeStops_ = nullptr;
     sunCoreBrush_ = nullptr; sunCoreStops_ = nullptr;
     sunGlowBrush_ = nullptr; sunGlowStops_ = nullptr;
+    ringBrush_ = nullptr; planetBrush_ = nullptr; planetStops_ = nullptr;
     borderBrush_ = nullptr; bgBrush_ = nullptr; cardBrush_ = nullptr;
     handBrush_ = nullptr; subBrush_ = nullptr; orangeBrush_ = nullptr;
     target_ = nullptr; dwriteFactory_ = nullptr; factory_ = nullptr;
@@ -496,7 +519,7 @@ void ClockWidget::OnPaint() {
         D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, fw - 0.5f, fh - 0.5f), 8, 8), borderBrush_, 1.0f);
 
     // —— 左：模拟表盘（基准半径 96 的 0.85 倍） ——
-    const float cx = 148.0f, cy = 122.0f, faceR = 82.0f;
+    const float cx = 148.0f, cy = 100.0f, faceR = 80.0f;
     target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), faceR, faceR), borderBrush_, 1.0f);
     for (int i = 0; i < 60; ++i) {
         const float a = i * 6.0f * kPi / 180.0f;
@@ -544,20 +567,35 @@ void ClockWidget::OnPaint() {
     target_->DrawTextW(locText_.c_str(), static_cast<UINT32>(locText_.size()), fmtLoc_,
                        D2D1::RectF(260, 132, 520, 164), handBrush_);
 
-    // —— 底部左：太阳-行星轨道（3D 遮挡）+ 日出日落时间（横向布局） ——
+    // —— 底部左：太阳-行星轨道（伪 3D：深度明暗/近大远小/绘制顺序遮挡）+ 日出日落 ——
     target_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(24, 206, 322, 288), 8, 8), cardBrush_);
 
-    const float sx = 104.0f, sy = 250.0f;
     const float phase = (st.wSecond * 1000.0f + ms) / 1000.0f; // 秒内相位（动画用）
-    const float orbRx = 54.0f, orbRy = 17.0f, orbRotDeg = -18.0f;
+
+    // 星空点缀（固定位置，缓慢闪烁）
+    {
+        static const float stars[][3] = {
+            {46, 220, 1.0f}, {140, 215, 0.8f}, {64, 240, 0.6f}, {126, 233, 1.0f},
+            {88, 217, 0.7f}, {152, 226, 0.9f}, {56, 268, 0.8f}, {140, 264, 1.0f}};
+        for (int i = 0; i < 8; ++i) {
+            const float tw = 0.5f + 0.5f * sinf(phase * 2.0f + i * 1.7f);
+            ringBrush_->SetColor(D2D1::ColorF(0xFFFFFF, (0.10f + 0.22f * tw) * stars[i][2]));
+            target_->FillEllipse(
+                D2D1::Ellipse(D2D1::Point2F(stars[i][0], stars[i][1]), 1.2f, 1.2f), ringBrush_);
+        }
+    }
+
+    const float sx = 104.0f, sy = 250.0f;
+    const float orbRx = 56.0f, orbRy = 20.0f, orbRotDeg = -22.0f;
     const float orbRot = orbRotDeg * kPi / 180.0f;
-    const float orbitU = phase * 2.0f * kPi / 40.0f; // 行星 40 秒绕一圈
+    // 公转角由系统时间决定（随秒针每分钟一圈，确定性、跟随物理时间）
+    const float orbitU = ((st.wSecond + ms / 1000.0f) / 60.0f) * 2.0f * kPi;
     auto orbitPoint = [&](float u) {
         const float x0 = orbRx * cosf(u), y0 = orbRy * sinf(u);
         return D2D1_POINT_2F{sx + x0 * cosf(orbRot) - y0 * sinf(orbRot),
                              sy + x0 * sinf(orbRot) + y0 * cosf(orbRot)};
     };
-    // 轨道半环：参数角 u0→u1（屏幕顺时针 = 参数角递增），rot 为椭圆长轴旋转
+    // 轨道弧段：u0→u1（屏幕顺时针 = 参数角递增），rot 为椭圆长轴旋转
     auto orbitArc = [&](float u0, float u1, float width, ID2D1SolidColorBrush* b) {
         ID2D1PathGeometry* geo = nullptr;
         if (SUCCEEDED(factory_->CreatePathGeometry(&geo))) {
@@ -569,7 +607,7 @@ void ClockWidget::OnPaint() {
                 seg.size = D2D1::SizeF(orbRx, orbRy);
                 seg.rotationAngle = orbRotDeg;
                 seg.sweepDirection = D2D1_SWEEP_DIRECTION_CLOCKWISE;
-                seg.arcSize = D2D1_ARC_SIZE_LARGE;
+                seg.arcSize = D2D1_ARC_SIZE_SMALL; // 短段必须 SMALL：LARGE 会画出近整椭圆（曾叠成螺旋）
                 sink->AddArc(seg);
                 sink->EndFigure(D2D1_FIGURE_END_OPEN);
                 sink->Close();
@@ -579,23 +617,51 @@ void ClockWidget::OnPaint() {
             geo->Release();
         }
     };
+    // 行星 = 地球：近大远小 + 受光面朝向太阳（径向渐变随公转旋转）
+    auto drawPlanet = [&]() {
+        const D2D1_POINT_2F pp = orbitPoint(orbitU);
+        const float depth = 0.5f + 0.5f * sinf(orbitU); // 0 远侧 … 1 近侧
+        const float pr = 3.0f + 2.2f * depth;
+        const float a = atan2f(sy - pp.y, sx - pp.x);
+        planetBrush_->SetTransform(D2D1::Matrix3x2F::Scale(pr / 6.0f, pr / 6.0f) *
+                                   D2D1::Matrix3x2F::Rotation(a * 180.0f / kPi) *
+                                   D2D1::Matrix3x2F::Translation(pp.x, pp.y));
+        target_->FillEllipse(D2D1::Ellipse(pp, pr, pr), planetBrush_);
+        target_->DrawEllipse(D2D1::Ellipse(pp, pr + 0.6f, pr + 0.6f),
+                             subBrush_, 0.8f); // 大气层薄边
+    };
+
+    // 远侧：暗环段（先画，经过太阳圆面的段落会被太阳自然遮挡）
+    constexpr int kSegs = 48;
     const bool planetFront = sinf(orbitU) > 0; // 参数下半圈在椭圆近侧（前景）
-    orbitArc(kPi, 2.0f * kPi, 1.5f, subBrush_); // 远侧半环（画在太阳后）
-    if (!planetFront) {
-        target_->FillEllipse(D2D1::Ellipse(orbitPoint(orbitU), 4.5f, 4.5f), subBrush_);
+    for (int i = kSegs / 2; i < kSegs; ++i) {
+        const float u0 = i * 2.0f * kPi / kSegs;
+        const float u1 = (i + 1) * 2.0f * kPi / kSegs;
+        const float depth = 0.5f + 0.5f * sinf((u0 + u1) * 0.5f);
+        ringBrush_->SetColor(D2D1::ColorF(0xFFFFFF, 0.15f + 0.30f * depth));
+        orbitArc(u0, u1, 1.0f + 0.8f * depth, ringBrush_);
     }
-    // 太阳：光晕呼吸 + 径向渐变球（径向刷半径固定，位置/缩放走画刷变换）
-    const float glowR = 26.0f + sinf(phase * 2.2f) * 3.0f;
+    if (!planetFront) drawPlanet();
+
+    // 太阳：外层光晕呼吸 + 径向渐变核球（径向刷半径固定，位置/缩放走画刷变换）
+    const float glowR = 27.0f + sinf(phase * 2.2f) * 3.0f;
     const D2D1_MATRIX_3X2_F atSun =
         D2D1::Matrix3x2F::Scale(glowR / 33.0f, glowR / 33.0f) * D2D1::Matrix3x2F::Translation(sx, sy);
     sunGlowBrush_->SetTransform(atSun);
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), glowR, glowR), sunGlowBrush_);
     sunCoreBrush_->SetTransform(D2D1::Matrix3x2F::Translation(sx, sy));
     target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 19, 19), sunCoreBrush_);
-    orbitArc(0.0f, kPi, 1.8f, handBrush_); // 近侧半环（压在太阳前）
-    if (planetFront) {
-        target_->FillEllipse(D2D1::Ellipse(orbitPoint(orbitU), 4.5f, 4.5f), handBrush_);
+    target_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(sx, sy), 18.6f, 18.6f), orangeBrush_, 1.1f);
+
+    // 近侧：亮环段（粗且亮，压在太阳前）+ 近侧行星
+    for (int i = 0; i < kSegs / 2; ++i) {
+        const float u0 = i * 2.0f * kPi / kSegs;
+        const float u1 = (i + 1) * 2.0f * kPi / kSegs;
+        const float depth = 0.5f + 0.5f * sinf((u0 + u1) * 0.5f);
+        ringBrush_->SetColor(D2D1::ColorF(0xFFFFFF, 0.30f + 0.55f * depth));
+        orbitArc(u0, u1, 1.4f + 1.4f * depth, ringBrush_);
     }
+    if (planetFront) drawPlanet();
 
     // 右侧：日出 / 日落时刻（纵向两行）
     target_->DrawTextW(L"日出", 2, fmtCard_, D2D1::RectF(172, 216, 214, 240), subBrush_);

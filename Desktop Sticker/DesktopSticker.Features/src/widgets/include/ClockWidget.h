@@ -86,6 +86,9 @@ private:
     ID2D1SolidColorBrush* subBrush_ = nullptr;
     ID2D1SolidColorBrush* orangeBrush_ = nullptr;
     ID2D1SolidColorBrush* cardBrush_ = nullptr;
+    ID2D1SolidColorBrush* ringBrush_ = nullptr;      // 轨道环（按段调 alpha/宽度）
+    ID2D1GradientStopCollection* planetStops_ = nullptr;
+    ID2D1RadialGradientBrush* planetBrush_ = nullptr; // 行星：受光面朝太阳
     ID2D1GradientStopCollection* timeStops_ = nullptr;
     ID2D1LinearGradientBrush* timeGradBrush_ = nullptr;
     ID2D1GradientStopCollection* sunCoreStops_ = nullptr;
