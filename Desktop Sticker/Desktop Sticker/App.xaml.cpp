@@ -33,16 +33,18 @@ namespace winrt::Desktop_Sticker::implementation
         }
 
         // 主窗口只作为托盘宿主，创建后立即隐藏；
-        // 托盘先就绪，功能初始化失败才有地方向用户提示（气泡），不允许静默失败
+        // 托盘先就绪，功能初始化失败才有地方向用户提示（气泡），不允许静默失败。
+        // 注意顺序：AttachHost 负责填充 m_hwnd 并加托盘图标，必须先于 Activate/隐藏调用
         auto mainWindow = make<MainWindow>();
         auto impl = winrt::get_self<implementation::MainWindow>(mainWindow);
         window = mainWindow;
-        window.Activate();
-        ShowWindow(impl->Hwnd(), SW_HIDE);
-        m_dispatcher = window.DispatcherQueue();
 
         m_host = std::make_unique<desktopsticker::app::Host>();
         impl->AttachHost(m_host.get(), nullptr);
+
+        window.Activate();
+        ShowWindow(impl->Hwnd(), SW_HIDE);
+        m_dispatcher = window.DispatcherQueue();
 
         if (!m_host->LoadFeatures()) {
             impl->ShowTrayWarning(L"功能模块加载失败（缺 DesktopSticker.Features.dll 或初始化异常），详见 %APPDATA%\\DesktopSticker\\debug.log");
