@@ -588,8 +588,9 @@ void ClockWidget::OnPaint() {
     const float sx = 104.0f, sy = 250.0f;
     const float orbRx = 56.0f, orbRy = 20.0f, orbRotDeg = -22.0f;
     const float orbRot = orbRotDeg * kPi / 180.0f;
-    // 公转角由系统时间决定（随秒针每分钟一圈，确定性、跟随物理时间）
-    const float orbitU = ((st.wSecond + ms / 1000.0f) / 60.0f) * 2.0f * kPi;
+    // 公转进度 = 今天度过的时间：0 点在轨道起点，正午半圈，24 点转满一圈
+    const double daySec = st.wHour * 3600.0 + st.wMinute * 60.0 + st.wSecond + ms / 1000.0;
+    const float orbitU = static_cast<float>(daySec / 86400.0) * 2.0f * kPi;
     auto orbitPoint = [&](float u) {
         const float x0 = orbRx * cosf(u), y0 = orbRy * sinf(u);
         return D2D1_POINT_2F{sx + x0 * cosf(orbRot) - y0 * sinf(orbRot),
