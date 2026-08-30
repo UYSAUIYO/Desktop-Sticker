@@ -101,6 +101,13 @@ void MouseInputForwarder::DetectDesktopBlankDoubleClick(const POINT& pt) {
     const auto& w = shell_->Windows();
     if (root != w.workerw && root != w.progman && hit != w.listView) return;
 
+    // 双击落在时钟小组件上：不是桌面空白（时钟嵌入桌面层，GA_ROOT 检查拦不住它）
+    {
+        wchar_t cls[64]{};
+        GetClassNameW(hit, cls, 64);
+        if (wcscmp(cls, L"DesktopSticker.ClockWindow") == 0) return;
+    }
+
     // 干净桌面模式：分区已隐藏、图标列表已隐藏，直接恢复
     if (isCleanMode && isCleanMode()) {
         if (onBlankDesktopDoubleClick) onBlankDesktopDoubleClick();

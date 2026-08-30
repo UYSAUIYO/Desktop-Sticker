@@ -26,6 +26,8 @@ public:
 
     bool Create();
     void Destroy();
+    // 强制下一帧重绘（嵌入完成/窗口状态变化后必须调用，分层表面会被 SetParent 重置）
+    void Refresh();
 
     HWND Hwnd() const { return hwnd_; }
     int Width() const { return 240; }

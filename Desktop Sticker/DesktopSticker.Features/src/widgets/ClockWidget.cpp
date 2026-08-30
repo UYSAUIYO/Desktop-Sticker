@@ -43,8 +43,9 @@ ClockWidget::~ClockWidget() {
 
 bool ClockWidget::Create() {
     if (hwnd_) return true;
-    // WS_EX_TRANSPARENT：整窗点击穿透；ULW 逐像素 alpha 决定外观（同磁贴，禁用 SLWA）
-    hwnd_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+    // 与磁贴同款分层子窗口：外观由 ULW 逐像素 alpha 决定（禁用 SLWA），禁用 WS_EX_TRANSPARENT
+    // （本机实测其会连带禁掉分层子窗口的合成）；时钟忽略输入，点击行为等同桌面
+    hwnd_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                             kClockWindowClass, L"",
                             WS_POPUP | WS_VISIBLE,
                             100, 100, Width(), Height(),
@@ -52,8 +53,12 @@ bool ClockWidget::Create() {
     if (!hwnd_) return false;
     SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
     SetTimer(hwnd_, kClockTimerId, 1000, nullptr);
-    OnTick(); // 首帧立即绘制
     return true;
+}
+
+void ClockWidget::Refresh() {
+    painted_ = false; // 强制重绘（SetParent/样式切换会重置分层表面）
+    OnTick();
 }
 
 void ClockWidget::Destroy() {

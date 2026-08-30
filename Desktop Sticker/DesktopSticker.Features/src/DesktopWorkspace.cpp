@@ -261,6 +261,7 @@ void DesktopWorkspace::CreateClock() {
         SetWindowPos(clock_->Hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
+    clock_->Refresh(); // 嵌入后强制重绘：SetParent/样式切换会重置分层表面
     dstklog::Write(L"workspace",
                    L"clock created embedded=" + std::to_wstring(clock_->IsEmbedded() ? 1 : 0));
 }
