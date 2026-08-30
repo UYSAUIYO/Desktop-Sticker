@@ -2,6 +2,9 @@
 #include "App.xaml.h"
 #include "MainWindow.xaml.h"
 
+#include "AppLog.h"
+#include "WindowChrome.h"
+
 #include <winrt/Microsoft.UI.Dispatching.h>
 
 using namespace winrt;
@@ -21,6 +24,14 @@ namespace winrt::Desktop_Sticker::implementation
             }
         });
 #endif
+        // 跟随系统深浅色（解包应用不会自动应用）。只能在 App 构造阶段设置，
+        // 晚了会抛异常；标题栏/控件颜色都依赖它保持一致
+        if (desktopsticker::app::IsSystemDarkMode()) {
+            try {
+                RequestedTheme(ApplicationTheme::Dark);
+            } catch (...) {
+            }
+        }
     }
 
     void App::OnLaunched([[maybe_unused]] LaunchActivatedEventArgs const& e)
@@ -68,5 +79,17 @@ namespace winrt::Desktop_Sticker::implementation
         m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
         m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
         impl->AttachSettings(m_settings.get());
+
+        // 命令行 --settings：启动即打开设置窗口（便于测试与快捷入口）。
+        // 解包 WinUI3 的 e.Arguments() 恒为空，必须读完整命令行
+        const std::wstring args(GetCommandLineW());
+        {
+            char buf[512]{};
+            snprintf(buf, sizeof(buf), "launch args: %ls", args.c_str());
+            desktopsticker::app::AppLog("app", buf);
+        }
+        if (args.find(L"--settings") != std::wstring::npos) {
+            m_settings->Show();
+        }
     }
 }
