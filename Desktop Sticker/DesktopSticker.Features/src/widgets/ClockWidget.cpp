@@ -588,9 +588,21 @@ void ClockWidget::OnPaint() {
     const float sx = 104.0f, sy = 250.0f;
     const float orbRx = 56.0f, orbRy = 20.0f, orbRotDeg = -22.0f;
     const float orbRot = orbRotDeg * kPi / 180.0f;
-    // 公转进度 = 今天度过的时间：0 点在轨道起点，正午半圈，24 点转满一圈
-    const double daySec = st.wHour * 3600.0 + st.wMinute * 60.0 + st.wSecond + ms / 1000.0;
-    const float orbitU = static_cast<float>(daySec / 86400.0) * 2.0f * kPi;
+    // 公转角 = 一天中的时刻锚定到轨道：日出(左端)→正午(顶)→日落(右端)为昼弧，
+    // 夜里沿下半圈（右端→底→左端）回到日出点，昼夜时长按真实日出日落数据分配
+    float orbitU = static_cast<float>(nowMin_) / 1440.0f * 2.0f * kPi; // 无日出数据时的兜底
+    if (sunriseMin_ >= 0 && sunsetMin_ > sunriseMin_) {
+        if (nowMin_ >= sunriseMin_ && nowMin_ <= sunsetMin_) {
+            const float t = static_cast<float>(nowMin_ - sunriseMin_) /
+                            static_cast<float>(sunsetMin_ - sunriseMin_);
+            orbitU = kPi + t * kPi; // 昼弧：日出左端 → 正午顶 → 日落右端
+        } else {
+            const int nightLen = 1440 - (sunsetMin_ - sunriseMin_);
+            const int nowNight = nowMin_ >= sunsetMin_ ? nowMin_ - sunsetMin_
+                                                       : nowMin_ + 1440 - sunsetMin_;
+            orbitU = (static_cast<float>(nowNight) / nightLen) * kPi; // 夜弧：右端 → 底 → 左端
+        }
+    }
     auto orbitPoint = [&](float u) {
         const float x0 = orbRx * cosf(u), y0 = orbRy * sinf(u);
         return D2D1_POINT_2F{sx + x0 * cosf(orbRot) - y0 * sinf(orbRot),
