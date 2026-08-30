@@ -124,6 +124,10 @@ void FeatureModule::SetConfig(const AppConfig& config) {
     config_->Save();
     if (hotkey_) hotkey_->SetHotkeyMode(config.hotkeyMode, config.customHotkey);
     if (workspace_) workspace_->SetZoneSpacing(config.zoneColumnSpacing, config.zoneRowSpacing);
+    // 列容量变化：按新容量重排初始布局（覆盖手动拖放位置属预期行为）
+    if (workspace_ && old.zoneColumnCards != config.zoneColumnCards) {
+        workspace_->RelayoutZones();
+    }
     // 只有搜索范围相关变化才重建索引：设置页拖动间距/换主题不应触发全盘扫描
     const bool searchChanged = old.searchDesktop != config.searchDesktop ||
                                old.searchKnownFolders != config.searchKnownFolders ||

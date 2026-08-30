@@ -228,6 +228,22 @@ void SettingsController::EnsureWindow() {
     section(L"磁贴");
     auto tileGroup = group();
 
+    zoneCardsCombo_ = ComboBox();
+    zoneCardsCombo_.MinWidth(180);
+    zoneCardsCombo_.PlaceholderText(L"选择每列卡片数");
+    {
+        auto item4 = ComboBoxItem();
+        item4.Content(box_value(L"4 张 / 列"));
+        auto item5 = ComboBoxItem();
+        item5.Content(box_value(L"5 张 / 列"));
+        zoneCardsCombo_.Items().Append(item4);
+        zoneCardsCombo_.Items().Append(item5);
+    }
+    placeRight(makeCard(tileGroup, L"\uE713", L"每列卡片数",
+                        L"一列纵向排几张卡片；卡片高度自动铺满到任务栏上沿，改变后立即重排"),
+               zoneCardsCombo_);
+    zoneCardsCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveConfig(); });
+
     columnSpacingBox_ = NumberBox();
     columnSpacingBox_.Width(160);
     columnSpacingBox_.Minimum(32);
@@ -332,6 +348,7 @@ void SettingsController::EnsureWindow() {
     startMenuSwitch_.IsOn(cfg.searchStartMenu);
     followThemeSwitch_.IsOn(cfg.followSystemTheme);
     hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
+    zoneCardsCombo_.SelectedIndex(cfg.zoneColumnCards >= 5 ? 1 : 0);
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
     rowSpacingBox_.Value(static_cast<double>(cfg.zoneRowSpacing));
     RefreshApps();
@@ -384,6 +401,9 @@ void SettingsController::SaveConfig() {
     if (item) {
         auto tag = item.Tag().as<Windows::Foundation::IPropertyValue>().GetString();
         cfg.hotkeyMode = tag == L"custom" ? L"custom" : L"double-space";
+    }
+    if (zoneCardsCombo_) {
+        cfg.zoneColumnCards = zoneCardsCombo_.SelectedIndex() == 1 ? 5 : 4;
     }
     if (columnSpacingBox_) {
         const double v = columnSpacingBox_.Value(); // 空输入时为 NaN，强转 int 是 UB

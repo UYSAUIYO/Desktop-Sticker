@@ -31,11 +31,13 @@ public:
     void RestoreDesktop();
     void Refresh();
     void SetZoneSpacing(int columnSpacing, int rowSpacing);
+    // 按当前配置的每列卡片数重排初始布局（设置页改"每列卡片数"时调用，覆盖手动位置）
+    void RelayoutZones();
 
 private:
     size_t CountZoneItems() const;
     void AutoClassify(const std::vector<DesktopIconInfo>& icons);
-    void ApplyCompactColumnLayout(); // 左右各两列贴边、紧凑卡片高度、右侧镜像（布局版本 6）
+    void ApplyCompactColumnLayout(); // 左右各两列贴边、动态列高对齐任务栏（布局版本 7）
     void CollectIntoZone(const std::wstring& zoneId, const std::wstring& path);
     void RemoveFromZone(const std::wstring& zoneId, const std::wstring& path);
     void CreateZoneWindows();

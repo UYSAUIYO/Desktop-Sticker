@@ -17,6 +17,8 @@ struct AppConfig {
     // 磁贴网格间距（像素）
     int zoneColumnSpacing = 48;
     int zoneRowSpacing = 72;
+    // 每列卡片数（4 或 5）：决定初始四列布局的列容量，卡片高度动态铺满到任务栏
+    int zoneColumnCards = 4;
 };
 
 class DESKTOPSTICKER_API ConfigStore {

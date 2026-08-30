@@ -41,6 +41,7 @@ bool ConfigStore::Load() {
         cfg.includeHiddenFiles = j.value("includeHiddenFiles", false);
         cfg.zoneColumnSpacing = j.value("zoneColumnSpacing", 48);
         cfg.zoneRowSpacing = j.value("zoneRowSpacing", 72);
+        cfg.zoneColumnCards = j.value("zoneColumnCards", 4);
         config_ = cfg;
         return true;
     } catch (...) {
@@ -66,6 +67,7 @@ bool ConfigStore::Save() const {
     j["includeHiddenFiles"] = config_.includeHiddenFiles;
     j["zoneColumnSpacing"] = config_.zoneColumnSpacing;
     j["zoneRowSpacing"] = config_.zoneRowSpacing;
+    j["zoneColumnCards"] = config_.zoneColumnCards;
 
     // 原子替换（tmp + MoveFileEx 统一封装）
     return WriteFileAtomic(configPath_, j.dump(2));

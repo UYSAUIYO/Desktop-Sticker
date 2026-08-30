@@ -91,8 +91,8 @@ bool DesktopWorkspace::Initialize() {
             SaveLayout();
         }
 
-        // 布局版本 6：四列紧凑布局，右侧与左侧镜像（只重排位置，不动分类内容；旧版一并升级）
-        if (model_.Layout().version < 6) {
+        // 布局版本 7：四列布局 + 动态列高（对齐任务栏），列容量可配置（旧版一并升级）
+        if (model_.Layout().version < 7) {
             ApplyCompactColumnLayout();
             SaveLayout();
             dstklog::Write(L"workspace", L"layout migrated to compact quad columns");
@@ -215,6 +215,12 @@ void DesktopWorkspace::SetZoneSpacing(int columnSpacing, int rowSpacing) {
     for (auto& w : zoneWindows_) w->SetSpacing(columnSpacing, rowSpacing);
 }
 
+void DesktopWorkspace::RelayoutZones() {
+    ApplyCompactColumnLayout();
+    SaveLayout();
+    Refresh();
+}
+
 size_t DesktopWorkspace::CountZoneItems() const {
     size_t n = 0;
     for (const auto& z : model_.Layout().zones) n += z.itemPaths.size();
@@ -222,17 +228,26 @@ size_t DesktopWorkspace::CountZoneItems() const {
 }
 
 void DesktopWorkspace::ApplyCompactColumnLayout() {
-    // 目标排布（用户指定初始布局）：左右各两列贴边，卡片固定紧凑高度（约两行磁贴+标题），
-    // 超出部分在卡片内滚动；中间大面积留给壁纸。
+    // 目标排布（用户指定初始布局）：左右各两列贴边；卡片高度按列动态均分工作区高度，
+    // 列底对齐任务栏上沿（底部不留空档）；每列卡片数（4/5）由设置页控制。
     // 分布数学在 LayoutMath.h（纯函数，可单测），这里只负责写回 zones。
-    QuadColumnParams params{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    RECT work{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        work.top = 0;
+        work.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    QuadColumnParams params{};
+    params.screenW = GetSystemMetrics(SM_CXSCREEN);
+    params.workTop = work.top;
+    params.workBottom = work.bottom;
+    params.maxPerCol = std::clamp(config_->GetConfig().zoneColumnCards, 4, 5);
     const auto rects = ComputeQuadColumnRects(static_cast<int>(model_.Layout().zones.size()), params);
     auto& zones = model_.Layout().zones;
     for (size_t i = 0; i < rects.size() && i < zones.size(); ++i) {
         zones[i].rect = rects[i];
         zones[i].monitorIndex = 0;
     }
-    model_.Layout().version = 6; // 紧凑四列布局版本（右侧镜像）
+    model_.Layout().version = 7; // 动态高度四列布局版本
 }
 
 void DesktopWorkspace::AutoClassify(const std::vector<DesktopIconInfo>& icons) {
