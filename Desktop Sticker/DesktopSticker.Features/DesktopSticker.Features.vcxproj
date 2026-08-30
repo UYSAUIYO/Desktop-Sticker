@@ -46,7 +46,7 @@
       <PreprocessorDefinitions>DESKTOPSTICKER_BUILD;_WINDLL;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)src\widgets\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -66,7 +66,7 @@
       <PreprocessorDefinitions>DESKTOPSTICKER_BUILD;_WINDLL;_UNICODE;UNICODE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)src\widgets\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -93,6 +93,7 @@
     <ClInclude Include="include\desktopsticker\ZoneGrid.h" />
     <ClInclude Include="include\desktopsticker\MouseInputForwarder.h" />
     <ClInclude Include="include\desktopsticker\RenameDialog.h" />
+    <ClInclude Include="src\widgets\include\ClockWidget.h" />
     <ClInclude Include="include\desktopsticker\IFeatureModule.h" />
     <ClInclude Include="include\desktopsticker\ConfigStore.h" />
     <ClInclude Include="include\desktopsticker\HotkeyService.h" />
@@ -122,6 +123,7 @@
     <ClCompile Include="src\IconClassifier.cpp" />
     <ClCompile Include="src\MouseInputForwarder.cpp" />
     <ClCompile Include="src\RenameDialog.cpp" />
+    <ClCompile Include="src\widgets\ClockWidget.cpp" />
     <ClCompile Include="src\ZoneModel.cpp" />
     <ClCompile Include="src\DesktopShellIntegration.cpp" />
     <ClCompile Include="src\ZoneWindow.cpp" />

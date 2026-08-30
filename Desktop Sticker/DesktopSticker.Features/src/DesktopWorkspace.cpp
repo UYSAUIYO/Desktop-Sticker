@@ -128,6 +128,7 @@ bool DesktopWorkspace::Initialize() {
         inputForwarder_->onBlankDesktopDoubleClick = [this]() { ToggleCleanDesktop(); };
         inputForwarder_->Start();
         StartDesktopWatcher();
+        if (config_->GetConfig().showClock) CreateClock();
         dstklog::Write(L"workspace", L"Initialize end, zoneWindows=" + std::to_wstring(zoneWindows_.size()));
         return true;
     } catch (const std::exception& e) {
@@ -145,6 +146,10 @@ void DesktopWorkspace::Shutdown() {
         desktopWatcher_.reset();
         if (inputForwarder_) inputForwarder_->Stop();
         DestroyZoneWindows();
+        if (clock_) {
+            clock_->Destroy();
+            clock_.reset();
+        }
         RestoreDesktop();
     } catch (...) {
         dstklog::Write(L"workspace", L"Shutdown cleanup exception");
@@ -219,6 +224,53 @@ void DesktopWorkspace::RelayoutZones() {
     ApplyCompactColumnLayout();
     SaveLayout();
     Refresh();
+}
+
+void DesktopWorkspace::CreateClock() {
+    if (clock_) {
+        if (clock_->Hwnd()) ShowWindow(clock_->Hwnd(), SW_SHOW);
+        return;
+    }
+    ClockWidget::RegisterClass(GetModuleHandleW(L"DesktopSticker.Features.dll"));
+    clock_ = std::make_unique<ClockWidget>(GetModuleHandleW(L"DesktopSticker.Features.dll"));
+    if (!clock_->Create()) {
+        dstklog::Write(L"workspace", L"clock create FAILED");
+        clock_.reset();
+        return;
+    }
+    // 位置：工作区顶部居中（左右四列磁贴，中间顶部留给时钟）
+    RECT work{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        work.left = 0;
+        work.right = GetSystemMetrics(SM_CXSCREEN);
+        work.top = 0;
+    }
+    SetWindowPos(clock_->Hwnd(), nullptr,
+                 (work.left + work.right - clock_->Width()) / 2, work.top + 24,
+                 clock_->Width(), clock_->Height(), SWP_NOACTIVATE | SWP_NOZORDER);
+    // 与磁贴同一套嵌入路径：defView 子窗口；失败则退化为最底层弹窗
+    if (shell_.IsReady()) {
+        const HWND parent = shell_.Windows().defView;
+        const HWND oldParent = SetParent(clock_->Hwnd(), parent);
+        if (oldParent || GetLastError() == 0) clock_->SetEmbedded(true);
+        LONG_PTR style = GetWindowLongPtrW(clock_->Hwnd(), GWL_STYLE);
+        SetWindowLongPtrW(clock_->Hwnd(), GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD);
+        SetWindowPos(clock_->Hwnd(), HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    } else {
+        SetWindowPos(clock_->Hwnd(), HWND_BOTTOM, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    dstklog::Write(L"workspace",
+                   L"clock created embedded=" + std::to_wstring(clock_->IsEmbedded() ? 1 : 0));
+}
+
+void DesktopWorkspace::SetClockVisible(bool show) {
+    if (show) {
+        CreateClock(); // 已存在则仅显示
+    } else if (clock_ && clock_->Hwnd()) {
+        ShowWindow(clock_->Hwnd(), SW_HIDE);
+    }
 }
 
 size_t DesktopWorkspace::CountZoneItems() const {
@@ -496,6 +548,9 @@ void DesktopWorkspace::ToggleCleanDesktop() {
     cleanMode_ = !cleanMode_;
     for (auto& w : zoneWindows_) {
         ShowWindow(w->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
+    }
+    if (clock_ && clock_->Hwnd()) {
+        ShowWindow(clock_->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
     }
     if (iconManager_) iconManager_->HideAllIcons(cleanMode_);
 }

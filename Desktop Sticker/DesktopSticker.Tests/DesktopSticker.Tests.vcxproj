@@ -44,7 +44,7 @@
       <PreprocessorDefinitions>_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -62,7 +62,7 @@
       <PreprocessorDefinitions>NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -87,6 +87,7 @@
     <ClCompile Include="TestZoneModel.cpp" />
     <ClCompile Include="TestIconClassifier.cpp" />
     <ClCompile Include="TestLayoutMath.cpp" />
+    <ClCompile Include="TestClockText.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">

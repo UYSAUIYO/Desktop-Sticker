@@ -19,6 +19,8 @@ struct AppConfig {
     int zoneRowSpacing = 72;
     // 每列卡片数（4 或 5）：决定初始四列布局的列容量，卡片高度动态铺满到任务栏
     int zoneColumnCards = 4;
+    // 桌面时钟小组件（顶部居中，点击穿透）
+    bool showClock = true;
 };
 
 class DESKTOPSTICKER_API ConfigStore {

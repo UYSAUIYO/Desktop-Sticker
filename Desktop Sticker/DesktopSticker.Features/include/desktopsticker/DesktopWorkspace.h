@@ -15,6 +15,7 @@
 #include "desktopsticker/MouseInputForwarder.h"
 #include "desktopsticker/ZoneModel.h"
 #include "desktopsticker/ZoneWindow.h"
+#include "ClockWidget.h" // 小组件公共头（src/widgets/include）
 
 namespace desktopsticker {
 
@@ -33,6 +34,8 @@ public:
     void SetZoneSpacing(int columnSpacing, int rowSpacing);
     // 按当前配置的每列卡片数重排初始布局（设置页改"每列卡片数"时调用，覆盖手动位置）
     void RelayoutZones();
+    // 桌面时钟小组件显隐（设置页开关时调用；未创建过则首次创建并嵌入）
+    void SetClockVisible(bool show);
 
 private:
     size_t CountZoneItems() const;
@@ -49,6 +52,7 @@ private:
     void StartDesktopWatcher();
     void CollectNewDesktopIcons();
     void CreateMessageWindow();
+    void CreateClock();
 
     ZoneWindow* ZoneAtPoint(POINT pt) const;
 
@@ -67,6 +71,7 @@ private:
     std::vector<std::unique_ptr<ZoneWindow>> zoneWindows_;
     std::vector<DropTarget*> dropTargets_;
     std::unique_ptr<MouseInputForwarder> inputForwarder_; // 低级鼠标钩子：降级转发 + 空白双击
+    std::unique_ptr<ClockWidget> clock_;                  // 桌面时钟小组件（点击穿透）
     bool cleanMode_ = false;
     bool oleInitialized_ = false;
     // message-only 窗口：把 watcher 后台线程回调封送回 UI 线程，避免跨线程并发改 model

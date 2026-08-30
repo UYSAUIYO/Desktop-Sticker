@@ -327,6 +327,16 @@ void SettingsController::EnsureWindow() {
         }
     });
 
+    // —— 小组件 ——
+    section(L"小组件");
+    auto widgetGroup = group();
+
+    clockSwitch_ = ToggleSwitch();
+    placeRight(makeCard(widgetGroup, L"\uE823", L"桌面时钟",
+                        L"在桌面顶部中间显示时间与日期；点击穿透，不挡桌面操作"),
+               clockSwitch_);
+    clockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+
     // —— 系统 ——
     section(L"系统");
     auto sysGroup = group();
@@ -347,6 +357,7 @@ void SettingsController::EnsureWindow() {
     searchKnownFoldersSwitch_.IsOn(cfg.searchKnownFolders);
     startMenuSwitch_.IsOn(cfg.searchStartMenu);
     followThemeSwitch_.IsOn(cfg.followSystemTheme);
+    clockSwitch_.IsOn(cfg.showClock);
     hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
     zoneCardsCombo_.SelectedIndex(cfg.zoneColumnCards >= 5 ? 1 : 0);
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
@@ -396,6 +407,7 @@ void SettingsController::SaveConfig() {
     cfg.searchKnownFolders = searchKnownFoldersSwitch_.IsOn();
     if (startMenuSwitch_) cfg.searchStartMenu = startMenuSwitch_.IsOn();
     cfg.followSystemTheme = followThemeSwitch_.IsOn();
+    if (clockSwitch_) cfg.showClock = clockSwitch_.IsOn();
 
     auto item = hotkeyModeCombo_.SelectedItem().try_as<ComboBoxItem>();
     if (item) {

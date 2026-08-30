@@ -128,6 +128,10 @@ void FeatureModule::SetConfig(const AppConfig& config) {
     if (workspace_ && old.zoneColumnCards != config.zoneColumnCards) {
         workspace_->RelayoutZones();
     }
+    // 桌面时钟开关
+    if (workspace_ && old.showClock != config.showClock) {
+        workspace_->SetClockVisible(config.showClock);
+    }
     // 只有搜索范围相关变化才重建索引：设置页拖动间距/换主题不应触发全盘扫描
     const bool searchChanged = old.searchDesktop != config.searchDesktop ||
                                old.searchKnownFolders != config.searchKnownFolders ||
