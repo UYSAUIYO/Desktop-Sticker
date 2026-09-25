@@ -70,6 +70,12 @@
     <ClInclude Include="src\AudioSource.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\WallpaperBackend.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\VideoBackend.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\AudioEngine.h">
       <Filter>src</Filter>
     </ClInclude>
@@ -125,6 +131,12 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\FfmpegTranscoder.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\BackendRegistry.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\VideoBackend.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\FrameSchedulerLoop.cpp">

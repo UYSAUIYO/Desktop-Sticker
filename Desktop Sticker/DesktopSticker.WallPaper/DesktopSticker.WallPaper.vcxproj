@@ -101,6 +101,8 @@
     <ClInclude Include="src\DesktopHost.h" />
     <ClInclude Include="src\DriveInventory.h" />
     <ClInclude Include="src\AudioSource.h" />
+    <ClInclude Include="src\WallpaperBackend.h" />
+    <ClInclude Include="src\VideoBackend.h" />
     <ClInclude Include="src\AudioEngine.h" />
     <ClInclude Include="src\FfmpegApi.h" />
     <ClInclude Include="src\FfmpegTranscoder.h" />
@@ -124,6 +126,8 @@
     <ClCompile Include="src\AudioEngine.cpp" />
     <ClCompile Include="src\AudioSources.cpp" />
     <ClCompile Include="src\FfmpegTranscoder.cpp" />
+    <ClCompile Include="src\BackendRegistry.cpp" />
+    <ClCompile Include="src\VideoBackend.cpp" />
     <ClCompile Include="src\FrameSchedulerLoop.cpp" />
     <ClCompile Include="src\FullscreenDetector.cpp" />
     <ClCompile Include="src\MediaLibrary.cpp" />

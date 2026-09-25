@@ -230,6 +230,8 @@ public:
     }
 
     double Fps() const override { return fps_; }
+    // FFmpeg 给出逐帧时长（GIF 的变帧延迟靠它才正确）
+    int FrameDurationMs() const override { return lastFrameDurationMs_; }
     const char* Backend() const override { return "FFmpeg"; }
 
 private:
@@ -273,6 +275,13 @@ private:
         const int scaled = api.sws_scale(sws_, frame_->data, frame_->linesize, 0, h, dst, dstStride);
         if (scaled <= 0) return false;
 
+        // 逐帧时长（GIF/WebP 的变帧延迟）：由帧时长 × 流时间基推出
+        const AVRational tb = format_->streams[streamIndex_]->time_base;
+        if (frame_->duration > 0 && tb.num > 0 && tb.den > 0) {
+            lastFrameDurationMs_ = static_cast<int>(
+                static_cast<int64_t>(frame_->duration) * 1000LL * tb.num / tb.den);
+        }
+
         width = w;
         height = h;
         return true;
@@ -288,6 +297,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     double fps_ = 30.0;
+    int lastFrameDurationMs_ = 0;
     bool eof_ = false;
 };
 

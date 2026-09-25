@@ -18,6 +18,8 @@ public:
     // 取下一帧；false 表示当前无法出帧（含循环回卷的那一次，调用方下轮重试）
     virtual bool NextFrame(std::vector<uint8_t>& bgra, int& width, int& height) = 0;
     virtual double Fps() const = 0;
+    // 上一帧的显示时长（毫秒）。GIF/WebP 可能逐帧不同；返回 0 表示请按 Fps() 推算
+    virtual int FrameDurationMs() const { return 0; }
     // "Media Foundation" 或 "FFmpeg"，用于日志与状态显示
     virtual const char* Backend() const = 0;
 };
