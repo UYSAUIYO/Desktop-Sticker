@@ -22,6 +22,7 @@
 struct IAudioClient;
 struct IAudioRenderClient;
 struct IAudioClock;
+struct IAudioEndpointVolume;
 struct IMMDeviceEnumerator;
 
 namespace desktopsticker::wallpaper {
@@ -38,7 +39,10 @@ public:
     void SetVolume(float volume);      // 0..1
     void SetSpeed(double speed);       // 与画面同步
 
-    bool Muted() const { return muted_.load(); }
+    // 有效静音 = 用户没开声音（默认）**或系统已静音**。系统静音由音频线程轮询端点得到，
+    // 因此系统音量静音/取消静音会实时反映到壁纸；用户没开声音时自然一直是静音。
+    bool Muted() const { return muted_.load() || systemMuted_.load(); }
+    bool SystemMuted() const { return systemMuted_.load(); }
     // 有效时返回播放位置（微秒）；无音源/静音/无设备返回 -1（调用方回落 QPC）
     int64_t ClockUs() const;
 
@@ -56,11 +60,13 @@ private:
     void close_device();               // 在音频线程上调用
     // 按需重开设备（音源更换 / 暂停恢复 / 设备失效）
     bool ensure_open_locked();
+    void poll_system_mute();           // 在音频线程上调用
 
     std::thread thread_;
     std::atomic<bool> quit_{false};
     std::atomic<bool> paused_{false};
-    std::atomic<bool> muted_{true};    // 规格：默认静音
+    std::atomic<bool> muted_{true};    // 用户选择；规格：默认静音
+    std::atomic<bool> systemMuted_{false};   // 系统端点静音状态（音频线程轮询刷新）
     std::atomic<float> volume_{1.0f};
     std::atomic<double> speed_{1.0};
     std::atomic<int64_t> clockUs_{-1};
@@ -75,12 +81,14 @@ private:
     IAudioClient* client_ = nullptr;
     IAudioRenderClient* render_ = nullptr;
     IAudioClock* clock_ = nullptr;
+    IAudioEndpointVolume* endpointVolume_ = nullptr;   // 只为读系统静音状态
     void* event_ = nullptr;            // HANDLE
     int deviceChannels_ = 0;
     int deviceRate_ = 0;
     bool deviceIsFloat_ = true;
     uint64_t clockFreq_ = 0;
     int64_t renderedFrames_ = 0;
+    ULONGLONG lastMutePollMs_ = 0;
     PcmRateConverter converter_;
     std::vector<int16_t> mapped_;
     std::vector<int16_t> resampled_;

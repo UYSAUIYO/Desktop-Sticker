@@ -24,6 +24,7 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <mmdeviceapi.h>
+#include <endpointvolume.h>   // 系统静音状态（IAudioEndpointVolume::GetMute）
 #include <mmreg.h>
 #include <audioclient.h>
 #include <wincodec.h>

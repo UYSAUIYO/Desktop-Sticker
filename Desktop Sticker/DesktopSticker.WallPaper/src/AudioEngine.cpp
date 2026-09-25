@@ -145,6 +145,18 @@ bool AudioEngine::open_device() {
         }
     }
 
+    // 系统静音：读一次初值，之后由主循环轮询。拿不到就当作"未静音"，
+    // 反正用户自己的开关仍然管用，不会因此漏音。
+    IAudioEndpointVolume* rawVolume = nullptr;
+    if (SUCCEEDED(device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr,
+                                   reinterpret_cast<void**>(&rawVolume))) &&
+        rawVolume) {
+        endpointVolume_ = rawVolume;
+        poll_system_mute();
+    } else {
+        wp_log("audio: IAudioEndpointVolume unavailable; system mute will not be tracked");
+    }
+
     renderedFrames_ = 0;
     clockUs_.store(-1);
     channels_.store(deviceChannels_);
@@ -170,6 +182,11 @@ void AudioEngine::close_device() {
         clock_->Release();
         clock_ = nullptr;
     }
+    if (endpointVolume_) {
+        endpointVolume_->Release();
+        endpointVolume_ = nullptr;
+    }
+    systemMuted_.store(false);
     if (client_) {
         client_->Release();
         client_ = nullptr;
@@ -186,8 +203,17 @@ void AudioEngine::close_device() {
     pendingOffset_ = 0;
 }
 
-bool AudioEngine::ensure_open_locked() {
-    bool changed = false;
+void AudioEngine::poll_system_mute() {
+    if (!endpointVolume_) return;
+    BOOL muted = FALSE;
+    if (FAILED(endpointVolume_->GetMute(&muted))) return;
+    const bool now = (muted != FALSE);
+    if (now == systemMuted_.load()) return;
+    systemMuted_.store(now);
+    wp_log(std::string("audio: system endpoint mute = ") + (now ? "1" : "0"));
+}
+
+bool AudioEngine::ensure_open_locked() {    bool changed = false;
     bool hasSource = false;
     {
         std::lock_guard<std::mutex> lock(sourceMutex_);
@@ -218,6 +244,14 @@ void AudioEngine::thread_main() {
     const bool comOk = SUCCEEDED(comHr);
 
     while (!quit_.load()) {
+        // 系统静音状态：端点对象归音频线程独占，定期轮询即可 ——
+        // 用 RegisterControlChangeNotify 回调要额外管委托生命周期，不值。
+        const ULONGLONG nowTick = GetTickCount64();
+        if (nowTick - lastMutePollMs_ >= 250) {
+            lastMutePollMs_ = nowTick;
+            poll_system_mute();
+        }
+
         if (!ensure_open_locked()) {
             Sleep(50);
             continue;
@@ -238,7 +272,8 @@ void AudioEngine::thread_main() {
         if (FAILED(render_->GetBuffer(available, &dst)) || !dst) continue;
 
         const int outCh = deviceChannels_ > 0 ? deviceChannels_ : 1;
-        const float gain = muted_.load() ? 0.0f : volume_.load();
+        // 有效静音：用户没开声音 或 系统静音 —— 两者任一成立就写静音
+        const float gain = Muted() ? 0.0f : volume_.load();
         const double speed = speed_.load();
 
         size_t written = 0;
