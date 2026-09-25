@@ -55,6 +55,9 @@
     <ClInclude Include="include\desktopsticker\wallpaper\PresentationArbiter.h">
       <Filter>include\desktopsticker\wallpaper</Filter>
     </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\PcmConvert.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
     <ClInclude Include="src\D3dContext.h">
       <Filter>src</Filter>
     </ClInclude>

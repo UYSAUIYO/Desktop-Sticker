@@ -3,6 +3,7 @@
 
 #include "Log.h"
 #include "Utf8.h"
+#include "desktopsticker/wallpaper/BackendKind.h"
 
 #include <nlohmann/json.hpp>
 
@@ -13,7 +14,7 @@ namespace desktopsticker::wallpaper {
 
 namespace {
 
-constexpr int kLibraryVersion = 1;
+constexpr int kLibraryVersion = 2;   // v2：条目新增 kind 字段
 constexpr int kStateVersion = 1;
 
 const char* variant_to_string(VariantKind k) {
@@ -143,6 +144,8 @@ std::vector<WallPaperItem> WallPaperStore::LoadLibrary(const std::wstring& libra
             it.id = from_utf8(e.value("id", std::string{}));
             it.name = from_utf8(e.value("name", std::string{}));
             it.sourceFile = from_utf8(e.value("sourceFile", std::string{}));
+            // v1 数据没有 kind 字段：旧数据只可能是视频，缺失即回落 Video（自动迁移）
+            it.kind = backend_kind_from_id(from_utf8(e.value("kind", std::string("video"))));
             it.hasPoster = e.value("hasPoster", false);
             it.hasBalanced = e.value("hasBalanced", false);
             it.hasPowerSaver = e.value("hasPowerSaver", false);
@@ -165,6 +168,7 @@ bool WallPaperStore::SaveLibrary(const std::wstring& libraryRoot,
             {"id", to_utf8(it.id)},
             {"name", to_utf8(it.name)},
             {"sourceFile", to_utf8(it.sourceFile)},
+            {"kind", to_utf8(backend_kind_id(it.kind))},
             {"hasPoster", it.hasPoster},
             {"hasBalanced", it.hasBalanced},
             {"hasPowerSaver", it.hasPowerSaver},

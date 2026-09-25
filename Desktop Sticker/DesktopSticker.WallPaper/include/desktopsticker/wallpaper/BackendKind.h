@@ -2,15 +2,16 @@
 
 // 后端类型识别：从"用户给的东西"推断壁纸后端类型。
 // 纯函数，只看路径与目录清单，不碰文件系统。
+// BackendKind 枚举本身在 Types.h（它会持久化到 library.json）。
 
 #include <algorithm>
 #include <cwctype>
 #include <string>
 #include <vector>
 
-namespace desktopsticker::wallpaper {
+#include "desktopsticker/wallpaper/Types.h"
 
-enum class BackendKind { Video, AnimatedImage, ImageSequence, Web, Shader3D };
+namespace desktopsticker::wallpaper {
 
 namespace detail {
 
@@ -139,6 +140,60 @@ inline std::vector<std::wstring> natural_sort_image_frames(const std::vector<std
 
     std::sort(images.begin(), images.end(), less);
     return images;
+}
+
+// ---- 持久化与 UI 用的类型标识（library.json 里存 id 字符串，不用枚举整数）----
+
+inline const wchar_t* backend_kind_id(BackendKind k) {
+    switch (k) {
+        case BackendKind::Video:          return L"video";
+        case BackendKind::AnimatedImage:  return L"animated";
+        case BackendKind::ImageSequence:  return L"sequence";
+        case BackendKind::Web:            return L"web";
+        case BackendKind::Shader3D:       return L"shader3d";
+    }
+    return L"video";
+}
+
+// 未知/缺失一律回落到 Video：旧数据没有 kind 字段，而旧数据只可能是视频
+inline BackendKind backend_kind_from_id(const std::wstring& id) {
+    const std::wstring v = detail::lower_copy(id);
+    if (v == L"animated") return BackendKind::AnimatedImage;
+    if (v == L"sequence") return BackendKind::ImageSequence;
+    if (v == L"web") return BackendKind::Web;
+    if (v == L"shader3d") return BackendKind::Shader3D;
+    return BackendKind::Video;
+}
+
+inline const wchar_t* backend_kind_name(BackendKind k) {
+    switch (k) {
+        case BackendKind::Video:          return L"视频";
+        case BackendKind::AnimatedImage:  return L"动图";
+        case BackendKind::ImageSequence:  return L"图片序列";
+        case BackendKind::Web:            return L"网页";
+        case BackendKind::Shader3D:       return L"3D / 着色器";
+    }
+    return L"视频";
+}
+
+// 谁能出声：视频后端与网页后端。动图/序列/着色器没有音轨。
+inline bool backend_kind_has_audio(BackendKind k) {
+    return k == BackendKind::Video || k == BackendKind::Web;
+}
+
+// 性能副本（转码）只对视频有意义
+inline bool backend_kind_supports_variants(BackendKind k) {
+    return k == BackendKind::Video;
+}
+
+// 调速：网页的动画节奏由页面自己的 requestAnimationFrame 决定，我们无法介入
+inline bool backend_kind_supports_speed(BackendKind k) {
+    return k != BackendKind::Web;
+}
+
+// 自呈现型后端自己拥有窗口内容，DComp 必须让位
+inline bool backend_kind_is_self_presenting(BackendKind k) {
+    return k == BackendKind::Web || k == BackendKind::Shader3D;
 }
 
 } // namespace desktopsticker::wallpaper

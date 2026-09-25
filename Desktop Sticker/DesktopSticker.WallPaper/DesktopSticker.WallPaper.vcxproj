@@ -96,6 +96,7 @@
     <ClInclude Include="include\desktopsticker\wallpaper\ClockPolicy.h" />
     <ClInclude Include="include\desktopsticker\wallpaper\ParamMerge.h" />
     <ClInclude Include="include\desktopsticker\wallpaper\PresentationArbiter.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\PcmConvert.h" />
     <ClInclude Include="src\D3dContext.h" />
     <ClInclude Include="src\DesktopHost.h" />
     <ClInclude Include="src\DriveInventory.h" />

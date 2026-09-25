@@ -31,6 +31,11 @@ void write_raw(const fs::path& p, const std::string& s) {
     out << s;
 }
 
+std::string read_all(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
 } // namespace
 
 TEST(WallPaperStore_MissingState_ReturnsDefaults) {
@@ -157,4 +162,63 @@ TEST(WallPaperStore_SkipsEntriesWithoutId) {
     const auto got = store.LoadLibrary(tmp.path.wstring());
     ASSERT_EQ(static_cast<size_t>(1), got.size());
     ASSERT_STREQ(L"ok", got[0].id);
+}
+
+TEST(WallPaperStore_LibraryVersionIsTwo) {
+    TempDir tmp;
+    WallPaperStore store(tmp.path.wstring());
+    ASSERT_TRUE(store.SaveLibrary(tmp.path.wstring(), { WallPaperItem{} }));
+
+    const std::string raw = read_all(tmp.path / L"library.json");
+    ASSERT_TRUE(raw.find("\"version\": 2") != std::string::npos);
+}
+
+TEST(WallPaperStore_KindRoundTrips) {
+    TempDir tmp;
+    WallPaperStore store(tmp.path.wstring());
+
+    std::vector<WallPaperItem> items;
+    WallPaperItem a;
+    a.id = L"v";
+    a.kind = BackendKind::Video;
+    items.push_back(a);
+    WallPaperItem b;
+    b.id = L"w";
+    b.kind = BackendKind::Web;
+    items.push_back(b);
+    WallPaperItem c;
+    c.id = L"s";
+    c.kind = BackendKind::ImageSequence;
+    items.push_back(c);
+
+    ASSERT_TRUE(store.SaveLibrary(tmp.path.wstring(), items));
+    const auto got = store.LoadLibrary(tmp.path.wstring());
+    ASSERT_EQ(static_cast<size_t>(3), got.size());
+    ASSERT_TRUE(got[0].kind == BackendKind::Video);
+    ASSERT_TRUE(got[1].kind == BackendKind::Web);
+    ASSERT_TRUE(got[2].kind == BackendKind::ImageSequence);
+}
+
+TEST(WallPaperStore_V1LibraryWithoutKindMigratesToVideo) {
+    // v1 数据没有 kind 字段，必须自动迁移为 Video 而不是加载失败
+    TempDir tmp;
+    write_raw(tmp.path / L"library.json",
+              R"({"version":1,"items":[{"id":"old","name":"n","sourceFile":"source.mp4"}]})");
+
+    WallPaperStore store(tmp.path.wstring());
+    const auto got = store.LoadLibrary(tmp.path.wstring());
+    ASSERT_EQ(static_cast<size_t>(1), got.size());
+    ASSERT_TRUE(got[0].kind == BackendKind::Video);
+    ASSERT_STREQ(L"source.mp4", got[0].sourceFile);
+}
+
+TEST(WallPaperStore_UnknownKindFallsBackToVideo) {
+    TempDir tmp;
+    write_raw(tmp.path / L"library.json",
+              R"({"version":1,"items":[{"id":"x","kind":"nonsense"}]})");
+
+    WallPaperStore store(tmp.path.wstring());
+    const auto got = store.LoadLibrary(tmp.path.wstring());
+    ASSERT_EQ(static_cast<size_t>(1), got.size());
+    ASSERT_TRUE(got[0].kind == BackendKind::Video);
 }

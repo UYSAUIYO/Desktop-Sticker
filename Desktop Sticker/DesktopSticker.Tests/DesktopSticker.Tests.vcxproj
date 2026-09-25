@@ -105,6 +105,7 @@
     <ClCompile Include="TestWallPaperClockPolicy.cpp" />
     <ClCompile Include="TestWallPaperParamMerge.cpp" />
     <ClCompile Include="TestWallPaperArbiter.cpp" />
+    <ClCompile Include="TestWallPaperPcmConvert.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">
