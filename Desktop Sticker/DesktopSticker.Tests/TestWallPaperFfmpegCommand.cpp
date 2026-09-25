@@ -18,14 +18,14 @@ static std::wstring arg_after(const std::vector<std::wstring>& v, const std::wst
     return *(it + 1);
 }
 
-static int crf_of(const std::vector<std::wstring>& v) {
-    const std::wstring s = arg_after(v, L"-crf");
+static int bitrate_of(const std::vector<std::wstring>& v) {
+    const std::wstring s = arg_after(v, L"-b:v");
     return s.empty() ? -1 : static_cast<int>(std::wcstol(s.c_str(), nullptr, 10));
 }
 
 TEST(FfmpegCommand_InputIsSource_OutputIsVariant) {
     auto a = build_transcode_args(L"C:\\x\\source.mp4", L"D:\\lib\\balanced-v1.mp4",
-                                  VariantKind::Balanced);
+                                  VariantKind::Balanced, L"libopenh264");
     ASSERT_TRUE(contains(a, L"-i"));
     ASSERT_STREQ(L"C:\\x\\source.mp4", arg_after(a, L"-i"));      // 输入是源文件
     ASSERT_STREQ(L"D:\\lib\\balanced-v1.mp4", a.back());          // 输出是派生副本
@@ -33,24 +33,38 @@ TEST(FfmpegCommand_InputIsSource_OutputIsVariant) {
 
 TEST(FfmpegCommand_NeverWritesBackToSource) {
     auto a = build_transcode_args(L"C:\\x\\source.mp4", L"D:\\lib\\balanced-v1.mp4",
-                                  VariantKind::Balanced);
+                                  VariantKind::Balanced, L"libopenh264");
     // 源路径只能作为 -i 的取值出现，绝不能成为输出
     ASSERT_TRUE(a.back() != L"C:\\x\\source.mp4");
 }
 
+// 固定的 LGPL 构建没有 x264（含 x264 即 GPL）。绝不能生成 libx264 参数，
+// 否则转码在发布负载上必然失败。
+TEST(FfmpegCommand_NeverUsesGplX264Encoder) {
+    auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"libopenh264");
+    ASSERT_FALSE(contains(a, L"libx264"));
+    ASSERT_FALSE(contains(a, L"-preset"));   // -preset 也是 x264 专属
+    ASSERT_FALSE(contains(a, L"-crf"));      // CRF 同为 x264 专属
+}
+
+TEST(FfmpegCommand_UsesGivenEncoder) {
+    auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"h264_mf");
+    ASSERT_STREQ(L"h264_mf", arg_after(a, L"-c:v"));
+}
+
 TEST(FfmpegCommand_NoAudioTrack) {
-    auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced);
+    auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"libopenh264");
     ASSERT_TRUE(contains(a, L"-an"));            // 壁纸静音，不输出音轨
 }
 
-TEST(FfmpegCommand_PowerSaverIsSmallerThanBalanced) {
-    auto bal = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced);
-    auto pwr = build_transcode_args(L"a.mp4", L"c.mp4", VariantKind::PowerSaver);
-    ASSERT_TRUE(crf_of(pwr) > crf_of(bal));      // 省电档 CRF 更大 = 码率更低
+TEST(FfmpegCommand_PowerSaverUsesLowerBitrate) {
+    auto bal = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"libopenh264");
+    auto pwr = build_transcode_args(L"a.mp4", L"c.mp4", VariantKind::PowerSaver, L"libopenh264");
+    ASSERT_TRUE(bitrate_of(pwr) < bitrate_of(bal));   // 省电档码率更低
 }
 
 TEST(FfmpegCommand_OriginalHasNoTranscodeArgs) {
-    ASSERT_TRUE(build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Original).empty());
+    ASSERT_TRUE(build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Original, L"libopenh264").empty());
 }
 
 TEST(FfmpegCommand_VariantFileName) {

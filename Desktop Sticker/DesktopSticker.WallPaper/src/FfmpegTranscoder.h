@@ -30,7 +30,11 @@ public:
 
 private:
     bool run(const std::wstring& exe, const std::vector<std::wstring>& args, unsigned timeoutMs);
+    // 固定的 LGPL 构建没有 x264，按可用性挑一个 H.264 编码器（结果缓存）
+    const std::wstring& pick_encoder();
     std::wstring exePath_;
+    std::wstring encoder_;
+    bool encoderProbed_ = false;
     mutable std::mutex queueMutex_; // 串行化队列
 };
 

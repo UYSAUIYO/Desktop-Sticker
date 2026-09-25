@@ -75,8 +75,72 @@ bool FfmpegTranscoder::RunTranscode(const std::wstring& input,
     }
     fs::create_directories(fs::path(output).parent_path(), ec);
 
-    const auto args = build_transcode_args(input, output, kind);
+    const std::wstring encoder = pick_encoder();
+    if (encoder.empty()) {
+        wp_log("transcode unavailable: no usable H.264 encoder in payload");
+        return false;
+    }
+    const auto args = build_transcode_args(input, output, kind, encoder);
     return run(exePath_, args, timeoutMs);
+}
+
+// 固定构建里 libx264 不存在（GPL）。按"系统自带优先、许可最干净"的顺序挑：
+// h264_mf（Media Foundation，Windows 必有）→ libopenh264（构建内集成，BSD）→ 硬件编码器。
+const std::wstring& FfmpegTranscoder::pick_encoder() {
+    if (encoderProbed_) return encoder_;
+
+    static const wchar_t* kCandidates[] = {
+        L"h264_mf", L"libopenh264", L"h264_nvenc", L"h264_qsv", L"h264_amf",
+    };
+
+    const std::wstring cmd = quote_arg(exePath_) + L" -hide_banner -loglevel error -encoders";
+    std::vector<wchar_t> buffer(cmd.begin(), cmd.end());
+    buffer.push_back(L'\0');
+
+    std::string output;
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE readEnd = nullptr, writeEnd = nullptr;
+    if (CreatePipe(&readEnd, &writeEnd, &sa, 0)) {
+        SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = writeEnd;
+        si.hStdError = writeEnd;
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(exePath_.c_str(), buffer.data(), nullptr, nullptr, TRUE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(writeEnd);
+            char chunk[4096];
+            DWORD got = 0;
+            while (ReadFile(readEnd, chunk, sizeof(chunk), &got, nullptr) && got > 0) {
+                output.append(chunk, chunk + got);
+            }
+            WaitForSingleObject(pi.hProcess, 10000);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        } else {
+            CloseHandle(writeEnd);
+        }
+        CloseHandle(readEnd);
+    }
+
+    for (const wchar_t* candidate : kCandidates) {
+        const std::string narrow(candidate, candidate + wcslen(candidate));
+        if (output.find(narrow) != std::string::npos) {
+            encoder_ = candidate;
+            wp_log("transcode encoder selected: " + narrow);
+            break;
+        }
+    }
+    if (encoder_.empty()) {
+        wp_log("no candidate H.264 encoder found in payload");
+    }
+    encoderProbed_ = true;
+    return encoder_;
 }
 
 bool FfmpegTranscoder::RunThumbnail(const std::wstring& input,
