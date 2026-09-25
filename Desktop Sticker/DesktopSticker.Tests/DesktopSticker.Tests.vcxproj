@@ -44,7 +44,7 @@
       <PreprocessorDefinitions>_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\DesktopSticker.ResMon\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -62,7 +62,7 @@
       <PreprocessorDefinitions>NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\DesktopSticker.ResMon\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -96,6 +96,10 @@
     <ClCompile Include="TestWallPaperStore.cpp" />
     <ClCompile Include="TestWallPaperMediaLibrary.cpp" />
     <ClCompile Include="TestWallPaperDriveIdentity.cpp" />
+    <ClCompile Include="TestResMonFormat.cpp" />
+    <ClCompile Include="TestResMonClassify.cpp" />
+    <ClCompile Include="TestResMonCpuMath.cpp" />
+    <ClCompile Include="TestResMonJson.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">

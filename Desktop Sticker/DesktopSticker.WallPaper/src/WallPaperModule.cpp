@@ -523,6 +523,7 @@ void WallPaperModuleImpl::queue_prepare_artifacts(const std::wstring& id, Varian
         workerQuit_.store(false);
     }
     workerThread_ = std::thread([this, source, poster, variant, kind, id]() {
+        SetThreadDescription(GetCurrentThread(), L"壁纸转码工作");
         if (!transcoder_) return;
 
         if (transcoder_->RunThumbnail(source, poster)) {
@@ -547,7 +548,10 @@ void WallPaperModuleImpl::notify_playback() {
 void WallPaperModuleImpl::start_monitor() {
     if (monitorThread_.joinable()) return;
     monitorQuit_.store(false);
-    monitorThread_ = std::thread([this]() { monitor_main(); });
+    monitorThread_ = std::thread([this]() {
+        SetThreadDescription(GetCurrentThread(), L"壁纸暂停监控");
+        monitor_main();
+    });
 }
 
 void WallPaperModuleImpl::stop_monitor() {

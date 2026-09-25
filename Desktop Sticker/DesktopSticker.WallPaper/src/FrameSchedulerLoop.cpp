@@ -33,7 +33,10 @@ bool FrameSchedulerLoop::Start() {
     quit_.store(false);
     std::promise<bool> init;
     auto ready = init.get_future();
-    thread_ = std::thread([this, p = std::move(init)]() mutable { thread_main(std::move(p)); });
+    thread_ = std::thread([this, p = std::move(init)]() mutable {
+        SetThreadDescription(GetCurrentThread(), L"壁纸渲染与帧调度");
+        thread_main(std::move(p));
+    });
 
     if (ready.wait_for(std::chrono::seconds(15)) != std::future_status::ready) {
         wp_log("FrameSchedulerLoop: init timed out");

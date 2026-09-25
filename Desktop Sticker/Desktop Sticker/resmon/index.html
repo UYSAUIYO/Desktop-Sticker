@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>资源管理器 — Desktop Sticker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="appbar">
+  <div class="brand">Desktop Sticker<em>资源管理器</em></div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="cpu">CPU</button>
+    <button class="tab" data-tab="memory">内存</button>
+    <button class="tab" data-tab="storage">存储</button>
+  </nav>
+</header>
+
+<main>
+  <!-- CPU -->
+  <section class="panel active" id="panel-cpu">
+    <div class="card summary">
+      <div class="metric">
+        <span class="value" id="cpu-total">—</span>
+        <span class="unit">进程 CPU 占用</span>
+      </div>
+      <div class="bar" id="cpu-bar"></div>
+      <div class="note" id="cpu-note"></div>
+    </div>
+
+    <div class="card">
+      <h2>线程</h2>
+      <table>
+        <thead><tr><th>线程</th><th>TID</th><th class="num">CPU</th><th class="num">累计</th></tr></thead>
+        <tbody id="cpu-threads"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="cpu-children-card" hidden>
+      <h2>子进程</h2>
+      <table>
+        <thead><tr><th>进程</th><th>PID</th><th class="num">CPU</th><th class="num">工作集</th></tr></thead>
+        <tbody id="cpu-children"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 内存 -->
+  <section class="panel" id="panel-memory">
+    <div class="card summary">
+      <div class="metrics">
+        <div class="metric small"><span class="value" id="mem-ws">—</span><span class="unit">工作集</span></div>
+        <div class="metric small"><span class="value" id="mem-private">—</span><span class="unit">私有提交</span></div>
+        <div class="metric small"><span class="value" id="mem-peak">—</span><span class="unit">峰值工作集</span></div>
+      </div>
+      <div class="note" id="mem-note"></div>
+    </div>
+
+    <div class="card">
+      <h2>已加载模块</h2>
+      <table>
+        <thead><tr><th>模块</th><th class="num">映像大小</th></tr></thead>
+        <tbody id="mem-modules"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="mem-children-card" hidden>
+      <h2>子进程</h2>
+      <table>
+        <thead><tr><th>进程</th><th>PID</th><th class="num">工作集</th></tr></thead>
+        <tbody id="mem-children"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 存储 -->
+  <section class="panel" id="panel-storage">
+    <div class="card summary">
+      <div class="metrics">
+        <div class="metric small"><span class="value" id="sto-total">—</span><span class="unit">程序合计占用</span></div>
+        <div class="metric small"><span class="value" id="sto-when">—</span><span class="unit">上次计算</span></div>
+      </div>
+      <div class="bar" id="sto-bar"></div>
+      <div class="actions">
+        <button id="sto-recompute">重新计算</button>
+      </div>
+      <div class="note" id="sto-note">只读统计：不会创建、修改或删除任何文件。</div>
+    </div>
+
+    <div class="card">
+      <h2>分类明细</h2>
+      <table>
+        <thead><tr><th>分类</th><th class="num">占用</th><th class="num">占比</th><th>说明</th></tr></thead>
+        <tbody id="sto-rows"></tbody>
+      </table>
+    </div>
+
+    <div class="card warning" id="sto-warnings-card" hidden>
+      <h2>警告</h2>
+      <ul id="sto-warnings"></ul>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

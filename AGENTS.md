@@ -9,6 +9,8 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 - `Desktop Sticker/DesktopSticker.Features/` — plain C++20 Win32 DLL (Direct2D/DirectWrite rendering, no WinRT/XAML in its pch): zones, desktop icon management, search index, pinyin, hotkey, config. `src/widgets/` has the clock + weather component.
 - `Desktop Sticker/DesktopSticker.Tests/` — unit tests using the homegrown framework in `test_framework.h` (`namespace dtest`, no gtest).
 - `Desktop Sticker/DesktopSticker.WallPaper/` — dynamic wallpaper DLL: D3D11 + DXGI + DirectComposition presentation, MF-primary decode with an FFmpeg shared-library fallback, media library, storage placement. Strategy logic lives in **header-only pure functions** under `include/desktopsticker/wallpaper/` so `dtest` can unit-test it without D3D/MF; OS adapters (drive enumeration, fullscreen detection, subprocess) live in `src/`.
+- `Desktop Sticker/DesktopSticker.ResMon/` — read-only resource manager DLL (WebView2 hosted in a plain Win32 window): per-thread CPU, per-module memory, ordered storage classification. Formatting/classification/cpu-math/JSON assembly are **header-only pure functions** under `include/desktopsticker/resmon/`.
+- `Desktop Sticker/Desktop Sticker/resmon/` — the resource manager frontend: plain `index.html` / `style.css` / `app.js`, **no framework and no build step**; xcopied next to the EXE and served via the WebView2 virtual host `resmon.local`.
 - `Desktop Sticker/Desktop Sticker (Package)/` — MSIX packaging project; the app actually runs unpackaged/self-contained, don't rely on package identity.
 - `third_party/nlohmann/json.hpp` — only third-party dependency (include root is `third_party/`). `third_party/` also holds the FFmpeg/OpenH264/MotionWallpaper notices.
 - `tools/*.ps1` — PowerShell UI harness for manual verification (see below). `tools/prepare_ffmpeg.ps1` fetches the pinned FFmpeg payload (see below).
@@ -33,7 +35,7 @@ Run tests:
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
 cp DesktopSticker.WallPaper.dll Tests/  # ditto
-./Tests/DesktopSticker.Tests.exe        # expect: 85 passed, 0 failed
+./Tests/DesktopSticker.Tests.exe        # expect: 122 passed, 0 failed
 ```
 
 FFmpeg payload (dynamic wallpaper's decoder fallback + transcode backend):
@@ -68,6 +70,9 @@ Gotchas:
 - The WallPaper DLL has its **own** boundary: `desktopsticker::IWallPaperModule` (`DesktopSticker.WallPaper/include/desktopsticker/IWallPaperModule.h`) + `CreateWallPaperModule` / `DestroyWallPaperModule`. It deliberately does **not** reuse `IFeatureModule`. The EXE loads it as a second, optional module via `Host::LoadWallPaper()`; failure must degrade to "wallpaper unavailable" and never affect zones/search/clock.
 - `WallPaperEvents` callbacks may fire on a **worker thread** — the EXE marshals to the UI thread with `DispatcherQueue` before touching XAML.
 - WallPaper links its own graphics stack (`d3d11 dxgi d2d1 dcomp dwmapi mfplat mfreadwrite mf mfuuid`). Keep it out of the Features DLL.
+- The ResMon DLL has its own boundary too: `desktopsticker::IResMonModule` + `CreateResMonModule` / `DestroyResMonModule`, loaded as a **third** optional module. Its `Init` returns false when the WebView2 environment can't be created — the EXE keeps the instance and greys out the tray entry (`Available()`), it does not treat that as a load failure.
+- WebView2 method-to-interface gotchas (verified against the pinned SDK): `put_IsWebMessageEnabled` is on `ICoreWebView2Settings` (not `ICoreWebView2`); `SetVirtualHostNameToFolderMapping` is on `ICoreWebView2_3` (QueryInterface); the args method is `TryGetWebMessageAsString` (it fails for non-string messages), and `get_WebMessageAsJson` **wraps a JS-sent string in another layer of quotes** — so read string messages with `TryGetWebMessageAsString` first.
+- WebView2 async completions are delivered through the calling thread's message loop: wait for them by **pumping messages**, never by blocking.
 - Threading: the UI thread owns all windows and layout state; the hotkey-hook, directory-watch, and weather threads talk to it only via posted messages or locked snapshots.
 
 ## Manual UI verification (tools/)
@@ -94,6 +99,9 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - **Wallpaper must be excluded from the "double-click blank desktop" detection**, and its window is `WS_EX_NOACTIVATE` + `HTTRANSPARENT` so it never steals clicks. Do not add `WS_EX_TRANSPARENT` (transparent hit-testing has repeatedly broken zone input).
 - **Wallpaper storage placement**: library root is chosen once (largest free **fixed** drive — removable/network/optical are excluded so an unplugged USB drive can't be picked) and then pinned; startup re-verifies volume serial + root directory file ID so a reused drive letter fails closed. It never auto-migrates; "change location" copies, verifies and keeps the old copy.
 - **FFmpeg is dynamically loaded only** (`LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, never static-linked, no codec registered in Windows). `ffmpeg.exe` is invoked with an explicit argument array via `CreateProcessW` (no shell) and a timeout. Never write a transcode output over its input.
+- **Resource manager is read-only and must stay so**: it may only stat files and enumerate processes/threads/modules — never create, modify or delete anything. Storage scans and CPU/memory sampling run on worker threads; the storage scan in particular must not block the UI thread and only the newest in-flight request's result is delivered.
+- **ResMon uses a plain Win32 window on purpose** (not WinUI), to avoid the XAML sub-window lifecycle traps documented above. `WebView2Loader.dll` must sit next to the EXE — the NuGet targets only copy it into the ResMon project's OutDir, so the EXE's `PostBuildEvent` copies it again.
+- **Thread names are load-bearing for the CPU tab**: `SetThreadDescription` is called at each thread's entry point (UI thread in `App.xaml.cpp`; the six worker threads in Features/WallPaper). If you add a thread, name it, or it shows as `线程 <tid>`.
 - **`layout.json` is versioned** (currently 7 — quad-column mirroring, per-column card count, dynamic card heights). Any change to the persisted shape needs a bumped version plus an auto-migration path; loaders must keep accepting old layouts without crashing.
 
 ## Conventions

@@ -103,7 +103,7 @@ bool HotkeyService::HandleKeyEvent(bool isKeyDown, long long nowMs) {
 
 bool HotkeyService::Start() {
     if (running_.exchange(true)) return false;
-    thread_ = std::thread([this]() { ThreadMain(); });
+    thread_ = std::thread([this]() { SetThreadDescription(GetCurrentThread(), L"热键钩子"); ThreadMain(); });
     return true;
 }
 

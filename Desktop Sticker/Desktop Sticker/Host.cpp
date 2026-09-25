@@ -94,6 +94,79 @@ void Host::UnloadWallPaper() {
     }
 }
 
+bool Host::LoadResMon() {
+    if (rmModule_) return true;
+
+    wchar_t exeDir[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+    const fs::path base = fs::path(exeDir).parent_path();
+    const fs::path dll = base / L"DesktopSticker.ResMon.dll";
+    if (!fs::exists(dll)) {
+        desktopsticker::app::AppLog("resmon", "DesktopSticker.ResMon.dll not found; feature disabled");
+        return false;
+    }
+
+    rmDll_ = LoadLibraryW(dll.c_str());
+    if (!rmDll_) {
+        desktopsticker::app::AppLog("resmon", "LoadLibraryW failed; feature disabled");
+        return false;
+    }
+
+    using CreateFn = desktopsticker::IResMonModule* (*)();
+    using DestroyFn = void (*)(desktopsticker::IResMonModule*);
+    auto create = reinterpret_cast<CreateFn>(GetProcAddress(rmDll_, "CreateResMonModule"));
+    auto destroy = reinterpret_cast<DestroyFn>(GetProcAddress(rmDll_, "DestroyResMonModule"));
+    if (!create || !destroy) {
+        FreeLibrary(rmDll_);
+        rmDll_ = nullptr;
+        desktopsticker::app::AppLog("resmon", "exports missing; feature disabled");
+        return false;
+    }
+
+    desktopsticker::ResMonPaths paths;
+    paths.exeDir = base.wstring();
+
+    PWSTR appData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) {
+        paths.configDir = (fs::path(appData) / L"DesktopSticker").wstring();
+        CoTaskMemFree(appData);
+    }
+    if (wpModule_) paths.wallpaperRoot = wpModule_->GetSettings().libraryRoot;
+
+    // 与其它模块同规矩：异常不得穿透；Init 失败也保留实例以便菜单项置灰
+    try {
+        rmModule_ = create();
+        if (!rmModule_) throw std::runtime_error("CreateResMonModule returned null");
+        if (!rmModule_->Init(paths)) {
+            desktopsticker::app::AppLog("resmon", "Init failed; menu entry will be greyed out");
+        }
+    } catch (...) {
+        if (rmModule_) {
+            if (destroy) destroy(rmModule_);
+            rmModule_ = nullptr;
+        }
+        FreeLibrary(rmDll_);
+        rmDll_ = nullptr;
+        desktopsticker::app::AppLog("resmon", "init threw; feature disabled");
+        return false;
+    }
+    return true;
+}
+
+void Host::UnloadResMon() {
+    if (rmModule_) {
+        rmModule_->Shutdown();
+        using DestroyFn = void (*)(desktopsticker::IResMonModule*);
+        auto destroy = reinterpret_cast<DestroyFn>(GetProcAddress(rmDll_, "DestroyResMonModule"));
+        if (destroy) destroy(rmModule_);
+        rmModule_ = nullptr;
+    }
+    if (rmDll_) {
+        FreeLibrary(rmDll_);
+        rmDll_ = nullptr;
+    }
+}
+
 bool Host::LoadFeatures() {
     if (module_) return true;
 

@@ -19,7 +19,7 @@ bool DirectoryWatcher::Start() {
         running_.store(false);
         return false;
     }
-    thread_ = std::thread([this]() { ThreadMain(); });
+    thread_ = std::thread([this]() { SetThreadDescription(GetCurrentThread(), L"目录监视"); ThreadMain(); });
     return true;
 }
 

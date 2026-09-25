@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{b1000001-0000-0000-0000-000000000001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\desktopsticker">
+      <UniqueIdentifier>{b1000002-0000-0000-0000-000000000002}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\desktopsticker\resmon">
+      <UniqueIdentifier>{b1000003-0000-0000-0000-000000000003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{b1000004-0000-0000-0000-000000000004}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="include\desktopsticker\ResMonExport.h">
+      <Filter>include\desktopsticker</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\IResMonModule.h">
+      <Filter>include\desktopsticker</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\resmon\Format.h">
+      <Filter>include\desktopsticker\resmon</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\resmon\Classify.h">
+      <Filter>include\desktopsticker\resmon</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\resmon\CpuMath.h">
+      <Filter>include\desktopsticker\resmon</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\resmon\JsonBuild.h">
+      <Filter>include\desktopsticker\resmon</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProcessSampler.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\MemorySampler.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\StorageScanner.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ResMonWindow.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WebViewHost.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="pch.cpp" />
+    <ClCompile Include="src\ProcessSampler.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MemorySampler.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\StorageScanner.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ResMonWindow.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WebViewHost.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ResMonModule.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

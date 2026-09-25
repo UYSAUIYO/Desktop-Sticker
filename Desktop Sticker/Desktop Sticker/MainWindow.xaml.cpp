@@ -83,6 +83,10 @@ namespace winrt::Desktop_Sticker::implementation
             HMENU menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING, 1, L"设置");
             AppendMenuW(menu, MF_STRING, 2, L"恢复桌面");
+            // 资源管理器不可用（缺 DLL / WebView2 运行时缺失）时置灰而不是隐藏，
+            // 让用户能看到"功能存在但不可用"
+            const bool resmonOk = (m_host && m_host->ResMon() && m_host->ResMon()->Available());
+            AppendMenuW(menu, MF_STRING | (resmonOk ? 0u : MF_GRAYED), 4, L"资源管理器");
             AppendMenuW(menu, MF_STRING, 3, L"退出");
             POINT pt{};
             GetCursorPos(&pt);
@@ -97,6 +101,8 @@ namespace winrt::Desktop_Sticker::implementation
                     m_settings->Show();
                 } else if (cmd == 2 && m_host && m_host->Module()) {
                     m_host->Module()->RestoreDesktop();
+                } else if (cmd == 4 && resmonOk) {
+                    m_host->ResMon()->Show();
                 } else if (cmd == 3) {
                     // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）
                     Application::Current().Exit();

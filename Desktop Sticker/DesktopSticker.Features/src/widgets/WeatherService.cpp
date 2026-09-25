@@ -35,7 +35,7 @@ std::wstring AsciiHead(const std::string& s) {
 
 void WeatherService::Start() {
     if (running_.exchange(true)) return;
-    thread_ = std::thread([this]() { Run(); });
+    thread_ = std::thread([this]() { SetThreadDescription(GetCurrentThread(), L"天气后台"); Run(); });
 }
 
 void WeatherService::Stop() {

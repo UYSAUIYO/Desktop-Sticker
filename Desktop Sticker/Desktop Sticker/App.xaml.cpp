@@ -57,6 +57,9 @@ namespace winrt::Desktop_Sticker::implementation
         ShowWindow(impl->Hwnd(), SW_HIDE);
         m_dispatcher = window.DispatcherQueue();
 
+        // 给 UI 线程一个可读名字，资源管理器的 CPU 页据此显示线程归属
+        SetThreadDescription(GetCurrentThread(), L"UI / 分区渲染");
+
         if (!m_host->LoadFeatures()) {
             impl->ShowTrayWarning(L"功能模块加载失败（缺 DesktopSticker.Features.dll 或初始化异常），详见 %APPDATA%\\DesktopSticker\\debug.log");
         } else {
@@ -91,6 +94,9 @@ namespace winrt::Desktop_Sticker::implementation
             });
         m_host->LoadWallPaper();
 
+        // 资源管理器同为可选组件：失败只让托盘菜单项置灰，不弹提示、不阻断启动。
+        m_host->LoadResMon();
+
         m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
         m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
         impl->AttachSettings(m_settings.get());
@@ -105,6 +111,11 @@ namespace winrt::Desktop_Sticker::implementation
         }
         if (args.find(L"--settings") != std::wstring::npos) {
             m_settings->Show();
+        }
+        // 命令行 --resmon：启动即打开资源管理器（与 --settings 对称的快捷入口）
+        if (args.find(L"--resmon") != std::wstring::npos && m_host->ResMon() &&
+            m_host->ResMon()->Available()) {
+            m_host->ResMon()->Show();
         }
     }
 }

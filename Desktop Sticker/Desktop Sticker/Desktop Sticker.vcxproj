@@ -95,7 +95,7 @@
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
       <WarningLevel>Level4</WarningLevel>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.ResMon\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /bigobj /FS /utf-8</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -104,7 +104,10 @@
     <PostBuildEvent>
       <Command>xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.Features.dll" "$(OutDir)"
 xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.WallPaper.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.ResMon.dll" "$(OutDir)"
+if exist "$(SolutionDir)bin\$(Platform)\$(Configuration)\WebView2Loader.dll" xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\WebView2Loader.dll" "$(OutDir)"
 xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"
+xcopy /Y /E /I "$(ProjectDir)resmon" "$(OutDir)resmon\"
 if exist "$(SolutionDir)..\tools\ffmpeg\" xcopy /Y /D "$(SolutionDir)..\tools\ffmpeg\*" "$(OutDir)ffmpeg\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -179,6 +182,10 @@ if exist "$(SolutionDir)..\tools\ffmpeg\" xcopy /Y /D "$(SolutionDir)..\tools\ff
     </ProjectReference>
     <ProjectReference Include="..\DesktopSticker.WallPaper\DesktopSticker.WallPaper.vcxproj">
       <Project>{33333333-4444-5555-6666-777777777777}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+    <ProjectReference Include="..\DesktopSticker.ResMon\DesktopSticker.ResMon.vcxproj">
+      <Project>{44444444-5555-6666-7777-888888888888}</Project>
       <LinkLibraryDependencies>false</LinkLibraryDependencies>
     </ProjectReference>
   </ItemGroup>

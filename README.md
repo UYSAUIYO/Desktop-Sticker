@@ -36,6 +36,16 @@ Windows 11 桌面整理工具：把杂乱的桌面图标自动分类收纳进可
 - **媒体库**：导入（逐字节复制源文件）、缩略图、列表切换、重命名、删除；
 - **存储位置**：首次启用时自动选剩余空间最大的**固定盘**（`<盘>:\DesktopSticker\Wallpaper\`），记录卷序列号与根目录文件 ID，防止盘符被复用后写错卷。
 
+### 资源管理器
+
+基于 **Microsoft WebView2** 的只读资源查看器（独立窗口，托盘菜单或 `--resmon` 打开），三页签：
+
+- **CPU**：进程总占用 + **按线程**明细（线程名可读：UI/分区渲染、热键钩子、目录监视、壁纸渲染与帧调度、暂停监控、天气后台、转码工作），并单列子进程（转码时的 `ffmpeg.exe`）；每 2 秒刷新。
+- **内存**：工作集 / 私有提交 / 峰值工作集 + **已加载模块**的映像大小（降序）。
+- **存储**：程序占用合计 + 分类占比条 + 明细 + "重新计算"。分类为壁纸媒体库 / FFmpeg 负载 / 天气图标资源 / 调试符号 / 程序主体 / 运行时与框架 / 配置与布局 / 日志 / 其他。
+
+**只读**：不会创建、修改或删除任何文件；扫描在工作线程执行，不阻塞界面。
+
 ### 设置
 
 Win11 系统设置风格界面（Mica 背景卡片、跟随系统深浅色），通过托盘菜单或 `--settings` 启动参数打开：
@@ -54,6 +64,7 @@ Win11 系统设置风格界面（Mica 背景卡片、跟随系统深浅色），
 
 - Windows 11（10.0.22631+，低版本未验证）
 - Visual Studio 2022：C++ 桌面开发 + Windows 11 SDK + Windows App SDK（C++/WinRT）
+- **WebView2 运行时**（资源管理器需要；Win11 通常已预装，缺失时该功能自动置灰，不影响其它功能）
 - NuGet 包会在首次编译时自动还原（`packages.config`）
 
 ### 一键编译
@@ -82,7 +93,7 @@ build.bat test
 Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 ```
 
-自研轻量测试框架（`dtest`），当前 **85 项**全部通过，覆盖配置存储、布局数学、图标分类、拼音检索、热键判定、时钟文案，以及动态壁纸的盘符选择、暂停优先级、档位解析、帧调度、ffmpeg 命令行构造、JSON 存储容错与媒体库源文件安全。仅支持 Release（本机 Debug CRT 环境问题）。
+自研轻量测试框架（`dtest`），当前 **122 项**全部通过，覆盖配置存储、布局数学、图标分类、拼音检索、热键判定、时钟文案，以及动态壁纸的盘符选择、暂停优先级、档位解析、帧调度、ffmpeg 命令行构造、JSON 存储容错与媒体库源文件安全，与资源管理器的字节/百分比格式化、存储分类规则、CPU 采样计算、JSON 响应组装。仅支持 Release（本机 Debug CRT 环境问题）。
 
 ## 使用说明
 
@@ -100,6 +111,7 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 | 拖动磁贴 | 到其他分区=移动；到桌面空白=还原为桌面图标 |
 | 右键磁贴 / 标题 | 打开、移出 / 重命名、删除分区 |
 | 设置页「动态壁纸」 | 启用开关、导入视频、切换壁纸、选择档位、暂停规则、更改存储位置 |
+| 托盘「资源管理器」/ `--resmon` | 打开 CPU / 内存 / 存储 只读资源管理器窗口 |
 
 > 首次启动会自动记录所有原生图标的原始位置并移入分区；退出程序时自动还原。`layout.json` 损坏时布局会自动重建，但图标原始位置记录不会丢失。
 
@@ -136,6 +148,8 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 │  ├─ DesktopSticker.WallPaper/       动态壁纸 DLL（D3D11 + DirectComposition + MF/FFmpeg）
 │  │  ├─ include/desktopsticker/      IWallPaperModule 接口与纯策略头（header-only）
 │  │  └─ src/                         呈现、解码、媒体库、存储、暂停策略
+│  ├─ DesktopSticker.ResMon/          资源管理器 DLL（WebView2 宿主 + CPU/内存/存储采集）
+│  ├─ Desktop Sticker/resmon/         资源管理器前端（原生 HTML/CSS/JS，无框架无构建）
 │  └─ bin/x64/Release/                构建输出
 ├─ third_party/nlohmann/json.hpp      唯一第三方依赖
 └─ docs/acceptance.md                 手工验收清单
