@@ -96,11 +96,14 @@ cp DesktopSticker.Features.dll Tests/   # 如已自动复制可跳过
 - [ ] 视频帧率自检：日志 `fps diag` 的 `frames=` 应贴近源帧率（4K/30fps 源应 ≥28/s），
       `size=` 应等于窗口尺寸而不是源尺寸（说明按显示尺寸解码生效）
 
-### ④ 3D / 着色器（阶段 0）
+### ④ 3D / 着色器
 
 准备：`tools/prepare_vulkan.ps1` + `tools/prepare_shaderc.ps1`（只影响构建与工具链，运行只需要显卡驱动自带的 `vulkan-1.dll`）。
 
 - [ ] 导入一个含 `.frag` 的目录 → 记为「3D / 着色器」，桌面显示**内置全屏着色器**（彩色等离子）
+- [ ] 导入一个只含 `scene.json`（`{"scene":"model"}`）的目录 → 桌面显示**内置 32 面体**：
+      12 个五边形 + 20 个六边形、每个面一种配色、有明暗与高光，缓慢自转 + 环绕相机
+- [ ] 32 面体不超出屏幕（相机距离足够）；日志有 `vulkan: built-in model ready, 116 triangles, 32 faces`
 - [ ] 着色器画面在桌面图标、分区卡片、时钟**之下**；图标仍可点击、双击空白仍能切换干净桌面
 - [ ] 日志 `fps diag` 的 `frames=` 与 `vulkan diag` 的 `ticks=` 都贴近 **60/s**（vsync 锁定）
 - [ ] `vulkan diag` 里 `acquire` / `present` 都是几十微秒量级（说明时间没花在 Vulkan 调用上）

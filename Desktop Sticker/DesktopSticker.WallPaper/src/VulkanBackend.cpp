@@ -5,6 +5,13 @@
 #include "Utf8.h"
 #include "VulkanBuiltinShaders.h"
 #include "desktopsticker/wallpaper/FrameAdvance.h"   // clamp_speed
+#include "desktopsticker/wallpaper/MatMath.h"
+#include "desktopsticker/wallpaper/Polyhedron.h"
+
+#include <nlohmann/json.hpp>
+
+#include <cstring>
+#include <filesystem>
 
 #if defined(DSTK_HAVE_VULKAN)
 
@@ -21,7 +28,6 @@
 #include <vulkan/vulkan_raii.hpp>
 
 #include <array>
-#include <cstdlib>
 #include <limits>
 
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
@@ -48,6 +54,55 @@ bool env_flag_set(const wchar_t* name) {
     return n > 0 && n < std::size(buf) && buf[0] == L'1';
 }
 
+// 上传给 GPU 的顶点布局：与 mesh.vert 的 location 0/1/2 对应
+struct GpuVertex {
+    float position[3];
+    float normal[3];
+    float color[3];
+};
+
+// 与参考实现（Three.js 那份 HTML）同一套配色
+const Vec3 kPalette[] = {
+    { 0.231, 0.510, 0.965 },   // #3b82f6
+    { 0.133, 0.827, 0.933 },   // #22d3ee
+    { 0.388, 0.400, 0.949 },   // #6366f1
+    { 0.055, 0.647, 0.910 },   // #0ea5e9
+    { 0.545, 0.361, 0.965 },   // #8b5cf6
+    { 0.078, 0.722, 0.651 },   // #14b8a6
+};
+
+enum class SceneMode { Fullscreen, Model };
+
+// 选场景：`scene.json` 里显式写了就听它的；否则"有 .frag 就当全屏着色器，
+// 没有就当内置模型"。这样两种内容都能被 classify_directory 认出来并导入。
+SceneMode pick_scene(const std::wstring& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    const fs::path sceneFile = fs::path(dir) / L"scene.json";
+    if (fs::is_regular_file(sceneFile, ec)) {
+        try {
+            std::ifstream in(sceneFile, std::ios::binary);
+            const auto j = nlohmann::json::parse(std::string(std::istreambuf_iterator<char>(in),
+                                                            std::istreambuf_iterator<char>()));
+            if (j.contains("scene") && j["scene"].is_string()) {
+                const std::string s = j["scene"].get<std::string>();
+                if (s == "model") return SceneMode::Model;
+                if (s == "fullscreen") return SceneMode::Fullscreen;
+            }
+        } catch (const std::exception& e) {
+            wp_log(std::string("vulkan: scene.json parse failed: ") + e.what());
+        }
+    }
+
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (e.is_regular_file(ec) && e.path().extension() == L".frag") {
+            return SceneMode::Fullscreen;
+        }
+    }
+    return SceneMode::Model;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -60,16 +115,16 @@ struct VulkanBackend::Impl {
     // 壁纸后端的约定是"不可用就降级"，所以初始化整段用 SEH 兜住。
     // 一个函数里只能有一种异常处理方式（C2713），所以 C++ 的 try/catch 留在调用方 Open()，
     // 本函数只做 SEH 转发。
-    static bool init_seh(Impl* self, HWND hwnd, int width, int height) {
+    static bool init_seh(Impl* self, HWND hwnd, int width, int height, const std::wstring& dir) {
         __try {
-            return self->init(hwnd, width, height);
+            return self->init(hwnd, width, height, dir);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             return false;
         }
     }
 
     // ---- 生命周期 ----
-    bool init(HWND hwnd, int width, int height);
+    bool init(HWND hwnd, int width, int height, const std::wstring& sourceDir);
     void destroy();
     void wait_idle();
 
@@ -79,11 +134,19 @@ struct VulkanBackend::Impl {
     bool pick_physical_device();
     bool create_device();
     bool build_swapchain(int width, int height);
-    bool build_pipeline();
+    bool build_fullscreen_pipeline();
+    bool build_mesh_scene();
+    bool build_mesh_pipeline();
     bool build_sync_and_commands();
     bool rebuild_swapchain(int width, int height);
 
+    uint32_t find_memory_type(uint32_t typeBits, vk::MemoryPropertyFlags want) const;
+    bool create_buffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::raii::Buffer& buffer,
+                       vk::raii::DeviceMemory& memory);
+
     bool draw(float timeSeconds);
+    void draw_fullscreen(vk::CommandBuffer cmd, const vk::Extent2D& extent);
+    void draw_model(vk::CommandBuffer cmd, const vk::Extent2D& extent, float timeSecondsValue);
     bool submit_and_present();
 
     // ---- 顺序敏感：raii 成员按声明**逆序**析构，依赖别人的必须后声明 ----
@@ -95,12 +158,16 @@ struct VulkanBackend::Impl {
     vk::raii::Queue queue{ nullptr };
 
     uint32_t queueFamily = 0;
+    vk::Format depthFormat = vk::Format::eD32Sfloat;
 
     // 交换链相关：分辨率变化时要整块重建，所以单独一层，重建 = 换一个对象
     struct Swap {
         vk::raii::SwapchainKHR swapchain{ nullptr };
         vk::Extent2D extent{};
         std::vector<vk::raii::ImageView> views;
+        vk::raii::Image depthImage{ nullptr };
+        vk::raii::DeviceMemory depthMemory{ nullptr };
+        vk::raii::ImageView depthView{ nullptr };
         std::vector<vk::raii::Framebuffer> framebuffers;
         std::vector<vk::raii::CommandBuffer> cmdBuffers;
         vk::raii::Semaphore imageAvailable{ nullptr };
@@ -112,9 +179,25 @@ struct VulkanBackend::Impl {
 
     // 与交换链无关、只依赖 format 的东西：建一次就够
     vk::raii::RenderPass renderPass{ nullptr };
-    vk::raii::PipelineLayout layout{ nullptr };
-    vk::raii::Pipeline pipeline{ nullptr };
     vk::raii::CommandPool cmdPool{ nullptr };
+
+    // 全屏着色器管线（push constant）
+    vk::raii::PipelineLayout fsLayout{ nullptr };
+    vk::raii::Pipeline fsPipeline{ nullptr };
+
+    // 模型场景（uniform buffer + 顶点缓冲）
+    SceneMode mode = SceneMode::Fullscreen;
+    vk::raii::DescriptorSetLayout descLayout{ nullptr };
+    vk::raii::PipelineLayout meshLayout{ nullptr };
+    vk::raii::Pipeline meshPipeline{ nullptr };
+    vk::raii::DescriptorPool descPool{ nullptr };
+    vk::raii::DescriptorSet descSet{ nullptr };
+    vk::raii::Buffer vertexBuffer{ nullptr };
+    vk::raii::DeviceMemory vertexMemory{ nullptr };
+    vk::raii::Buffer uniformBuffer{ nullptr };
+    vk::raii::DeviceMemory uniformMemory{ nullptr };
+    void* uniformMapped = nullptr;
+    uint32_t vertexCount = 0;
 
     HWND hwnd = nullptr;
     uint32_t imageIndex = 0;
@@ -134,8 +217,37 @@ struct VulkanBackend::Impl {
 
 // ---------------------------------------------------------------------------
 
-bool VulkanBackend::Impl::init(HWND wnd, int width, int height) {
+uint32_t VulkanBackend::Impl::find_memory_type(uint32_t typeBits,
+                                               vk::MemoryPropertyFlags want) const {
+    const auto props = physical.getMemoryProperties();
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        if ((typeBits & (1u << i)) &&
+            (props.memoryTypes[i].propertyFlags & want) == want) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+bool VulkanBackend::Impl::create_buffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                                        vk::raii::Buffer& buffer,
+                                        vk::raii::DeviceMemory& memory) {
+    buffer = vk::raii::Buffer(device, vk::BufferCreateInfo({}, size, usage,
+                                                          vk::SharingMode::eExclusive));
+    const auto req = buffer.getMemoryRequirements();
+    // 一次性上传的小缓冲直接用 host-visible，省掉暂存缓冲与拷贝
+    memory = vk::raii::DeviceMemory(
+        device, vk::MemoryAllocateInfo(req.size,
+                                       find_memory_type(req.memoryTypeBits,
+                                                        vk::MemoryPropertyFlagBits::eHostVisible |
+                                                            vk::MemoryPropertyFlagBits::eHostCoherent)));
+    buffer.bindMemory(*memory, 0);
+    return true;
+}
+
+bool VulkanBackend::Impl::init(HWND wnd, int width, int height, const std::wstring& sourceDir) {
     hwnd = wnd;
+    mode = pick_scene(sourceDir);
 
     // 先把入口解析出来：DynamicLoader 自己负责 LoadLibrary("vulkan-1.dll")
     vk::detail::DynamicLoader loader;
@@ -153,7 +265,8 @@ bool VulkanBackend::Impl::init(HWND wnd, int width, int height) {
     if (!pick_physical_device()) return false;
     if (!create_device()) return false;
     if (!build_swapchain(width, height)) return false;
-    if (!build_pipeline()) return false;
+    if (!build_fullscreen_pipeline()) return false;
+    if (mode == SceneMode::Model && !build_mesh_scene()) return false;
     if (!build_sync_and_commands()) return false;
 
     timeSeconds = 0.0;
@@ -267,7 +380,8 @@ bool VulkanBackend::Impl::pick_physical_device() {
             break;
         }
     }
-    wp_log(std::string("vulkan: using device '") + std::string(physical.getProperties().deviceName.data()) + "'");
+    wp_log(std::string("vulkan: using device '") +
+           std::string(physical.getProperties().deviceName.data()) + "'");
     return true;
 }
 
@@ -291,10 +405,10 @@ bool VulkanBackend::Impl::build_swapchain(int width, int height) {
         swapWidth = static_cast<int>(caps.currentExtent.width);
         swapHeight = static_cast<int>(caps.currentExtent.height);
     } else {
-        swapWidth = std::clamp(width, static_cast<int>(caps.minImageExtent.width),
-                               static_cast<int>(caps.maxImageExtent.width));
-        swapHeight = std::clamp(height, static_cast<int>(caps.minImageExtent.height),
-                                static_cast<int>(caps.maxImageExtent.height));
+        const int w = std::max(width, static_cast<int>(caps.minImageExtent.width));
+        const int h = std::max(height, static_cast<int>(caps.minImageExtent.height));
+        swapWidth = std::min(w, static_cast<int>(caps.maxImageExtent.width));
+        swapHeight = std::min(h, static_cast<int>(caps.maxImageExtent.height));
     }
 
     vk::SurfaceFormatKHR chosen{};
@@ -310,6 +424,13 @@ bool VulkanBackend::Impl::build_swapchain(int width, int height) {
     // FIFO 一定被支持；它是 vsync 锁定的，壁纸不需要 MAILBOX 那种冲高帧率
     uint32_t imageCount = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
+
+    // 深度格式：模型要用。D32 支持就用，否则退 D16
+    const auto depthFeatures = physical.getFormatProperties(vk::Format::eD32Sfloat)
+                                   .optimalTilingFeatures;
+    depthFormat = (depthFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment)
+                      ? vk::Format::eD32Sfloat
+                      : vk::Format::eD16Unorm;
 
     auto s = std::make_unique<Swap>();
     s->extent = vk::Extent2D(static_cast<uint32_t>(swapWidth), static_cast<uint32_t>(swapHeight));
@@ -331,35 +452,69 @@ bool VulkanBackend::Impl::build_swapchain(int width, int height) {
                 vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
     }
 
-    // 渲染通道只在建交换链时依赖视图数量，所以放在这里一次性完成
+    // 深度附件
+    s->depthImage = vk::raii::Image(
+        device, vk::ImageCreateInfo({}, vk::ImageType::e2D, depthFormat,
+                                    vk::Extent3D(s->extent.width, s->extent.height, 1), 1, 1,
+                                    vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+                                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                                    vk::SharingMode::eExclusive));
+    {
+        const auto req = s->depthImage.getMemoryRequirements();
+        s->depthMemory = vk::raii::DeviceMemory(
+            device, vk::MemoryAllocateInfo(req.size,
+                                           find_memory_type(req.memoryTypeBits,
+                                                            vk::MemoryPropertyFlagBits::eDeviceLocal)));
+        s->depthImage.bindMemory(*s->depthMemory, 0);
+    }
+    s->depthView = vk::raii::ImageView(
+        device, vk::ImageViewCreateInfo({}, *s->depthImage, vk::ImageViewType::e2D, depthFormat,
+                                        vk::ComponentMapping{},
+                                        vk::ImageSubresourceRange(
+                                            vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1)));
+
+    // 渲染通道：颜色 + 深度。两条管线共用它（全屏着色器不使用深度，但共用没问题）
     if (*renderPass == VK_NULL_HANDLE) {
-        const vk::AttachmentDescription color(
-            {}, format, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear,
-            vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
-            vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
-            vk::ImageLayout::ePresentSrcKHR);
-        const vk::AttachmentReference ref(0, vk::ImageLayout::eColorAttachmentOptimal);
+        const vk::AttachmentDescription attachments[2] = {
+            vk::AttachmentDescription({}, format, vk::SampleCountFlagBits::e1,
+                                      vk::AttachmentLoadOp::eClear,
+                                      vk::AttachmentStoreOp::eStore,
+                                      vk::AttachmentLoadOp::eDontCare,
+                                      vk::AttachmentStoreOp::eDontCare,
+                                      vk::ImageLayout::eUndefined,
+                                      vk::ImageLayout::ePresentSrcKHR),
+            vk::AttachmentDescription({}, depthFormat, vk::SampleCountFlagBits::e1,
+                                      vk::AttachmentLoadOp::eClear,
+                                      vk::AttachmentStoreOp::eDontCare,
+                                      vk::AttachmentLoadOp::eDontCare,
+                                      vk::AttachmentStoreOp::eDontCare,
+                                      vk::ImageLayout::eUndefined,
+                                      vk::ImageLayout::eDepthStencilAttachmentOptimal),
+        };
+        const vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
+        const vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
         const vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr,
-                                             1, &ref);
+                                             1, &colorRef, nullptr, &depthRef);
         renderPass = vk::raii::RenderPass(
-            device, vk::RenderPassCreateInfo({}, color, subpass));
+            device, vk::RenderPassCreateInfo({}, attachments, subpass));
     }
 
     s->framebuffers.reserve(s->views.size());
     for (const auto& v : s->views) {
-        const vk::ImageView attachments[] = { *v };
+        const vk::ImageView fbAttachments[2] = { *v, *s->depthView };
         s->framebuffers.emplace_back(device, vk::FramebufferCreateInfo(
-            {}, *renderPass, 1, attachments, s->extent.width, s->extent.height, 1));
+            {}, *renderPass, 2, fbAttachments, s->extent.width, s->extent.height, 1));
     }
 
     imageIndex = 0;
     swap = std::move(s);
     wp_log("vulkan: swapchain " + std::to_string(swapWidth) + "x" + std::to_string(swapHeight) +
-           ", " + std::to_string(images.size()) + " images");
+           ", " + std::to_string(images.size()) + " images, depth=" +
+           (depthFormat == vk::Format::eD32Sfloat ? "D32" : "D16"));
     return true;
 }
 
-bool VulkanBackend::Impl::build_pipeline() {
+bool VulkanBackend::Impl::build_fullscreen_pipeline() {
     const auto vert = device.createShaderModule(
         vk::ShaderModuleCreateInfo({}, sizeof(kFullscreenVertSpv), kFullscreenVertSpv));
     const auto frag = device.createShaderModule(
@@ -373,8 +528,8 @@ bool VulkanBackend::Impl::build_pipeline() {
     const vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex |
                                               vk::ShaderStageFlagBits::eFragment,
                                           0, sizeof(ShaderPushConstants));
-    layout = vk::raii::PipelineLayout(device, vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1,
-                                                                          &pushRange));
+    fsLayout = vk::raii::PipelineLayout(device, vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1,
+                                                                            &pushRange));
 
     const vk::PipelineVertexInputStateCreateInfo vertexInput;   // 不用顶点缓冲
     const vk::PipelineInputAssemblyStateCreateInfo assembly(
@@ -395,12 +550,134 @@ bool VulkanBackend::Impl::build_pipeline() {
                                               vk::DynamicState::eScissor };
     const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
 
-    pipeline = vk::raii::Pipeline(
+    fsPipeline = vk::raii::Pipeline(
         device, nullptr,
         vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
-                                       &raster, &multisample, nullptr, &blend, &dynamic, *layout,
+                                       &raster, &multisample, nullptr, &blend, &dynamic, *fsLayout,
                                        *renderPass, 0));
-    return *pipeline != VK_NULL_HANDLE;
+    return *fsPipeline != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_mesh_scene() {
+    // ---- 几何：32 面体（截角二十面体）。构造与凸包都在纯函数层，单测已覆盖 32 面/Euler/共面 ----
+    const std::vector<Vec3> palette(std::begin(kPalette), std::end(kPalette));
+    const MeshData mesh = build_truncated_icosahedron(palette, 2.0);
+    vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+    if (vertexCount == 0) {
+        lastError = "内置模型没有生成任何三角形";
+        return false;
+    }
+
+    std::vector<GpuVertex> verts(vertexCount);
+    for (uint32_t i = 0; i < vertexCount; ++i) {
+        const MeshVertex& src = mesh.vertices[i];
+        GpuVertex& dst = verts[i];
+        dst.position[0] = static_cast<float>(src.position.x);
+        dst.position[1] = static_cast<float>(src.position.y);
+        dst.position[2] = static_cast<float>(src.position.z);
+        dst.normal[0] = static_cast<float>(src.normal.x);
+        dst.normal[1] = static_cast<float>(src.normal.y);
+        dst.normal[2] = static_cast<float>(src.normal.z);
+        dst.color[0] = static_cast<float>(src.color.x);
+        dst.color[1] = static_cast<float>(src.color.y);
+        dst.color[2] = static_cast<float>(src.color.z);
+    }
+
+    const vk::DeviceSize vbytes = sizeof(GpuVertex) * vertexCount;
+    if (!create_buffer(vbytes, vk::BufferUsageFlagBits::eVertexBuffer, vertexBuffer,
+                       vertexMemory)) {
+        return false;
+    }
+    {
+        void* mapped = vertexMemory.mapMemory(0, vbytes);
+        std::memcpy(mapped, verts.data(), static_cast<size_t>(vbytes));
+        vertexMemory.unmapMemory();
+    }
+
+    const vk::DeviceSize ubytes = sizeof(SceneUniforms);
+    if (!create_buffer(ubytes, vk::BufferUsageFlagBits::eUniformBuffer, uniformBuffer,
+                       uniformMemory)) {
+        return false;
+    }
+    uniformMapped = uniformMemory.mapMemory(0, ubytes);
+
+    // 描述符布局必须在建管线之前就位（管线布局引用它）
+    const vk::DescriptorSetLayoutBinding binding(
+        0, vk::DescriptorType::eUniformBuffer, 1,
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment);
+    descLayout = vk::raii::DescriptorSetLayout(
+        device, vk::DescriptorSetLayoutCreateInfo({}, binding));
+
+    if (!build_mesh_pipeline()) return false;
+
+    // 注意 DescriptorPoolCreateInfo 的构造函数是 (flags, maxSets, poolSizeCount, pPoolSizes)
+    const vk::DescriptorPoolSize poolSize(vk::DescriptorType::eUniformBuffer, 1);
+    descPool = vk::raii::DescriptorPool(
+        device, vk::DescriptorPoolCreateInfo({}, 1, 1, &poolSize));
+    descSet = std::move(device.allocateDescriptorSets(
+        vk::DescriptorSetAllocateInfo(*descPool, 1, &*descLayout))[0]);
+
+    const vk::DescriptorBufferInfo bufferInfo(*uniformBuffer, 0, ubytes);
+    device.updateDescriptorSets(
+        vk::WriteDescriptorSet(*descSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
+                               &bufferInfo),
+        nullptr);
+
+    wp_log("vulkan: built-in model ready, " + std::to_string(vertexCount / 3) + " triangles, " +
+           std::to_string(mesh.faceCount) + " faces");
+    return true;
+}
+
+bool VulkanBackend::Impl::build_mesh_pipeline() {
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kMeshVertSpv), kMeshVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kMeshFragSpv), kMeshFragSpv));
+
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    meshLayout = vk::raii::PipelineLayout(
+        device, vk::PipelineLayoutCreateInfo({}, 1, &*descLayout, 0, nullptr));
+
+    const vk::VertexInputBindingDescription vb(0, sizeof(GpuVertex),
+                                               vk::VertexInputRate::eVertex);
+    const vk::VertexInputAttributeDescription attrs[] = {
+        { 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, position) },
+        { 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, normal) },
+        { 2, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, color) },
+    };
+    const vk::PipelineVertexInputStateCreateInfo vertexInput({}, vb, attrs);
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    // 背面剔除：凸包的环是从外面看逆时针，所以正面是 CCW
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eBack,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    // 关掉深度写入会让背面挡住正面，开着才是实体
+    const vk::PipelineDepthStencilStateCreateInfo depthState({}, VK_TRUE, VK_TRUE,
+                                                            vk::CompareOp::eLess);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_FALSE, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    meshPipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, &depthState, &blend, &dynamic,
+                                       *meshLayout, *renderPass, 0));
+    return *meshPipeline != VK_NULL_HANDLE;
 }
 
 bool VulkanBackend::Impl::build_sync_and_commands() {
@@ -426,6 +703,70 @@ bool VulkanBackend::Impl::rebuild_swapchain(int width, int height) {
     return build_swapchain(width, height) && build_sync_and_commands();
 }
 
+void VulkanBackend::Impl::draw_fullscreen(vk::CommandBuffer cmd, const vk::Extent2D& extent) {
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *fsPipeline);
+    const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(extent.width),
+                                static_cast<float>(extent.height), 0.0f, 1.0f);
+    cmd.setViewport(0, { viewport });
+    cmd.setScissor(0, { vk::Rect2D({ 0, 0 }, extent) });
+
+    ShaderPushConstants pc{};
+    pc.iTime[0] = static_cast<float>(timeSeconds);
+    pc.iResolution[0] = static_cast<float>(extent.width);
+    pc.iResolution[1] = static_cast<float>(extent.height);
+    cmd.pushConstants<ShaderPushConstants>(*fsLayout,
+                                           vk::ShaderStageFlagBits::eVertex |
+                                               vk::ShaderStageFlagBits::eFragment,
+                                           0, pc);
+    cmd.draw(3, 1, 0, 0);
+}
+
+void VulkanBackend::Impl::draw_model(vk::CommandBuffer cmd, const vk::Extent2D& extent,
+                                     float timeSecondsValue) {
+    // 内置环绕相机 + 模型自转：壁纸不吃输入（窗口是 HTTRANSPARENT），
+    // 所以参考实现里的"拖拽旋转/滚轮缩放"换成自动环绕。
+    const double t = static_cast<double>(timeSecondsValue);
+    const double yaw = t * 0.45;
+    const double tilt = std::sin(t * 0.23) * 0.21;
+    // 距离要够远才装得下：fovY=0.62 时，距离 d 处的可见半高是 d*tan(0.31)，
+    // 模型半径 2 → d 至少要到 ~9 才不"站在多面体里面"（第一版取 5.6 就是这个下场）
+    const float distance = 10.5f;
+    const Vec3 eye{ 0.0, distance * 0.40, distance * 0.94 };
+    const Vec3 target{ 0.0, 0.0, 0.0 };
+
+    const double aspect = extent.height > 0
+                              ? static_cast<double>(extent.width) / extent.height
+                              : 1.0;
+    const Mat4 view = look_at(eye, target, { 0.0, 1.0, 0.0 });
+    const Mat4 proj = perspective_vulkan(0.62, aspect, 0.1, 100.0);
+    const Mat4 viewProj = multiply(proj, view);
+    const Mat4 model = multiply(rotation_y(yaw), rotation_x(tilt));
+
+    SceneUniforms u{};
+    std::memcpy(u.viewProj, viewProj.m, sizeof(u.viewProj));
+    std::memcpy(u.model, model.m, sizeof(u.model));
+    const Vec3 light = normalize({ 0.45, 0.80, 0.40 });
+    u.lightDir[0] = static_cast<float>(light.x);
+    u.lightDir[1] = static_cast<float>(light.y);
+    u.lightDir[2] = static_cast<float>(light.z);
+    u.eyePos[0] = static_cast<float>(eye.x);
+    u.eyePos[1] = static_cast<float>(eye.y);
+    u.eyePos[2] = static_cast<float>(eye.z);
+    u.misc[0] = timeSecondsValue;
+    if (uniformMapped) std::memcpy(uniformMapped, &u, sizeof(u));
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshPipeline);
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet, nullptr);
+    const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(extent.width),
+                                static_cast<float>(extent.height), 0.0f, 1.0f);
+    cmd.setViewport(0, { viewport });
+    cmd.setScissor(0, { vk::Rect2D({ 0, 0 }, extent) });
+
+    const vk::DeviceSize offset = 0;
+    cmd.bindVertexBuffers(0, *vertexBuffer, offset);
+    cmd.draw(vertexCount, 1, 0, 0);
+}
+
 bool VulkanBackend::Impl::draw(float timeSecondsValue) {
     auto& s = *swap;
 
@@ -439,34 +780,25 @@ bool VulkanBackend::Impl::draw(float timeSecondsValue) {
         return false;      // 调用方据此重建交换链
     }
     imageIndex = acquired.second;
-
-    // 帧缓冲数量可能与图像数量一致，但保险起见按索引取
     if (imageIndex >= s.cmdBuffers.size() || imageIndex >= s.framebuffers.size()) return false;
 
     device.resetFences(*s.inFlight);
     vk::CommandBuffer cmd = *s.cmdBuffers[imageIndex];
     cmd.begin(vk::CommandBufferBeginInfo{});
 
-    const vk::ClearValue clear(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f }));
-    const vk::Rect2D area({ 0, 0 }, s.extent);
-    cmd.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *s.framebuffers[imageIndex], area,
-                                                1, &clear),
+    const vk::ClearColorValue bg(std::array<float, 4>{ 0.027f, 0.043f, 0.071f, 1.0f });  // #070b12
+    const vk::ClearValue clears[2] = {
+        vk::ClearValue(bg),
+        vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0)),
+    };
+    cmd.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *s.framebuffers[imageIndex],
+                                                vk::Rect2D({ 0, 0 }, s.extent), 2, clears),
                         vk::SubpassContents::eInline);
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
-    const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(s.extent.width),
-                                static_cast<float>(s.extent.height), 0.0f, 1.0f);
-    cmd.setViewport(0, { viewport });
-    cmd.setScissor(0, { area });
-
-    ShaderPushConstants pc{};
-    pc.iTime[0] = timeSecondsValue;
-    pc.iResolution[0] = static_cast<float>(s.extent.width);
-    pc.iResolution[1] = static_cast<float>(s.extent.height);
-    cmd.pushConstants<ShaderPushConstants>(*layout,
-                                           vk::ShaderStageFlagBits::eVertex |
-                                               vk::ShaderStageFlagBits::eFragment,
-                                           0, pc);
-    cmd.draw(3, 1, 0, 0);
+    if (mode == SceneMode::Model) {
+        draw_model(cmd, s.extent, timeSecondsValue);
+    } else {
+        draw_fullscreen(cmd, s.extent);
+    }
     cmd.endRenderPass();
     cmd.end();
     return true;
@@ -500,10 +832,26 @@ void VulkanBackend::Impl::wait_idle() {
 }
 
 void VulkanBackend::Impl::destroy() {
+    // 先等 GPU 停下再拆缓冲，否则可能拆到还在被引用的资源
+    wait_idle();
+    if (uniformMapped && *uniformMemory != VK_NULL_HANDLE) {
+        uniformMemory.unmapMemory();
+        uniformMapped = nullptr;
+    }
+    descSet = nullptr;
+    descPool = nullptr;
+    descLayout = nullptr;
+    meshPipeline = nullptr;
+    meshLayout = nullptr;
+    uniformBuffer = nullptr;
+    uniformMemory = nullptr;
+    vertexBuffer = nullptr;
+    vertexMemory = nullptr;
+
     swap.reset();
+    fsPipeline = nullptr;
+    fsLayout = nullptr;
     cmdPool = nullptr;
-    pipeline = nullptr;
-    layout = nullptr;
     renderPass = nullptr;
     queue = nullptr;
     device = nullptr;
@@ -512,6 +860,7 @@ void VulkanBackend::Impl::destroy() {
     instance = nullptr;
     hwnd = nullptr;
     swapWidth = swapHeight = 0;
+    vertexCount = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,7 +883,8 @@ bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ct
     }
 
     try {
-        if (!Impl::init_seh(impl_.get(), ctx.window, ctx.width, ctx.height)) {
+        if (!Impl::init_seh(impl_.get(), ctx.window, ctx.width, ctx.height,
+                            request.sourcePath)) {
             lastError_ = impl_->lastError.empty() ? "Vulkan init failed" : impl_->lastError;
             wp_log("vulkan backend: " + lastError_);
             impl_->destroy();
@@ -548,7 +898,8 @@ bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ct
     }
 
     impl_->speed = clamp_speed(request.speed);
-    wp_log("vulkan backend opened (stage-0 spike, built-in shader): " + to_utf8(request.sourcePath));
+    wp_log(std::string("vulkan backend opened: scene=") +
+           (impl_->mode == SceneMode::Model ? "built-in model" : "fullscreen shader"));
     return true;
 }
 

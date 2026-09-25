@@ -80,7 +80,8 @@ inline bool classify_directory(const std::vector<std::wstring>& entries, Backend
         const std::wstring name = detail::lower_copy(detail::file_name(e));
         if (name == L"index.html" || name == L"index.htm") hasIndexHtml = true;
         if (ext == L".frag" || ext == L".glsl" || ext == L".vert" || ext == L".comp" ||
-            ext == L".gltf" || ext == L".glb" || ext == L".obj") {
+            ext == L".gltf" || ext == L".glb" || ext == L".obj" ||
+            name == L"scene.json") {   // 着色器/模型场景的参数文件
             hasShader = true;
         }
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" ||
