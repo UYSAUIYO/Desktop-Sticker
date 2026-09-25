@@ -64,3 +64,9 @@ Desktop.ini
 # FFmpeg payload + build-time SDK (fetched by tools/prepare_ffmpeg.ps1, never committed)
 tools/ffmpeg/
 tools/ffmpeg-sdk/
+
+# Vulkan compile-time headers + shader compiler (fetched/built by
+# tools/prepare_vulkan.ps1 and tools/prepare_shaderc.ps1, never committed)
+tools/vulkan-sdk/
+tools/shaderc/
+tools/glslang-src/
