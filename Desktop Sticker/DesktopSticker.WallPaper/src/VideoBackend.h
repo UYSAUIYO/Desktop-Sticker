@@ -2,6 +2,7 @@
 
 #include "VideoSource.h"
 #include "WallpaperBackend.h"
+#include "desktopsticker/wallpaper/FrameAdvance.h"
 
 namespace desktopsticker::wallpaper {
 
@@ -32,6 +33,8 @@ private:
     int lastW_ = 0;
     int lastH_ = 0;
     int64_t lastTickUs_ = 0;
+    // 跨调用累积的帧余量：调度节拍有抖动，不累积就会持续丢帧（见 FrameAdvance.h）
+    FrameAdvanceState advanceState_;
     double speed_ = 1.0;
     bool paused_ = false;
     BackendKind kind_ = BackendKind::Video;

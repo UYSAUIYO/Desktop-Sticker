@@ -18,6 +18,17 @@ inline double clamp_speed(double speed) {
     return speed;
 }
 
+// 跨调用累积的"不足一帧"的余量。
+//
+// 这个累加器是必需的：调度节拍天然抖动（实测 30ms/46ms/62ms 交替），
+// 若每次只做 `floor(elapsed × speed / frameDuration)` 而不留下小数余量，
+// 那么"不足一帧"的拍会保持、而"超过一帧"的拍只会消费 1 帧，
+// 余量被逐次丢弃 → 视频持续落后。实测 30fps 素材只出 9 帧/秒。
+struct FrameAdvanceState {
+    double debt = 0.0;   // 已积累但尚未消费的"源帧数"
+    void Reset() { debt = 0.0; }
+};
+
 struct FrameAdvance {
     // 本拍应消费（解码并丢弃）的帧数：0 表示不推进，保持当前帧
     int consume = 0;
@@ -25,27 +36,34 @@ struct FrameAdvance {
     bool present = true;
 };
 
-// 以"源帧时长"为基准：speed>1 时每个呈现周期要吞掉多帧，speed<1 时不足一帧就不推进。
-// elapsedMs 为本拍实际经过的毫秒数（QPC 差值）；frameDurationMs 为源帧时长。
-inline FrameAdvance frame_advance_policy(double speed, int64_t elapsedMs, int64_t frameDurationMs) {
+// 单拍上限：长时间停滞后不能一次吞掉半个视频
+inline constexpr int kMaxConsumePerTick = 8;
+
+// 以"源帧时长"为基准推进。余量跨调用保留，所以长期平均消费帧数
+// 恰好等于 speed × 经过时间 / 源帧时长。
+inline FrameAdvance frame_advance_policy(FrameAdvanceState& state, double speed, int64_t elapsedMs,
+                                        int64_t frameDurationMs) {
     FrameAdvance out;
     if (frameDurationMs <= 0) return out;      // 源帧时长非法：不推进，避免死循环
     if (elapsedMs <= 0) return out;            // 本拍没有时间流逝：保持
 
     const double s = clamp_speed(speed);
-    // 需要推进的"源帧数"= 经过时间 × 速度 / 源帧时长
-    const double frames = static_cast<double>(elapsedMs) * s / static_cast<double>(frameDurationMs);
+    state.debt += static_cast<double>(elapsedMs) * s / static_cast<double>(frameDurationMs);
 
-    if (frames < 1.0) {
-        out.consume = 0;                       // 不足一帧：保持当前帧
+    if (state.debt < 1.0) {
+        out.consume = 0;                       // 不足一帧：保持当前帧，余量留到下一拍
         out.present = true;
         return out;
     }
 
-    int consume = static_cast<int>(frames);    // 向下取整：不超前消费
+    int consume = static_cast<int>(state.debt);   // 向下取整
     if (consume < 1) consume = 1;
-    // 限幅：一次最多吞 8 帧，避免长时间停滞后瞬间冲掉半个视频
-    if (consume > 8) consume = 8;
+    if (consume > kMaxConsumePerTick) {
+        consume = kMaxConsumePerTick;             // 限幅：超出部分丢弃，避免停滞后暴冲
+        state.debt = 0.0;
+    } else {
+        state.debt -= consume;                    // 关键：保留小数余量
+    }
     out.consume = consume;
     out.present = true;
     return out;

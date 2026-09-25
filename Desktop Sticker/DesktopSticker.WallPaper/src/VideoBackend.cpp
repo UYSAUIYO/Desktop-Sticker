@@ -78,9 +78,7 @@ double VideoBackend::TargetFps() const {
 void VideoBackend::SetSpeed(double speed) {
     speed_ = clamp_speed(speed);
     if (audio_) audio_->SetSpeed(speed_);
-}
-
-bool VideoBackend::ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) {
+}bool VideoBackend::ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) {
     if (!source_) return false;
     if (paused_) return false;
 
@@ -95,7 +93,7 @@ bool VideoBackend::ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) {
         frameMs = static_cast<int64_t>(1000.0 / (fps > 1.0 ? fps : 30.0));
     }
 
-    const FrameAdvance adv = frame_advance_policy(speed_, elapsedMs, frameMs);
+    const FrameAdvance adv = frame_advance_policy(advanceState_, speed_, elapsedMs, frameMs);
 
     if (adv.consume == 0) {
         // 不足以推进一帧：把上一帧再交出去，画面才不会闪
