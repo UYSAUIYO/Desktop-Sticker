@@ -60,6 +60,8 @@ void VideoBackend::Close() {
         source_->Close();
         source_.reset();
     }
+    lastW_ = lastH_ = 0;
+    advanceState_.Reset();
 }
 
 void VideoBackend::SetPaused(bool paused) {
@@ -96,9 +98,8 @@ void VideoBackend::SetSpeed(double speed) {
     const FrameAdvance adv = frame_advance_policy(advanceState_, speed_, elapsedMs, frameMs);
 
     if (adv.consume == 0) {
-        // 不足以推进一帧：把上一帧再交出去，画面才不会闪
-        if (lastFrame_.empty()) return false;
-        bgra = lastFrame_;
+        // 不足以推进一帧：让调用方继续用缓冲区里的上一帧（零拷贝，不重取也不复制）
+        if (lastW_ <= 0 || lastH_ <= 0) return false;   // 还没出过帧，无帧可保持
         w = lastW_;
         h = lastH_;
         return true;
@@ -112,8 +113,6 @@ void VideoBackend::SetSpeed(double speed) {
     }
     if (!got) return false;
 
-    // 留一份用于"保持帧"分支（一帧拷贝远低于解码成本）
-    lastFrame_ = bgra;
     lastW_ = w;
     lastH_ = h;
     return w > 0 && h > 0;

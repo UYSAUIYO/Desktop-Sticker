@@ -28,8 +28,8 @@ private:
     int64_t qpc_us() const;
 
     std::unique_ptr<IVideoSource> source_;
-    // 保持帧时要把上一帧再交出去，否则调速 <1× 时会闪
-    std::vector<uint8_t> lastFrame_;
+    // 保持帧时只回上次的尺寸、**不动调用方的缓冲区**（里面已经是上一帧），
+    // 避免为留副本而每帧拷贝一次整帧 —— 4K 一帧 33MB，那是每帧十几毫秒的纯浪费。
     int lastW_ = 0;
     int lastH_ = 0;
     int64_t lastTickUs_ = 0;
