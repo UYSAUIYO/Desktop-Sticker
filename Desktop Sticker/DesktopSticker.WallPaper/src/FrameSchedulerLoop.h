@@ -2,24 +2,27 @@
 
 #include <atomic>
 #include <cstdint>
-#include <functional>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 
+#include "AudioEngine.h"
 #include "D3dContext.h"
 #include "WallPaperWindow.h"
+#include "WallpaperBackend.h"
+#include "desktopsticker/wallpaper/ClockPolicy.h"
+#include "desktopsticker/wallpaper/PresentationArbiter.h"
 
 namespace desktopsticker::wallpaper {
 
-// 专用渲染线程：窗口、D3D/DComp、解码调度全部在这一条线程上完成，
+// 专用渲染线程：窗口、D3D/DComp、后端与帧调度全部在这一条线程上完成，
 // 不触碰宿主 UI 线程的窗口与布局状态。
+//
+// 后端请求由别的线程登记，渲染线程负责创建/打开（解码器绝不跨线程使用）。
 class FrameSchedulerLoop {
 public:
-    // 由调用方提供下一帧 BGRA；返回 false 表示本轮无帧（暂停/回卷/失败）
-    using FrameProvider = std::function<bool(std::vector<uint8_t>&, int&, int&)>;
-
     ~FrameSchedulerLoop();
 
     // 阻塞直到线程完成初始化；返回 false 表示窗口或 D3D 初始化失败
@@ -27,10 +30,20 @@ public:
     void Stop();
     bool Running() const { return running_.load(); }
 
-    void SetProvider(FrameProvider provider);
+    // 必须在 Start 之前设置（模块持有 AudioEngine）
+    void SetAudioEngine(AudioEngine* audio) { audio_ = audio; }
+    void SetPaths(std::wstring exeDir, std::wstring libraryRoot) {
+        exeDir_ = std::move(exeDir);
+        libraryRoot_ = std::move(libraryRoot);
+    }
+
+    // 切换后端（线程安全）。渲染线程会在下一轮打开它。
+    void SetBackendRequest(const BackendRequest& request);
+    void ClearBackend();
+    void SetSpeed(double speed);
+
     void SetPaused(bool paused);
     bool Paused() const { return paused_.load(); }
-    void SetFpsHint(double fps) { fpsHint_.store(fps); }
 
     HWND Window() const { return hwnd_; }
     bool Embedded() const { return window_.Embedded(); }
@@ -41,6 +54,8 @@ public:
 private:
     void thread_main(std::promise<bool> init);
     void pump_messages(bool& quit);
+    // 渲染线程：消费待处理的后端请求
+    void apply_pending_backend();
 
     WallPaperWindow window_;
     D3dContext d3d_;
@@ -51,10 +66,22 @@ private:
     std::atomic<bool> quit_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> running_{false};
-    std::atomic<double> fpsHint_{30.0};
+    std::atomic<double> speed_{1.0};
+    AudioEngine* audio_ = nullptr;
+    std::wstring exeDir_;
+    std::wstring libraryRoot_;
 
-    std::mutex providerMutex_;
-    FrameProvider provider_;
+    std::mutex requestMutex_;
+    BackendRequest pendingRequest_;
+    bool hasPendingRequest_ = false;
+    bool clearRequested_ = false;
+
+    // 仅渲染线程访问
+    std::unique_ptr<IWallpaperBackend> backend_;
+    PresentationArbiter arbiter_;
+    bool lastPaused_ = false;
+    double lastSpeed_ = 1.0;
+    ClockMaster lastMaster_ = ClockMaster::Qpc;
     std::vector<uint8_t> frameBuffer_;
 };
 

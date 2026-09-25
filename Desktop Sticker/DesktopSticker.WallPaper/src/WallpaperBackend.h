@@ -55,6 +55,10 @@ public:
 
     virtual void SetSpeed(double speed) = 0;
 
+    // 期望的循环节拍（帧/秒）。调速由后端内部按策略消费帧实现，
+    // 所以这里返回的是**源**帧率，不乘速度。
+    virtual double TargetFps() const { return 30.0; }
+
     virtual const char* Name() const = 0;
     virtual BackendKind Kind() const = 0;
 };

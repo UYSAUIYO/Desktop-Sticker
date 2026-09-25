@@ -68,6 +68,13 @@ void VideoBackend::SetPaused(bool paused) {
     if (!paused) lastTickUs_ = qpc_us();   // 恢复时重置计时，避免把暂停时长当成一次巨大间隔
 }
 
+double VideoBackend::TargetFps() const {
+    // 源帧率（不乘速度：调速由 frame_advance_policy 按节拍消费帧实现）
+    if (!source_) return 30.0;
+    const double fps = source_->Fps();
+    return fps > 1.0 ? fps : 30.0;
+}
+
 void VideoBackend::SetSpeed(double speed) {
     speed_ = clamp_speed(speed);
     if (audio_) audio_->SetSpeed(speed_);

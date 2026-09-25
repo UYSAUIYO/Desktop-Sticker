@@ -24,7 +24,14 @@ public:
     // 无视频时的纯色底
     bool Clear(float r, float g, float b);
 
+    // 让位 / 复位：自呈现型后端（Web / Vulkan）接管窗口时，DComp visual 必须让位，
+    // 否则会盖住它们。只置空并 Commit，**不释放设备**（切回来还要用）。
+    void Suspend();
+    void Resume();
+    bool Suspended() const { return suspended_; }
+
     bool Valid() const { return targetBitmap_ != nullptr; }
+    ID3D11Device* Device() const { return device_.Get(); }
     const char* LastError() const { return lastError_.c_str(); }
 
 private:
@@ -50,6 +57,7 @@ private:
     int height_ = 0;
     int frameWidth_ = 0;
     int frameHeight_ = 0;
+    bool suspended_ = false;
     std::string lastError_;
 };
 

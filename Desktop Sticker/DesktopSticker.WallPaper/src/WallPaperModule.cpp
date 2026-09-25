@@ -2,6 +2,7 @@
 
 #include "desktopsticker/IWallPaperModule.h"
 
+#include "AudioEngine.h"
 #include "DriveInventory.h"
 #include "FfmpegApi.h"
 #include "FfmpegTranscoder.h"
@@ -12,6 +13,7 @@
 #include "Utf8.h"
 #include "VideoSource.h"
 #include "WallPaperStore.h"
+#include "WallpaperBackend.h"
 
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -96,7 +98,6 @@ private:
     void start_monitor();
     void stop_monitor();
     void monitor_main();
-    bool provide_frame(std::vector<uint8_t>& bgra, int& width, int& height);
     void queue_prepare_artifacts(const std::wstring& id, VariantKind kind = VariantKind::Balanced);
     std::wstring ffmpeg_dir() const;
     void notify_playback();
@@ -106,6 +107,7 @@ private:
     std::unique_ptr<MediaLibrary> library_;
     std::unique_ptr<FfmpegTranscoder> transcoder_;
     FrameSchedulerLoop loop_;
+    AudioEngine audio_;
 
     PersistedState state_;
     std::wstring configDir_;
@@ -114,12 +116,6 @@ private:
     std::atomic<bool> userPaused_{false};
     PlaybackState pausing_state_last_ = PlaybackState::Playing;
     std::mutex libraryMutex_; // 后台生成缩略图/副本时会改写 library.json
-
-    // 源切换只在渲染线程发生：UI 线程只登记请求，避免跨线程使用解码器
-    std::mutex sourceMutex_;
-    std::unique_ptr<IVideoSource> source_;
-    std::wstring requestedPath_;
-    bool requestPending_ = false;
 
     // 缩略图缓存：模块持有，调用方不得 DestroyIcon
     std::mutex thumbMutex_;
@@ -238,11 +234,6 @@ void WallPaperModuleImpl::Stop() {
         }
         thumbs_.clear();
     }
-    {
-        std::lock_guard<std::mutex> lock(sourceMutex_);
-        if (source_) { source_->Close(); source_.reset(); }
-    }
-
     video_subsystem_stop();
     library_.reset();
     available_ = false;
@@ -342,6 +333,9 @@ WallPaperSettings WallPaperModuleImpl::GetSettings() {
 bool WallPaperModuleImpl::SetSettings(const WallPaperSettings& settings) {
     const bool wasEnabled = state_.settings.enabled;
     const std::wstring previousActive = state_.settings.activeId;
+    const double previousSpeed = state_.settings.speed;
+    const bool previousAudio = state_.settings.audioEnabled;
+    const float previousVolume = state_.settings.audioVolume;
 
     state_.settings = settings;
     store_.SaveState(state_);
@@ -351,10 +345,19 @@ bool WallPaperModuleImpl::SetSettings(const WallPaperSettings& settings) {
         notify_playback();
         return true;
     }
+
+    // 音频与速度是"热"设置：不重开解码，直接生效
+    audio_.SetMuted(!settings.audioEnabled);
+    audio_.SetVolume(settings.audioVolume);
+    if (settings.speed != previousSpeed) {
+        audio_.SetSpeed(settings.speed);
+        loop_.SetSpeed(settings.speed);
+    }
+    (void)previousAudio;
+    (void)previousVolume;
+
+    // 换壁纸或换档位才需要重开后端
     if (!wasEnabled || previousActive != settings.activeId) {
-        request_play(settings.activeId);
-    } else {
-        // 档位变化只需重开解码源
         request_play(settings.activeId);
     }
     notify_playback();
@@ -429,10 +432,22 @@ bool WallPaperModuleImpl::request_play(const std::wstring& id) {
     if (!library_ || id.empty()) return false;
 
     std::wstring path;
+    BackendKind kind = BackendKind::Video;
     for (const auto& item : library_->List()) {
         if (item.id != id) continue;
+        kind = item.kind;
 
-        // 档位解析：首选的性能副本不存在就回落原画
+        if (kind != BackendKind::Video) {
+            // 目录型后端：源就是条目里的对应子目录
+            const std::filesystem::path dir(library_->ItemDir(item.id));
+            const wchar_t* sub = (kind == BackendKind::ImageSequence) ? L"frames"
+                                 : (kind == BackendKind::Web)           ? L"web"
+                                                                        : L"shader";
+            path = (dir / sub).wstring();
+            break;
+        }
+
+        // 档位只对视频有意义：首选副本不存在就回落原画
         VariantAvailability avail;
         avail.hasBalanced = item.hasBalanced &&
             std::filesystem::is_regular_file(library_->VariantPath(id, VariantKind::Balanced,
@@ -450,58 +465,43 @@ bool WallPaperModuleImpl::request_play(const std::wstring& id) {
     }
     if (path.empty()) return false;
 
-    {
-        std::lock_guard<std::mutex> lock(sourceMutex_);
-        requestedPath_ = path;
-        requestPending_ = true;
+    if (!backend_available(kind)) {
+        wp_log("requested backend is not available in this build; keeping current picture");
+        return false;
     }
 
+    // 引擎与路径只需在首次启动前设置一次
     if (!loop_.Running()) {
-        loop_.SetProvider([this](std::vector<uint8_t>& b, int& w, int& h) {
-            return provide_frame(b, w, h);
-        });
+        loop_.SetAudioEngine(&audio_);
+        loop_.SetPaths(exe_dir(), state_.storage.root);
         if (!loop_.Start()) {
             wp_log("playback start failed: render thread init error");
             available_ = false;
             return false;
         }
     }
+
+    BackendRequest request;
+    request.kind = kind;
+    request.sourcePath = path;
+    request.speed = state_.settings.speed;
+    loop_.SetBackendRequest(request);   // 在渲染线程上打开（解码器不跨线程）
     loop_.SetPaused(false);
+
+    // 音频设置随时可能变，这里同步一次
+    audio_.SetMuted(!state_.settings.audioEnabled);
+    audio_.SetVolume(state_.settings.audioVolume);
+    audio_.SetSpeed(state_.settings.speed);
+
     notify_playback();
     return true;
 }
 
 void WallPaperModuleImpl::stop_playback() {
-    {
-        std::lock_guard<std::mutex> lock(sourceMutex_);
-        requestPending_ = false;
-        requestedPath_.clear();
-    }
-    if (loop_.Running()) {
-        loop_.SetPaused(true);
-        loop_.Stop();
-    }
-}
-
-bool WallPaperModuleImpl::provide_frame(std::vector<uint8_t>& bgra, int& width, int& height) {
-    std::lock_guard<std::mutex> lock(sourceMutex_);
-
-    if (requestPending_) {
-        if (source_) { source_->Close(); source_.reset(); }
-        std::string backend;
-        source_ = open_video_source(requestedPath_, &backend);
-        requestPending_ = false;
-        if (source_) {
-            loop_.SetFpsHint(source_->Fps());
-            wp_log("wallpaper decoding via " + backend + ": " + to_utf8(requestedPath_));
-        } else {
-            wp_log("no decoder available for " + to_utf8(requestedPath_));
-            return false;
-        }
-    }
-    if (!source_) return false;
-
-    return source_->NextFrame(bgra, width, height);
+    if (!loop_.Running()) return;
+    loop_.ClearBackend();
+    loop_.SetPaused(true);
+    loop_.Stop();
 }
 
 void WallPaperModuleImpl::queue_prepare_artifacts(const std::wstring& id, VariantKind kind) {

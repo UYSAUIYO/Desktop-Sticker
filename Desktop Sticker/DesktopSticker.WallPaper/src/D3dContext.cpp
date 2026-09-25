@@ -144,6 +144,7 @@ bool D3dContext::Create(HWND hwnd, int width, int height) {
 }
 
 void D3dContext::Destroy() {
+    suspended_ = false;
     frameBitmap_.Reset();
     frameWidth_ = frameHeight_ = 0;
     if (d2dContext_) d2dContext_->SetTarget(nullptr);
@@ -198,8 +199,24 @@ bool D3dContext::ensure_frame_bitmap(int width, int height) {
     return true;
 }
 
+void D3dContext::Suspend() {
+    if (!dcompVisual_ || suspended_) return;
+    dcompVisual_->SetContent(nullptr);
+    if (dcompDevice_) dcompDevice_->Commit();
+    suspended_ = true;
+    wp_log("D3dContext: suspended (self-presenting backend takes over)");
+}
+
+void D3dContext::Resume() {
+    if (!suspended_ || !dcompVisual_ || !swapChain_) return;
+    dcompVisual_->SetContent(swapChain_.Get());
+    if (dcompDevice_) dcompDevice_->Commit();
+    suspended_ = false;
+    wp_log("D3dContext: resumed");
+}
+
 bool D3dContext::Clear(float r, float g, float b) {
-    if (!targetBitmap_) return false;
+    if (!targetBitmap_ || suspended_) return false;
 
     d2dContext_->BeginDraw();
     d2dContext_->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -212,7 +229,7 @@ bool D3dContext::Clear(float r, float g, float b) {
 }
 
 bool D3dContext::PresentBgra(const uint8_t* pixels, int width, int height, int stride) {
-    if (!targetBitmap_ || !pixels || width <= 0 || height <= 0) return false;
+    if (!targetBitmap_ || suspended_ || !pixels || width <= 0 || height <= 0) return false;
     if (!ensure_frame_bitmap(width, height)) return false;
 
     const HRESULT cp = frameBitmap_->CopyFromMemory(nullptr, pixels, static_cast<UINT32>(stride));

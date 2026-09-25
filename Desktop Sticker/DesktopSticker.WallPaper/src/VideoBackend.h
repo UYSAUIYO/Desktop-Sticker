@@ -18,6 +18,7 @@ public:
     bool ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) override;
     void SetPaused(bool paused) override;
     void SetSpeed(double speed) override;
+    double TargetFps() const override;
 
     const char* Name() const override { return name_.c_str(); }
     BackendKind Kind() const override { return kind_; }
