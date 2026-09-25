@@ -375,21 +375,43 @@ bool ffmpeg_fallback_available() {
 std::unique_ptr<IVideoSource> open_video_source(const std::wstring& path,
                                                 std::string* chosenBackend,
                                                 const VideoSourceOptions& options) {
+    // 动图优先 FFmpeg：MF 只能给首帧，动图的逐帧延迟也只有 FFmpeg 路径报得出来
+    auto try_ffmpeg = [&]() -> std::unique_ptr<IVideoSource> {
+#ifdef DSTK_HAVE_FFMPEG_SDK
+        auto ff = std::make_unique<FfmpegVideoSource>(options.maxWidth, options.maxHeight);
+        if (ff->Open(path)) return ff;
+#endif
+        return nullptr;
+    };
+
+    if (options.preferFfmpeg) {
+        if (auto ff = try_ffmpeg()) {
+            if (chosenBackend) *chosenBackend = ff->Backend();
+            return ff;
+        }
+        auto mf = std::make_unique<MfVideoSource>(options.maxWidth, options.maxHeight);
+        if (mf->Open(path)) {
+            wp_log("animated image: FFmpeg could not play it, using MF (first frame only)");
+            if (chosenBackend) *chosenBackend = mf->Backend();
+            return mf;
+        }
+        wp_log("no decoder could open the animated image: " + to_utf8(path));
+        return nullptr;
+    }
+
     auto mf = std::make_unique<MfVideoSource>(options.maxWidth, options.maxHeight);
     if (mf->Open(path)) {
         if (chosenBackend) *chosenBackend = mf->Backend();
         return mf;
     }
 
-#ifdef DSTK_HAVE_FFMPEG_SDK
     // "系统缺少解码器时"的兜底：MF 打不开该素材才启用随包 FFmpeg
-    auto ff = std::make_unique<FfmpegVideoSource>(options.maxWidth, options.maxHeight);
-    if (ff->Open(path)) {
+    if (auto ff = try_ffmpeg()) {
         wp_log("MF could not decode this media; using FFmpeg fallback");
         if (chosenBackend) *chosenBackend = ff->Backend();
         return ff;
     }
-#else
+#ifndef DSTK_HAVE_FFMPEG_SDK
     wp_log("MF could not decode this media and no FFmpeg sdk was available at build time");
 #endif
 

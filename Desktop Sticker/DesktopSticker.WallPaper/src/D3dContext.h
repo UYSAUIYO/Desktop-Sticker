@@ -30,6 +30,13 @@ public:
     void Resume();
     bool Suspended() const { return suspended_; }
 
+    // ③ Web 后端把 WebView2 的画面合成进**我们的** DComp 树（视觉宿主）：
+    // 它需要把自己的视觉挂成根。让位之后我们自己的视觉内容已撤空，所以直接换根即可，
+    // 不需要额外做一层容器视觉。
+    IDCompositionDevice* DCompDevice() const { return dcompDevice_.Get(); }
+    bool SetRootVisual(IDCompositionVisual* visual);
+    void RestoreRootVisual();
+
     bool Valid() const { return targetBitmap_ != nullptr; }
     ID3D11Device* Device() const { return device_.Get(); }
     const char* LastError() const { return lastError_.c_str(); }

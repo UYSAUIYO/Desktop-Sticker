@@ -29,9 +29,12 @@ public:
 struct VideoSourceOptions {
     int maxWidth = 0;
     int maxHeight = 0;
+    // 动图（GIF/WebP/APNG）优先用 FFmpeg：MF 的 WIC 源只给首帧，动不起来
+    bool preferFfmpeg = false;
 };
 
-// 优先级：MF 为主；MF 明确打不开该素材时才启用 FFmpeg 兜底。
+// 优先级：默认 MF 为主、MF 明确打不开该素材时才启用 FFmpeg 兜底；
+// preferFfmpeg 为真时（动图）反过来，只有 FFmpeg 不可用才退回 MF。
 // 两者都不可用时返回 nullptr，调用方保持最后一帧并记录状态。
 std::unique_ptr<IVideoSource> open_video_source(const std::wstring& path,
                                                 std::string* chosenBackend = nullptr,

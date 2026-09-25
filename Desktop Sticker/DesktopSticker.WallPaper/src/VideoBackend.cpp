@@ -28,6 +28,8 @@ bool VideoBackend::Open(const BackendRequest& request, const BackendContext& ctx
     VideoSourceOptions opts;
     opts.maxWidth = ctx.width;
     opts.maxHeight = ctx.height;
+    // 动图交给 FFmpeg：MF 只能解出首帧，动不起来
+    opts.preferFfmpeg = (request.kind == BackendKind::AnimatedImage);
 
     std::string backend;
     source_ = open_video_source(request.sourcePath, &backend, opts);

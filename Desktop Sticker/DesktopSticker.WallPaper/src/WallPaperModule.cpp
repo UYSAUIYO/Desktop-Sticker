@@ -18,6 +18,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include "desktopsticker/wallpaper/BackendKind.h"
 #include "desktopsticker/wallpaper/FfmpegCommand.h"
 #include "desktopsticker/wallpaper/PausePolicy.h"
 #include "desktopsticker/wallpaper/VariantPolicy.h"
@@ -440,10 +441,7 @@ bool WallPaperModuleImpl::request_play(const std::wstring& id) {
         if (kind != BackendKind::Video) {
             // 目录型后端：源就是条目里的对应子目录
             const std::filesystem::path dir(library_->ItemDir(item.id));
-            const wchar_t* sub = (kind == BackendKind::ImageSequence) ? L"frames"
-                                 : (kind == BackendKind::Web)           ? L"web"
-                                                                        : L"shader";
-            path = (dir / sub).wstring();
+            path = (dir / backend_kind_content_subdir(kind)).wstring();
             break;
         }
 

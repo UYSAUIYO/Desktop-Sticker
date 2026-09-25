@@ -8,7 +8,7 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 - `Desktop Sticker/Desktop Sticker/` — WinUI 3 EXE project: `App`, `MainWindow`, `LauncherController`, `SettingsController`, `Host`. `Host` loads the Features DLL at runtime via `LoadLibrary`. `assets/weather/S2/` holds the QWeather icon set (61 PNGs, CC BY 4.0, license text next to it).
 - `Desktop Sticker/DesktopSticker.Features/` — plain C++20 Win32 DLL (Direct2D/DirectWrite rendering, no WinRT/XAML in its pch): zones, desktop icon management, search index, pinyin, hotkey, config. `src/widgets/` has the clock + weather component.
 - `Desktop Sticker/DesktopSticker.Tests/` — unit tests using the homegrown framework in `test_framework.h` (`namespace dtest`, no gtest).
-- `Desktop Sticker/DesktopSticker.WallPaper/` — dynamic wallpaper DLL: D3D11 + DXGI + DirectComposition presentation, MF-primary decode with an FFmpeg shared-library fallback, media library, storage placement. Strategy logic lives in **header-only pure functions** under `include/desktopsticker/wallpaper/` so `dtest` can unit-test it without D3D/MF; OS adapters (drive enumeration, fullscreen detection, subprocess) live in `src/`.
+- `Desktop Sticker/DesktopSticker.WallPaper/` — dynamic wallpaper DLL: D3D11 + DXGI + DirectComposition presentation, MF-primary decode with an FFmpeg shared-library fallback, media library, storage placement. Three production backends behind `IWallpaperBackend` (`src/WallpaperBackend.h`): video/animated-image (`VideoBackend`), image sequence (`ImageSequenceBackend`, WIC), web (`WebBackend`, WebView2 **visual hosting**). `DecodeTarget.h` decides the decode output size (never bigger than the window). Strategy logic lives in **header-only pure functions** under `include/desktopsticker/wallpaper/` so `dtest` can unit-test it without D3D/MF; OS adapters (drive enumeration, fullscreen detection, subprocess) live in `src/`.
 - `Desktop Sticker/DesktopSticker.ResMon/` — read-only resource manager DLL (WebView2 hosted in a plain Win32 window): per-thread CPU, per-module memory, ordered storage classification. Formatting/classification/cpu-math/JSON assembly are **header-only pure functions** under `include/desktopsticker/resmon/`.
 - `Desktop Sticker/Desktop Sticker/resmon/` — the resource manager frontend: plain `index.html` / `style.css` / `app.js`, **no framework and no build step**; xcopied next to the EXE and served via the WebView2 virtual host `resmon.local`.
 - `Desktop Sticker/Desktop Sticker (Package)/` — MSIX packaging project; the app actually runs unpackaged/self-contained, don't rely on package identity.
@@ -35,7 +35,7 @@ Run tests:
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
 cp DesktopSticker.WallPaper.dll Tests/  # ditto
-./Tests/DesktopSticker.Tests.exe        # expect: 200 passed, 0 failed
+./Tests/DesktopSticker.Tests.exe        # expect: 215 passed, 0 failed
 ```
 
 FFmpeg payload (dynamic wallpaper's decoder fallback + transcode backend):
@@ -73,6 +73,9 @@ Gotchas:
 - The ResMon DLL has its own boundary too: `desktopsticker::IResMonModule` + `CreateResMonModule` / `DestroyResMonModule`, loaded as a **third** optional module. Its `Init` returns false when the WebView2 environment can't be created — the EXE keeps the instance and greys out the tray entry (`Available()`), it does not treat that as a load failure.
 - WebView2 method-to-interface gotchas (verified against the pinned SDK): `put_IsWebMessageEnabled` is on `ICoreWebView2Settings` (not `ICoreWebView2`); `SetVirtualHostNameToFolderMapping` is on `ICoreWebView2_3` (QueryInterface); the args method is `TryGetWebMessageAsString` (it fails for non-string messages), and `get_WebMessageAsJson` **wraps a JS-sent string in another layer of quotes** — so read string messages with `TryGetWebMessageAsString` first.
 - WebView2 async completions are delivered through the calling thread's message loop: wait for them by **pumping messages**, never by blocking.
+- **The WallPaper DLL's Web backend uses WebView2 *visual hosting*, not a hosted child window** (`CreateCoreWebView2CompositionController` + `put_RootVisualTarget`, then `D3dContext::SetRootVisual`). Windowed hosting *does not composite* when the host window lives inside the desktop `WorkerW` — environment/controller/navigation/window-title/window-tree/visibility/size all succeed and not a single pixel appears (verified with a solid-red probe page); the same window moved to top-level renders fine. So: don't "fix" this by adding a host HWND, and don't drop the `setRootVisual` / `restoreRootVisual` handoff in `BackendContext` — that handoff is what makes web wallpapers visible. Also note `ICoreWebView2CompositionController` exposes no `get_CoreWebView2`; QueryInterface it for `ICoreWebView2Controller` first.
+- The WallPaper project links the WebView2 loader **statically** (`WebView2LoaderPreference=Static` in its vcxproj, plus the NuGet `Microsoft.Web.WebView2.1.0.3719.77` include dir under `Desktop Sticker/packages/`). Deliberate: the DLL is loaded by the host with `LoadLibrary`, so an import dependency on `WebView2Loader.dll` would turn "that file is missing" into "the whole wallpaper module is unavailable", while a missing WebView2 *runtime* must only disable ③.
+- `IVideoSource` takes a `VideoSourceOptions` (max output size + `preferFfmpeg`). Video is decoded at **display size**, not source size — a 4K source on a 1080p screen was spending ~25ms/frame converting pixels that D2D then threw away (`DecodeTarget.h`); the same option makes animated images prefer FFmpeg, because MF's WIC source only yields the first frame of a GIF/WebP.
 - Threading: the UI thread owns all windows and layout state; the hotkey-hook, directory-watch, and weather threads talk to it only via posted messages or locked snapshots.
 
 ## Manual UI verification (tools/)
@@ -83,6 +86,7 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - `panel_check.ps1` — `WindowFromPoint` hit-testing, to confirm which window actually receives clicks.
 - `dblclick_test.ps1` / `wheel_test.ps1` / `space_test.ps1` — synthesize double-click, wheel, and double-space hotkey input.
 - `screen_capture.ps1` / `capture_clock.ps1` — screenshot and crop the zone-card area / clock region for inspection.
+- `wallpaper_child_windows.ps1` — dump the wallpaper window's descendant tree (class / visibility / style / rect). The wallpaper window is a child of `WorkerW`, so `EnumWindows` won't find it; this walks top-level windows' descendants instead. This is how the "WebView2 is created and visible but nothing composites" finding above was established.
 
 ## Fragile areas / known gotchas
 

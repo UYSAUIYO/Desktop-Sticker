@@ -84,7 +84,8 @@ inline bool classify_directory(const std::vector<std::wstring>& entries, Backend
             hasShader = true;
         }
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" ||
-            ext == L".tif" || ext == L".tiff" || ext == L".webp") {
+            ext == L".tif" || ext == L".tiff" || ext == L".webp" || ext == L".gif" ||
+            ext == L".apng") {
             hasImage = true;
         }
     }
@@ -102,7 +103,8 @@ inline std::vector<std::wstring> natural_sort_image_frames(const std::vector<std
     for (const auto& n : names) {
         const std::wstring ext = detail::extension(n);
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" ||
-            ext == L".tif" || ext == L".tiff" || ext == L".webp") {
+            ext == L".tif" || ext == L".tiff" || ext == L".webp" || ext == L".gif" ||
+            ext == L".apng") {
             images.push_back(n);
         }
     }
@@ -179,6 +181,19 @@ inline const wchar_t* backend_kind_name(BackendKind k) {
 // 谁能出声：视频后端与网页后端。动图/序列/着色器没有音轨。
 inline bool backend_kind_has_audio(BackendKind k) {
     return k == BackendKind::Video || k == BackendKind::Web;
+}
+
+// 目录型后端在库内的内容子目录（对应 §10 的 media/<id>/frames|web|shader）。
+// 文件型（视频/动图）内容就是 source.<ext>，没有子目录。
+inline const wchar_t* backend_kind_content_subdir(BackendKind k) {
+    switch (k) {
+        case BackendKind::ImageSequence: return L"frames";
+        case BackendKind::Web:           return L"web";
+        case BackendKind::Shader3D:      return L"shader";
+        case BackendKind::Video:
+        case BackendKind::AnimatedImage: return L"";
+    }
+    return L"";
 }
 
 // 性能副本（转码）只对视频有意义

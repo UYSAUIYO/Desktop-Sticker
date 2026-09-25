@@ -127,6 +127,9 @@ void FrameSchedulerLoop::apply_pending_backend() {
     ctx.exeDir = exeDir_;
     ctx.libraryRoot = libraryRoot_;
     ctx.audio = audio_;
+    ctx.dcompDevice = d3d_.DCompDevice();
+    ctx.setRootVisual = [this](IDCompositionVisual* v) { return d3d_.SetRootVisual(v); };
+    ctx.restoreRootVisual = [this] { d3d_.RestoreRootVisual(); };
 
     auto candidate = create_backend(request.kind);
     const bool opened = candidate && candidate->Open(request, ctx);
@@ -265,6 +268,7 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
 
         if (backend_->SelfPresenting()) {
             backend_->Tick();
+            ++diagTicks;   // 自呈现型也要计入节拍数，否则日志显示 0/s 像卡死了
             wait_ticks(1600000);    // 约 60Hz
             continue;
         }

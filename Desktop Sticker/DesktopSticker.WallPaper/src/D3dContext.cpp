@@ -215,6 +215,19 @@ void D3dContext::Resume() {
     wp_log("D3dContext: resumed");
 }
 
+bool D3dContext::SetRootVisual(IDCompositionVisual* visual) {
+    if (!dcompTarget_ || !dcompDevice_ || !visual) return false;
+    const HRESULT hr = dcompTarget_->SetRoot(visual);
+    if (FAILED(hr)) { fail("SetRoot(web visual)", hr); return false; }
+    return SUCCEEDED(dcompDevice_->Commit());
+}
+
+void D3dContext::RestoreRootVisual() {
+    if (!dcompTarget_ || !dcompDevice_ || !dcompVisual_) return;
+    dcompTarget_->SetRoot(dcompVisual_.Get());
+    dcompDevice_->Commit();
+}
+
 bool D3dContext::Clear(float r, float g, float b) {
     if (!targetBitmap_ || suspended_) return false;
 

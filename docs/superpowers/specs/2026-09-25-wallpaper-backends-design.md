@@ -167,7 +167,16 @@ class AudioEngine {                        // 模块持有，后端无关
 
 ## 7. ③ Web 后端
 
-- WebView2 控制器宿主在壁纸窗口上，虚拟主机映射到 `media/<id>/web/`；沿用"泵消息等异步完成"的既有写法。
+> **实施偏差（2026-09-25 实测，已按此实现）**：原设计写的是"控制器宿主在壁纸窗口上"。
+> 实测窗口化宿主在桌面嵌入窗口里**不合成** —— 环境/控制器/导航/窗口标题/窗口树/可见性/
+> 尺寸全部正常，屏幕上却一个像素都没有（纯红测试页验证）；同一个窗口挪成顶层就正常。
+> 因此改为 **WebView2 视觉宿主**（`CreateCoreWebView2CompositionController` +
+> `put_RootVisualTarget`，并把该视觉经 `D3dContext::SetRootVisual` 挂成 DComp 根），
+> 页面画面由我们自己的 DComp 合成 —— 本项目自己的 DComp 在同一种窗口上一直是好的。
+> 其余（虚拟主机、沙箱、关闭浏览器特征、透明背景、`IsMuted`、`TrySuspend`）与设计一致。
+
+- WebView2 控制器**不使用窗口化宿主**，走视觉宿主：画面合成进我们自己的 DComp 视觉树；
+  虚拟主机映射到 `media/<id>/web/`；沿用"泵消息等异步完成"的既有写法。
 - **安全**：用户 HTML/JS 跑在 WebView2 自带沙箱进程（无 Node、仅能访问映射目录）；**不注入任何宿主对象**；禁 DevTools 与右键菜单。
 - **交互**：壁纸窗口本已 `WS_EX_NOACTIVATE` + `HTTRANSPARENT`，不抢焦点、不接点击。
 - **透明**：`DefaultBackgroundColor` 置透明。因窗口是静态壁纸**之上**的 WorkerW 子窗口，透明处会露出原始壁纸（Wallpaper Engine 同款效果）。

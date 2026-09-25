@@ -4,6 +4,10 @@
 #include "AppLog.h"
 #include "WindowChrome.h"
 
+// 壁纸后端的"能力"是纯函数（谁能调速/谁能出声/谁是自呈现型），
+// 放在 header-only 的 BackendKind.h 里，EXE 侧直接复用，不必给模块接口加 vtable
+#include <desktopsticker/wallpaper/BackendKind.h>
+
 #include <winrt/Microsoft.UI.Text.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
@@ -392,6 +396,61 @@ void SettingsController::EnsureWindow() {
                wallPaperVariantCombo_);
     wallPaperVariantCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveWallPaper(); });
 
+    wallPaperSpeedCombo_ = ComboBox();
+    wallPaperSpeedCombo_.MinWidth(170);
+    {
+        // 规格 §11：0.25×–4× 档位；调速由渲染侧的 frame_advance_policy 缩放播放节奏
+        const double speeds[] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 };
+        for (double s : speeds) {
+            auto entry = ComboBoxItem();
+            wchar_t text[32]{};
+            swprintf_s(text, L"%g\u00D7", s);
+            entry.Content(box_value(text));
+            wallPaperSpeedCombo_.Items().Append(entry);
+        }
+    }
+    placeRight(makeCard(wallPaperGroup, L"\uE916", L"播放速度",
+                        L"对视频/动图/图片序列生效；网页的节奏由页面自己决定，故不可调"),
+               wallPaperSpeedCombo_);
+    wallPaperSpeedCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveWallPaper(); });
+
+    wallPaperAudioSwitch_ = ToggleSwitch();
+    placeRight(makeCard(wallPaperGroup, L"\uE767", L"播放声音",
+                        L"默认关闭；只有带音轨的视频和网页才会出声"),
+               wallPaperAudioSwitch_);
+    wallPaperAudioSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
+    {
+        // 音量：滑块 + 百分比文字，右对齐成一组
+        auto panel = StackPanel();
+        panel.Orientation(Orientation::Horizontal);
+        panel.Spacing(8);
+        panel.VerticalAlignment(VerticalAlignment::Center);
+
+        wallPaperVolumeSlider_ = Slider();
+        wallPaperVolumeSlider_.Width(140);
+        wallPaperVolumeSlider_.Minimum(0);
+        wallPaperVolumeSlider_.Maximum(100);
+        wallPaperVolumeSlider_.StepFrequency(5);
+        panel.Children().Append(wallPaperVolumeSlider_);
+
+        wallPaperVolumeLabel_ = TextBlock();
+        wallPaperVolumeLabel_.FontSize(12);
+        wallPaperVolumeLabel_.VerticalAlignment(VerticalAlignment::Center);
+        panel.Children().Append(wallPaperVolumeLabel_);
+
+        placeRight(makeCard(wallPaperGroup, L"\uE995", L"音量",
+                            L"网页壁纸的音量由页面自己控制，这里只对视频生效"),
+                   panel);
+        wallPaperVolumeSlider_.ValueChanged([this](winrt::Windows::Foundation::IInspectable const&,
+                                                  Microsoft::UI::Xaml::Controls::Primitives::RangeBaseValueChangedEventArgs const& e) {
+            if (wallPaperVolumeLabel_) {
+                wallPaperVolumeLabel_.Text(std::to_wstring(static_cast<int>(e.NewValue())) + L"%");
+            }
+            SaveWallPaper();
+        });
+    }
+
     wallPaperPauseFullscreenSwitch_ = ToggleSwitch();
     placeRight(makeCard(wallPaperGroup, L"\uE740", L"全屏时暂停",
                         L"检测到覆盖整个屏幕的应用时停止播放，切回桌面自动恢复"),
@@ -438,10 +497,17 @@ void SettingsController::EnsureWindow() {
         buttons.Spacing(8);
 
         wallPaperImportButton_ = Button();
-        wallPaperImportButton_.Content(box_value(L"导入视频…"));
+        wallPaperImportButton_.Content(box_value(L"导入文件…"));
         wallPaperImportButton_.MinWidth(104);
         buttons.Children().Append(wallPaperImportButton_);
         wallPaperImportButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { ImportWallPaper(); });
+
+        // 目录型来源（图片序列 / 网页 / 着色器）只能选文件夹，类型由目录内容自动判定
+        wallPaperImportFolderButton_ = Button();
+        wallPaperImportFolderButton_.Content(box_value(L"导入文件夹…"));
+        wallPaperImportFolderButton_.MinWidth(116);
+        buttons.Children().Append(wallPaperImportFolderButton_);
+        wallPaperImportFolderButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { ImportWallPaperFolder(); });
 
         wallPaperRemoveButton_ = Button();
         wallPaperRemoveButton_.Content(box_value(L"删除选中"));
@@ -466,6 +532,13 @@ void SettingsController::EnsureWindow() {
         wallPaperChangeRootButton_.MinWidth(132);
         buttons2.Children().Append(wallPaperChangeRootButton_);
         wallPaperChangeRootButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { ChangeWallPaperRoot(); });
+
+        // 用户要放自己的 .frag / .gltf / JSON 参数时，直接打开库根目录最省事
+        wallPaperOpenConfigButton_ = Button();
+        wallPaperOpenConfigButton_.Content(box_value(L"打开壁纸目录"));
+        wallPaperOpenConfigButton_.MinWidth(132);
+        buttons2.Children().Append(wallPaperOpenConfigButton_);
+        wallPaperOpenConfigButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { OpenWallPaperConfigDir(); });
 
         stack.Children().Append(buttons2);
 
@@ -636,11 +709,16 @@ void SettingsController::RefreshWallPaperControls() {
     if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsEnabled(available);
     if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsEnabled(available);
     if (wallPaperVariantCombo_) wallPaperVariantCombo_.IsEnabled(available);
+    if (wallPaperSpeedCombo_) wallPaperSpeedCombo_.IsEnabled(available);
+    if (wallPaperAudioSwitch_) wallPaperAudioSwitch_.IsEnabled(available);
+    if (wallPaperVolumeSlider_) wallPaperVolumeSlider_.IsEnabled(available);
     if (wallPaperGrid_) wallPaperGrid_.IsEnabled(available);
     if (wallPaperImportButton_) wallPaperImportButton_.IsEnabled(available);
+    if (wallPaperImportFolderButton_) wallPaperImportFolderButton_.IsEnabled(available);
     if (wallPaperRemoveButton_) wallPaperRemoveButton_.IsEnabled(available);
     if (wallPaperVariantButton_) wallPaperVariantButton_.IsEnabled(available);
     if (wallPaperChangeRootButton_) wallPaperChangeRootButton_.IsEnabled(available);
+    if (wallPaperOpenConfigButton_) wallPaperOpenConfigButton_.IsEnabled(available);
 
     if (!available) {
         wallPaperSwitch_.IsOn(false);
@@ -661,6 +739,44 @@ void SettingsController::RefreshWallPaperControls() {
         const int index = settings.preferred == VariantKind::PowerSaver ? 2
                         : settings.preferred == VariantKind::Balanced ? 1 : 0;
         wallPaperVariantCombo_.SelectedIndex(index);
+    }
+    if (wallPaperSpeedCombo_) {
+        // 与 EnsureWindow 里的档位数组一致；找不到就落到 1×
+        static const double kSpeeds[] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 };
+        int index = 3;
+        for (int i = 0; i < 8; ++i) {
+            if (std::abs(kSpeeds[i] - settings.speed) < 0.01) { index = i; break; }
+        }
+        wallPaperSpeedCombo_.SelectedIndex(index);
+    }
+    if (wallPaperAudioSwitch_) wallPaperAudioSwitch_.IsOn(settings.audioEnabled);
+    if (wallPaperVolumeSlider_) {
+        wallPaperVolumeSlider_.Value(settings.audioVolume * 100.0f);
+        if (wallPaperVolumeLabel_) {
+            wallPaperVolumeLabel_.Text(std::to_wstring(
+                static_cast<int>(settings.audioVolume * 100.0f + 0.5f)) + L"%");
+        }
+    }
+
+    // 按当前壁纸的类型决定哪些控件有意义（规格 §11：不适用就置灰并说明）
+    BackendKind activeKind = BackendKind::Video;
+    bool hasActive = false;
+    {
+        const auto items = wp->ListItems();
+        for (const auto& it : items) {
+            if (it.id == settings.activeId) { activeKind = it.kind; hasActive = true; break; }
+        }
+    }
+    if (hasActive) {
+        if (wallPaperVariantCombo_) wallPaperVariantCombo_.IsEnabled(desktopsticker::wallpaper::backend_kind_supports_variants(activeKind));
+        if (wallPaperVariantButton_) wallPaperVariantButton_.IsEnabled(desktopsticker::wallpaper::backend_kind_supports_variants(activeKind));
+        if (wallPaperSpeedCombo_) wallPaperSpeedCombo_.IsEnabled(desktopsticker::wallpaper::backend_kind_supports_speed(activeKind));
+        // 没有音轨的类型（动图/序列/着色器）置灰；网页能出声但音量不归我们管
+        const bool audioOk = desktopsticker::wallpaper::backend_kind_has_audio(activeKind);
+        if (wallPaperAudioSwitch_) wallPaperAudioSwitch_.IsEnabled(audioOk);
+        if (wallPaperVolumeSlider_) {
+            wallPaperVolumeSlider_.IsEnabled(audioOk && activeKind == BackendKind::Video);
+        }
     }
 
     if (wallPaperGrid_) {
@@ -691,7 +807,9 @@ void SettingsController::RefreshWallPaperControls() {
             }
 
             auto label = TextBlock();
-            label.Text(item.name + (item.hasBalanced || item.hasPowerSaver ? L" · 有副本" : L""));
+            // 类型标签：一眼能看出这条是视频还是网页/序列（规格 §11）
+            label.Text(item.name + L" · " + desktopsticker::wallpaper::backend_kind_name(item.kind) +
+                       (item.hasBalanced || item.hasPowerSaver ? L" · 有副本" : L""));
             label.FontSize(12);
             label.MaxWidth(196);
             label.TextTrimming(Microsoft::UI::Xaml::TextTrimming::CharacterEllipsis);
@@ -720,7 +838,7 @@ void SettingsController::RefreshWallPaperControls() {
     if (wallPaperStatus_) {
         const auto items = wp->ListItems();
         wallPaperStatus_.Text(L"存储位置：" + settings.libraryRoot +
-                              L"\n共 " + std::to_wstring(items.size()) + L" 个视频");
+                              L"\n共 " + std::to_wstring(items.size()) + L" 个壁纸");
     }
     wallpaperLoading_ = false;
 }
@@ -739,6 +857,15 @@ void SettingsController::SaveWallPaper() {
         settings.preferred = index == 2 ? VariantKind::PowerSaver
                            : index == 1 ? VariantKind::Balanced
                                         : VariantKind::Original;
+    }
+    if (wallPaperSpeedCombo_) {
+        static const double kSpeeds[] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 };
+        const int index = wallPaperSpeedCombo_.SelectedIndex();
+        if (index >= 0 && index < 8) settings.speed = kSpeeds[index];
+    }
+    if (wallPaperAudioSwitch_) settings.audioEnabled = wallPaperAudioSwitch_.IsOn();
+    if (wallPaperVolumeSlider_) {
+        settings.audioVolume = static_cast<float>(wallPaperVolumeSlider_.Value() / 100.0);
     }
     if (wallPaperGrid_) {
         const int sel = wallPaperGrid_.SelectedIndex();
@@ -775,11 +902,12 @@ void SettingsController::ImportWallPaper() {
     }
 
     const COMDLG_FILTERSPEC filters[] = {
-        { L"视频文件", L"*.mp4;*.mkv;*.mov;*.avi;*.webm;*.wmv;*.m4v;*.mpg;*.mpeg" },
+        { L"视频 / 动图 / 图片", L"*.mp4;*.mkv;*.mov;*.avi;*.webm;*.wmv;*.m4v;*.mpg;*.mpeg;*.ts"
+                                 L";*.gif;*.webp;*.apng;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff" },
         { L"所有文件", L"*.*" },
     };
     dialog->SetFileTypes(2, filters);
-    dialog->SetTitle(L"选择壁纸视频");
+    dialog->SetTitle(L"选择壁纸文件（类型自动识别）");
     dialog->SetOptions(FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
     if (FAILED(dialog->Show(nullptr))) return; // 用户取消
 
@@ -797,6 +925,51 @@ void SettingsController::ImportWallPaper() {
     }
     // 导入是后台线程回报的，这里先本地刷新一次，事件回调稍后还会再刷
     RefreshWallPaperControls();
+}
+
+// 目录型来源：图片文件夹 → 图片序列，含 index.html → 网页，含 .frag/.gltf → 着色器。
+// 具体是哪一种交给模块里的 classify_directory 判定，UI 不猜。
+void SettingsController::ImportWallPaperFolder() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    winrt::com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put())))) {
+        AppLog("wallpaper", "CoCreateInstance(FileOpenDialog) failed");
+        return;
+    }
+    dialog->SetTitle(L"选择壁纸文件夹（图片序列 / 网页 / 着色器）");
+    dialog->SetOptions(FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+    if (FAILED(dialog->Show(nullptr))) return;
+
+    winrt::com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put()))) return;
+    PWSTR picked = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &picked))) return;
+    std::wstring path(picked);
+    CoTaskMemFree(picked);
+
+    std::wstring id;
+    if (!wp->Import(path, id)) {
+        if (wallPaperStatus_) {
+            wallPaperStatus_.Text(L"导入文件夹失败：目录里没有可识别的内容"
+                                  L"（图片序列/含 index.html 的网页/含 .frag 或 .gltf 的着色器）");
+        }
+        return;
+    }
+    RefreshWallPaperControls();
+}
+
+void SettingsController::OpenWallPaperConfigDir() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    const std::wstring root = wp->GetSettings().libraryRoot;
+    if (root.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    ShellExecuteW(nullptr, L"open", root.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void SettingsController::RemoveSelectedWallPaper() {

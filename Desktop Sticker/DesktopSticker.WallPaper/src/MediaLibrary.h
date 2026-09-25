@@ -17,7 +17,11 @@ public:
     MediaLibrary(std::wstring root, WallPaperStore& store);
 
     std::vector<WallPaperItem> List() const;
+    // 导入来源可以是文件（视频/动图/图片）也可以是目录（图片序列/网页/着色器），
+    // 类型由 classify_file / classify_directory 自动判定
     bool Import(const std::wstring& srcPath, std::wstring& outId);
+    // 目录型来源：图片文件夹 → frames/、网页文件夹 → web/、着色器文件夹 → shader/
+    bool ImportDirectory(const std::wstring& srcDir, std::wstring& outId);
     bool Rename(const std::wstring& id, const std::wstring& name);
     bool Remove(const std::wstring& id);
     bool Update(const std::wstring& id, const std::function<void(WallPaperItem&)>& mutate);

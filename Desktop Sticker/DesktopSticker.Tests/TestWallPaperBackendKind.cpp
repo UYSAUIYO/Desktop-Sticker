@@ -99,3 +99,34 @@ TEST(BackendKind_NaturalSortIsCaseInsensitiveAndStrict) {
     ASSERT_STREQ(L"a.png", out[0]);
     ASSERT_STREQ(L"B.png", out[1]);
 }
+
+// ---- ② 图片序列：目录内容判定与库内子目录约定 ----
+
+TEST(BackendKind_DirectoryOfGifsIsASequence) {
+    // 一组动图的常见形态：文件夹里只有 .gif
+    BackendKind k{};
+    ASSERT_TRUE(classify_directory({ L"a.gif", L"b.gif" }, k) && k == BackendKind::ImageSequence);
+    ASSERT_TRUE(classify_directory({ L"a.apng" }, k) && k == BackendKind::ImageSequence);
+}
+
+TEST(BackendKind_DirectoryOfMixedCaseImagesIsASequence) {
+    BackendKind k{};
+    ASSERT_TRUE(classify_directory({ L"A.PNG", L"b.JpG" }, k) && k == BackendKind::ImageSequence);
+}
+
+TEST(BackendKind_NaturalSortKeepsGifFrames) {
+    const auto out = natural_sort_image_frames({ L"2.gif", L"10.gif", L"1.gif" });
+    ASSERT_EQ(static_cast<size_t>(3), out.size());
+    ASSERT_STREQ(L"1.gif", out[0]);
+    ASSERT_STREQ(L"2.gif", out[1]);
+    ASSERT_STREQ(L"10.gif", out[2]);
+}
+
+TEST(BackendKind_ContentSubdirMatchesLibraryLayout) {
+    ASSERT_STREQ(L"frames", backend_kind_content_subdir(BackendKind::ImageSequence));
+    ASSERT_STREQ(L"web", backend_kind_content_subdir(BackendKind::Web));
+    ASSERT_STREQ(L"shader", backend_kind_content_subdir(BackendKind::Shader3D));
+    // 文件型条目内容就是 source.<ext>，没有子目录
+    ASSERT_STREQ(L"", backend_kind_content_subdir(BackendKind::Video));
+    ASSERT_STREQ(L"", backend_kind_content_subdir(BackendKind::AnimatedImage));
+}

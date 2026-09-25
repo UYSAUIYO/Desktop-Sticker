@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
@@ -10,6 +10,10 @@
     <ProjectGuid>{33333333-4444-5555-6666-777777777777}</ProjectGuid>
     <RootNamespace>DesktopStickerWallPaper</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <!-- WebView2：静态 loader，理由见文件末尾的 Import 注释 -->
+  <PropertyGroup>
+    <WebView2LoaderPreference>Static</WebView2LoaderPreference>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -46,7 +50,7 @@
       <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -67,7 +71,7 @@
       <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -103,6 +107,8 @@
     <ClInclude Include="src\AudioSource.h" />
     <ClInclude Include="src\WallpaperBackend.h" />
     <ClInclude Include="src\VideoBackend.h" />
+    <ClInclude Include="src\WebBackend.h" />
+    <ClInclude Include="src\ImageSequenceBackend.h" />
     <ClInclude Include="src\AudioEngine.h" />
     <ClInclude Include="src\FfmpegApi.h" />
     <ClInclude Include="src\FfmpegTranscoder.h" />
@@ -127,6 +133,8 @@
     <ClCompile Include="src\AudioSources.cpp" />
     <ClCompile Include="src\FfmpegTranscoder.cpp" />
     <ClCompile Include="src\BackendRegistry.cpp" />
+    <ClCompile Include="src\WebBackend.cpp" />
+    <ClCompile Include="src\ImageSequenceBackend.cpp" />
     <ClCompile Include="src\VideoBackend.cpp" />
     <ClCompile Include="src\FrameSchedulerLoop.cpp" />
     <ClCompile Include="src\FullscreenDetector.cpp" />
@@ -137,5 +145,11 @@
     <ClCompile Include="src\WallPaperWindow.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets"></ImportGroup>
+  <ImportGroup Label="ExtensionTargets">
+    <!-- ③ Web 壁纸后端：只取包含目录与 loader。
+         用 Static loader（见上面的 WebView2LoaderPreference）是刻意的：本 DLL 由宿主
+         LoadLibrary 动态加载，多一个 WebView2Loader.dll 的导入依赖会让"缺这个文件"
+         升级成"整个壁纸模块不可用"，而缺 WebView2 运行时只该让 ③ 不可用。 -->
+    <Import Project="$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets')" />
+  </ImportGroup>
 </Project>

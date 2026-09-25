@@ -28,6 +28,9 @@
 #include <audioclient.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#include <wrl/implements.h>
+#include <wrl/event.h>
+#include "WebView2.h"   // ③ Web 壁纸后端（自呈现型）
 
 #include <algorithm>
 #include <cstdint>

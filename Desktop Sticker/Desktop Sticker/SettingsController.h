@@ -25,6 +25,8 @@ private:
     void SaveWallPaper();
     void RefreshWallPaperControls();
     void ImportWallPaper();
+    void ImportWallPaperFolder();
+    void OpenWallPaperConfigDir();
     void RemoveSelectedWallPaper();
     void RegenerateSelectedVariant();
     void ChangeWallPaperRoot();
@@ -55,12 +57,18 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseLockSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperSpeedCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperAudioSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Slider wallPaperVolumeSlider_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperVolumeLabel_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::GridView wallPaperGrid_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperStatus_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportButton_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportFolderButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperRemoveButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperVariantButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperChangeRootButton_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperOpenConfigButton_{ nullptr };
 };
 
 } // namespace desktopsticker::app

@@ -24,6 +24,12 @@ struct BackendContext {
     std::wstring exeDir;               // 内置资源所在
     std::wstring libraryRoot;          // 壁纸库根
     AudioEngine* audio = nullptr;      // 可为 nullptr（无音频设备时）
+
+    // 视觉宿主型后端（③ Web）用：把自己的 DComp 视觉挂成根 / 交还根。
+    // 直接回调而不是把 D3dContext 暴露出去，保持后端只认识这一对语义。
+    IDCompositionDevice* dcompDevice = nullptr;
+    std::function<bool(IDCompositionVisual*)> setRootVisual;
+    std::function<void()> restoreRootVisual;
 };
 
 struct BackendRequest {
