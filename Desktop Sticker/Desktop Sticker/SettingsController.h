@@ -24,6 +24,12 @@ private:
     void SaveConfig();
     void SaveWallPaper();
     void RefreshWallPaperControls();
+    void ImportWallPaper();
+    void RemoveSelectedWallPaper();
+    void RegenerateSelectedVariant();
+    void ChangeWallPaperRoot();
+    // 取壁纸网格当前选中项的 id；未选中返回空
+    std::wstring SelectedWallPaperId() const;
 
     Host* host_ = nullptr;
     bool visible_ = false;
@@ -49,11 +55,12 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseLockSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
-    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperList_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::GridView wallPaperGrid_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperStatus_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperRemoveButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperVariantButton_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperChangeRootButton_{ nullptr };
 };
 
 } // namespace desktopsticker::app

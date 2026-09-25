@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <shobjidl.h>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -63,21 +64,36 @@ void SettingsController::EnsureWindow() {
     const auto cardStroke = dark ? Solid(0x12, 0xFF, 0xFF, 0xFF) : Solid(0x0F, 0x00, 0x00, 0x00);
     const auto textSecondary = dark ? Solid(0x97, 0xFF, 0xFF, 0xFF) : Solid(0x8A, 0x00, 0x00, 0x00);
 
-    auto scroll = ScrollViewer();
-    auto root = StackPanel();
-    root.Spacing(4);
-    root.MaxWidth(1000);
-    root.Padding(ThicknessHelper::FromLengths(36, 4, 36, 36));
-    root.HorizontalAlignment(HorizontalAlignment::Center);
-    if (!micaOk) {
-        root.Background(dark ? Solid(0xFF, 0x20, 0x20, 0x20) : Solid(0xFF, 0xF3, 0xF3, 0xF3));
-    }
-    scroll.Content(root);
-    window_.Content(scroll);
+    // 两个二级页面的内容栈：贴纸（既有设置）与桌面壁纸，由左侧 NavigationView 切换。
+    // 不引入 Frame/Page 导航（需要 XAML 页面文件），改用 NavigationView + 两个 ScrollViewer
+    // 换 Content，保持本文件"全代码式构建"的风格。
+    auto makePageRoot = [&]() {
+        auto sp = StackPanel();
+        sp.Spacing(4);
+        sp.MaxWidth(1000);
+        sp.Padding(ThicknessHelper::FromLengths(36, 4, 36, 36));
+        sp.HorizontalAlignment(HorizontalAlignment::Center);
+        if (!micaOk) {
+            sp.Background(dark ? Solid(0xFF, 0x20, 0x20, 0x20) : Solid(0xFF, 0xF3, 0xF3, 0xF3));
+        }
+        return sp;
+    };
+    auto stickerRoot = makePageRoot();
+    auto wallPaperRoot = makePageRoot();
+
+    auto stickerScroll = ScrollViewer();
+    stickerScroll.Content(stickerRoot);
+    auto wallPaperScroll = ScrollViewer();
+    wallPaperScroll.Content(wallPaperRoot);
+
+    // 下面既有卡片构建代码全部指向贴纸页
+    auto& root = stickerRoot;
+
     window_.Title(L"Desktop Sticker 设置");
-    // 尺寸按系统 DPI 换算为物理像素（AppWindow::Resize 使用物理像素）
+
+    // 尺寸按系统 DPI 换算为物理像素（AppWindow::Resize 使用物理像素）；多留出左侧导航宽度
     const float scale = static_cast<float>(GetDpiForSystem()) / 96.0f;
-    window_.AppWindow().Resize({static_cast<int>(980 * scale), static_cast<int>(720 * scale)});
+    window_.AppWindow().Resize({static_cast<int>(1120 * scale), static_cast<int>(760 * scale)});
     // 深色下显式给标题栏上色（解包应用的标题栏不一定跟随应用主题）
     if (dark) {
         auto tb = window_.AppWindow().TitleBar();
@@ -94,24 +110,24 @@ void SettingsController::EnsureWindow() {
 
     // —— 构建辅助：分区标题 / 分组容器 / 设置卡片（左：图标+标题+描述，右：控件） ——
     auto pageTitle = TextBlock();
-    pageTitle.Text(L"设置");
+    pageTitle.Text(L"贴纸");
     pageTitle.FontSize(28);
     pageTitle.FontWeight(Microsoft::UI::Text::FontWeights::SemiBold());
     pageTitle.Margin(ThicknessHelper::FromLengths(0, 16, 0, 4));
     root.Children().Append(pageTitle);
 
-    auto section = [&](const wchar_t* text) {
+    auto section = [&](StackPanel const& into, const wchar_t* text) {
         auto t = TextBlock();
         t.Text(text);
         t.FontSize(16);
         t.FontWeight(Microsoft::UI::Text::FontWeights::SemiBold());
         t.Margin(ThicknessHelper::FromLengths(0, 26, 0, 8));
-        root.Children().Append(t);
+        into.Children().Append(t);
     };
-    auto group = [&]() {
+    auto group = [&](StackPanel const& into) {
         auto sp = StackPanel();
         sp.Spacing(4);
-        root.Children().Append(sp);
+        into.Children().Append(sp);
         return sp;
     };
 
@@ -177,8 +193,8 @@ void SettingsController::EnsureWindow() {
     };
 
     // —— 搜索设置 ——
-    section(L"搜索");
-    auto searchGroup = group();
+    section(stickerRoot, L"搜索");
+    auto searchGroup = group(stickerRoot);
 
     searchDesktopSwitch_ = ToggleSwitch();
     placeRight(makeCard(searchGroup, L"\uE721", L"搜索桌面内容",
@@ -205,8 +221,8 @@ void SettingsController::EnsureWindow() {
     followThemeSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
 
     // —— 热键设置 ——
-    section(L"热键");
-    auto hotkeyGroup = group();
+    section(stickerRoot, L"热键");
+    auto hotkeyGroup = group(stickerRoot);
 
     hotkeyModeCombo_ = ComboBox();
     hotkeyModeCombo_.MinWidth(180);
@@ -227,8 +243,8 @@ void SettingsController::EnsureWindow() {
     hotkeyModeCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveConfig(); });
 
     // —— 磁贴设置 ——
-    section(L"磁贴");
-    auto tileGroup = group();
+    section(stickerRoot, L"磁贴");
+    auto tileGroup = group(stickerRoot);
 
     zoneCardsCombo_ = ComboBox();
     zoneCardsCombo_.MinWidth(180);
@@ -269,8 +285,8 @@ void SettingsController::EnsureWindow() {
     rowSpacingBox_.ValueChanged([this](winrt::Windows::Foundation::IInspectable const&, NumberBoxValueChangedEventArgs const&) { SaveConfig(); });
 
     // —— 应用管理 ——
-    section(L"应用管理");
-    auto appGroup = group();
+    section(stickerRoot, L"应用管理");
+    auto appGroup = group(stickerRoot);
 
     appPathBox_ = TextBox();
     appPathBox_.Width(300);
@@ -330,8 +346,8 @@ void SettingsController::EnsureWindow() {
     });
 
     // —— 小组件 ——
-    section(L"小组件");
-    auto widgetGroup = group();
+    section(stickerRoot, L"小组件");
+    auto widgetGroup = group(stickerRoot);
 
     clockSwitch_ = ToggleSwitch();
     placeRight(makeCard(widgetGroup, L"\uE823", L"桌面时钟",
@@ -339,9 +355,133 @@ void SettingsController::EnsureWindow() {
                clockSwitch_);
     clockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
 
+    // ============ 第二个二级页面：桌面壁纸 ============
+    // 本块构建的内容全部挂在 wallPaperRoot 上，由左侧导航切换显示。
+    {
+        auto wpTitle = TextBlock();
+        wpTitle.Text(L"桌面壁纸");
+        wpTitle.FontSize(28);
+        wpTitle.FontWeight(Microsoft::UI::Text::FontWeights::SemiBold());
+        wpTitle.Margin(ThicknessHelper::FromLengths(0, 16, 0, 4));
+        wallPaperRoot.Children().Append(wpTitle);
+    }
+    section(wallPaperRoot, L"播放设置");
+    auto wallPaperGroup = group(wallPaperRoot);
+
+    wallPaperSwitch_ = ToggleSwitch();
+    placeRight(makeCard(wallPaperGroup, L"\uE786", L"启用动态壁纸",
+                        L"把视频作为桌面壁纸播放，位于桌面图标与分区卡片之下"),
+               wallPaperSwitch_);
+    wallPaperSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
+    wallPaperVariantCombo_ = ComboBox();
+    wallPaperVariantCombo_.MinWidth(170);
+    {
+        auto v0 = ComboBoxItem();
+        v0.Content(box_value(L"原画"));
+        auto v1 = ComboBoxItem();
+        v1.Content(box_value(L"均衡副本"));
+        auto v2 = ComboBoxItem();
+        v2.Content(box_value(L"省电副本"));
+        wallPaperVariantCombo_.Items().Append(v0);
+        wallPaperVariantCombo_.Items().Append(v1);
+        wallPaperVariantCombo_.Items().Append(v2);
+    }
+    placeRight(makeCard(wallPaperGroup, L"\uE9D9", L"播放档位",
+                        L"原画优先；所选副本不存在时自动回落到原画"),
+               wallPaperVariantCombo_);
+    wallPaperVariantCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveWallPaper(); });
+
+    wallPaperPauseFullscreenSwitch_ = ToggleSwitch();
+    placeRight(makeCard(wallPaperGroup, L"\uE740", L"全屏时暂停",
+                        L"检测到覆盖整个屏幕的应用时停止播放，切回桌面自动恢复"),
+               wallPaperPauseFullscreenSwitch_);
+    wallPaperPauseFullscreenSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
+    wallPaperPauseLockSwitch_ = ToggleSwitch();
+    placeRight(makeCard(wallPaperGroup, L"\uE72E", L"锁屏或息屏时暂停",
+                        L"会话锁定或显示器关闭时停止播放"),
+               wallPaperPauseLockSwitch_);
+    wallPaperPauseLockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
+    wallPaperUserPauseSwitch_ = ToggleSwitch();
+    placeRight(makeCard(wallPaperGroup, L"\uE769", L"手动暂停",
+                        L"临时停止播放，不影响其他设置"),
+               wallPaperUserPauseSwitch_);
+    wallPaperUserPauseSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
+    // 壁纸库卡片：整宽（列表 + 操作 + 状态），不走 makeCard 的左右两列布局
+    {
+        auto border = Border();
+        border.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+        border.Background(cardBg);
+        border.BorderBrush(cardStroke);
+        border.BorderThickness(ThicknessHelper::FromLengths(1, 1, 1, 1));
+        border.Padding(ThicknessHelper::FromLengths(20, 12, 20, 12));
+
+        auto stack = StackPanel();
+        stack.Spacing(8);
+
+        auto header = TextBlock();
+        header.Text(L"壁纸库");
+        header.FontSize(14);
+        stack.Children().Append(header);
+
+        wallPaperGrid_ = GridView();
+        wallPaperGrid_.Height(300);
+        wallPaperGrid_.SelectionMode(ListViewSelectionMode::Single);
+        stack.Children().Append(wallPaperGrid_);
+        wallPaperGrid_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveWallPaper(); });
+
+        auto buttons = StackPanel();
+        buttons.Orientation(Orientation::Horizontal);
+        buttons.Spacing(8);
+
+        wallPaperImportButton_ = Button();
+        wallPaperImportButton_.Content(box_value(L"导入视频…"));
+        wallPaperImportButton_.MinWidth(104);
+        buttons.Children().Append(wallPaperImportButton_);
+        wallPaperImportButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { ImportWallPaper(); });
+
+        wallPaperRemoveButton_ = Button();
+        wallPaperRemoveButton_.Content(box_value(L"删除选中"));
+        wallPaperRemoveButton_.MinWidth(92);
+        buttons.Children().Append(wallPaperRemoveButton_);
+        wallPaperRemoveButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { RemoveSelectedWallPaper(); });
+
+        wallPaperVariantButton_ = Button();
+        wallPaperVariantButton_.Content(box_value(L"重新生成副本"));
+        wallPaperVariantButton_.MinWidth(116);
+        buttons.Children().Append(wallPaperVariantButton_);
+        wallPaperVariantButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { RegenerateSelectedVariant(); });
+
+        stack.Children().Append(buttons);
+
+        auto buttons2 = StackPanel();
+        buttons2.Orientation(Orientation::Horizontal);
+        buttons2.Spacing(8);
+
+        wallPaperChangeRootButton_ = Button();
+        wallPaperChangeRootButton_.Content(box_value(L"更改存储位置…"));
+        wallPaperChangeRootButton_.MinWidth(132);
+        buttons2.Children().Append(wallPaperChangeRootButton_);
+        wallPaperChangeRootButton_.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { ChangeWallPaperRoot(); });
+
+        stack.Children().Append(buttons2);
+
+        wallPaperStatus_ = TextBlock();
+        wallPaperStatus_.FontSize(12);
+        wallPaperStatus_.Foreground(textSecondary);
+        wallPaperStatus_.TextWrapping(TextWrapping::Wrap);
+        stack.Children().Append(wallPaperStatus_);
+
+        border.Child(stack);
+        wallPaperGroup.Children().Append(border);
+    }
+
     // —— 系统 ——
-    section(L"系统");
-    auto sysGroup = group();
+    section(stickerRoot, L"系统");
+    auto sysGroup = group(stickerRoot);
 
     auto restoreButton = Button();
     restoreButton.Content(box_value(L"恢复"));
@@ -352,6 +492,50 @@ void SettingsController::EnsureWindow() {
     restoreButton.Click([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) {
         if (host_ && host_->Module()) host_->Module()->RestoreDesktop();
     });
+
+    // ============ 左侧导航：贴纸 / 桌面壁纸 ============
+    {
+        auto nav = NavigationView();
+        nav.PaneDisplayMode(NavigationViewPaneDisplayMode::Left);
+        nav.IsBackButtonVisible(NavigationViewBackButtonVisible::Collapsed);
+        nav.IsPaneToggleButtonVisible(false); // 固定展开，避免窄窗时折叠成图标条
+        nav.IsSettingsVisible(false);
+        nav.OpenPaneLength(188);
+
+        auto makeNavItem = [&](const wchar_t* glyph, const wchar_t* label, const wchar_t* tag) {
+            auto item = NavigationViewItem();
+            item.Content(box_value(label));
+            item.Tag(box_value(tag));
+            auto icon = FontIcon();
+            icon.Glyph(glyph);
+            icon.FontFamily(Media::FontFamily(L"Segoe Fluent Icons"));
+            item.Icon(icon);
+            nav.MenuItems().Append(item);
+            return item;
+        };
+        auto stickerItem = makeNavItem(L"\uE790", L"贴纸", L"sticker");
+        makeNavItem(L"\uE786", L"桌面壁纸", L"wallpaper");
+
+        nav.Content(stickerScroll);
+        nav.SelectedItem(stickerItem);
+
+        // 切换页面：只换 Content，两个页面的控件都保持存活（避免重建丢失壁纸状态）
+        nav.SelectionChanged([stickerScroll, wallPaperScroll](
+                                 winrt::Windows::Foundation::IInspectable const& sender,
+                                 NavigationViewSelectionChangedEventArgs const&) {
+            auto view = sender.try_as<NavigationView>();
+            if (!view) return;
+            std::wstring tag;
+            if (auto nvi = view.SelectedItem().try_as<NavigationViewItem>()) {
+                tag = unbox_value_or<hstring>(nvi.Tag(), L"").c_str();
+            }
+            view.Content(tag == L"wallpaper"
+                             ? (winrt::Windows::Foundation::IInspectable)wallPaperScroll
+                             : (winrt::Windows::Foundation::IInspectable)stickerScroll);
+        });
+
+        window_.Content(nav);
+    }
 
     // 从配置加载
     auto cfg = host_->Module()->GetConfig();
@@ -365,6 +549,7 @@ void SettingsController::EnsureWindow() {
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
     rowSpacingBox_.Value(static_cast<double>(cfg.zoneRowSpacing));
     RefreshApps();
+    RefreshWallPaperControls(); // 壁纸状态由模块持有，窗口重建后必须重新拉取
     loading_ = false;
 }
 
@@ -451,17 +636,18 @@ void SettingsController::RefreshWallPaperControls() {
     if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsEnabled(available);
     if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsEnabled(available);
     if (wallPaperVariantCombo_) wallPaperVariantCombo_.IsEnabled(available);
-    if (wallPaperList_) wallPaperList_.IsEnabled(available);
+    if (wallPaperGrid_) wallPaperGrid_.IsEnabled(available);
     if (wallPaperImportButton_) wallPaperImportButton_.IsEnabled(available);
     if (wallPaperRemoveButton_) wallPaperRemoveButton_.IsEnabled(available);
     if (wallPaperVariantButton_) wallPaperVariantButton_.IsEnabled(available);
+    if (wallPaperChangeRootButton_) wallPaperChangeRootButton_.IsEnabled(available);
 
     if (!available) {
         wallPaperSwitch_.IsOn(false);
         if (wallPaperStatus_) {
             wallPaperStatus_.Text(L"动态壁纸不可用（组件缺失，或存储位置校验未通过；详见 debug.log）");
         }
-        if (wallPaperList_) wallPaperList_.Items().Clear();
+        if (wallPaperGrid_) wallPaperGrid_.Items().Clear();
         wallpaperLoading_ = false;
         return;
     }
@@ -477,47 +663,55 @@ void SettingsController::RefreshWallPaperControls() {
         wallPaperVariantCombo_.SelectedIndex(index);
     }
 
-    if (wallPaperList_) {
-        wallPaperList_.Items().Clear();
+    if (wallPaperGrid_) {
+        wallPaperGrid_.Items().Clear();
         const auto items = wp->ListItems();
+        const auto rootPath = std::filesystem::path(settings.libraryRoot);
+        // 未生成封面时的占位底色（本函数与 EnsureWindow 不共享局部配色变量）
+        const auto placeholder = Solid(0x38, 0x80, 0x80, 0x80);
+
         for (const auto& item : items) {
             // 缩略图直接读库里生成好的 poster.png（比把 HICON 转成 WinUI 图像源简单可靠），
-            // 尚未生成时退回文件名文字。
-            auto row = ListViewItem();
-            auto rowPanel = StackPanel();
-            rowPanel.Orientation(Orientation::Horizontal);
-            rowPanel.Spacing(8);
+            // 尚未生成时用底色占位，避免网格出现空洞。
+            auto frame = Border();
+            frame.Width(196);
+            frame.Height(110);
+            frame.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
+            frame.Background(placeholder);
 
-            const std::wstring poster =
-                std::filesystem::path(settings.libraryRoot) / L"media" / item.id / L"poster.png";
+            const auto poster = rootPath / L"media" / item.id / L"poster.png";
             std::error_code ec;
             if (std::filesystem::is_regular_file(poster, ec)) {
                 auto image = Microsoft::UI::Xaml::Controls::Image();
-                image.Width(48);
-                image.Height(27);
                 image.Stretch(Microsoft::UI::Xaml::Media::Stretch::UniformToFill);
                 auto bitmap = Microsoft::UI::Xaml::Media::Imaging::BitmapImage();
-                bitmap.UriSource(winrt::Windows::Foundation::Uri(poster));
+                bitmap.UriSource(winrt::Windows::Foundation::Uri(poster.wstring()));
                 image.Source(bitmap);
-                rowPanel.Children().Append(image);
+                frame.Child(image);
             }
 
             auto label = TextBlock();
-            label.Text(item.name);
-            label.VerticalAlignment(VerticalAlignment::Center);
-            rowPanel.Children().Append(label);
+            label.Text(item.name + (item.hasBalanced || item.hasPowerSaver ? L" · 有副本" : L""));
+            label.FontSize(12);
+            label.MaxWidth(196);
+            label.TextTrimming(Microsoft::UI::Xaml::TextTrimming::CharacterEllipsis);
 
-            row.Content(rowPanel);
-            row.Tag(box_value(item.id));
-            wallPaperList_.Items().Append(row);
+            auto tile = StackPanel();
+            tile.Spacing(4);
+            tile.Tag(box_value(item.id));   // Tag 挂在 tile 上，供选中项读取 id
+            tile.Children().Append(frame);
+            tile.Children().Append(label);
+
+            wallPaperGrid_.Items().Append(tile);
         }
+
         // 选中当前壁纸
-        for (uint32_t i = 0; i < wallPaperList_.Items().Size(); ++i) {
-            auto row = wallPaperList_.Items().GetAt(i).try_as<ListViewItem>();
-            if (!row) continue;
-            const auto id = unbox_value_or<hstring>(row.Tag(), L"");
+        for (uint32_t i = 0; i < wallPaperGrid_.Items().Size(); ++i) {
+            auto tile = wallPaperGrid_.Items().GetAt(i).try_as<FrameworkElement>();
+            if (!tile) continue;
+            const auto id = unbox_value_or<hstring>(tile.Tag(), L"");
             if (std::wstring(id.c_str()) == settings.activeId) {
-                wallPaperList_.SelectedIndex(static_cast<int>(i));
+                wallPaperGrid_.SelectedIndex(static_cast<int>(i));
                 break;
             }
         }
@@ -546,17 +740,125 @@ void SettingsController::SaveWallPaper() {
                            : index == 1 ? VariantKind::Balanced
                                         : VariantKind::Original;
     }
-    if (wallPaperList_) {
-        const int sel = wallPaperList_.SelectedIndex();
-        if (sel >= 0 && static_cast<uint32_t>(sel) < wallPaperList_.Items().Size()) {
-            auto row = wallPaperList_.Items().GetAt(static_cast<uint32_t>(sel)).try_as<ListViewItem>();
-            if (row) {
-                settings.activeId = std::wstring(unbox_value_or<hstring>(row.Tag(), L"").c_str());
+    if (wallPaperGrid_) {
+        const int sel = wallPaperGrid_.SelectedIndex();
+        if (sel >= 0 && static_cast<uint32_t>(sel) < wallPaperGrid_.Items().Size()) {
+            auto tile = wallPaperGrid_.Items().GetAt(static_cast<uint32_t>(sel)).try_as<FrameworkElement>();
+            if (tile) {
+                settings.activeId = unbox_value_or<hstring>(tile.Tag(), L"").c_str();
             }
         }
     }
     wp->SetSettings(settings);
     if (wallPaperUserPauseSwitch_) wp->SetUserPaused(wallPaperUserPauseSwitch_.IsOn());
+}
+
+std::wstring SettingsController::SelectedWallPaperId() const {
+    if (!wallPaperGrid_) return {};
+    const int sel = wallPaperGrid_.SelectedIndex();
+    if (sel < 0 || static_cast<uint32_t>(sel) >= wallPaperGrid_.Items().Size()) return {};
+    auto tile = wallPaperGrid_.Items().GetAt(static_cast<uint32_t>(sel)).try_as<FrameworkElement>();
+    if (!tile) return {};
+    return unbox_value_or<hstring>(tile.Tag(), L"").c_str();
+}
+
+void SettingsController::ImportWallPaper() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    // 用 Win32 通用文件对话框：解包 WinUI3 下无需额外的 WinRT 拾取器 interop 初始化
+    winrt::com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put())))) {
+        AppLog("wallpaper", "CoCreateInstance(FileOpenDialog) failed");
+        return;
+    }
+
+    const COMDLG_FILTERSPEC filters[] = {
+        { L"视频文件", L"*.mp4;*.mkv;*.mov;*.avi;*.webm;*.wmv;*.m4v;*.mpg;*.mpeg" },
+        { L"所有文件", L"*.*" },
+    };
+    dialog->SetFileTypes(2, filters);
+    dialog->SetTitle(L"选择壁纸视频");
+    dialog->SetOptions(FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+    if (FAILED(dialog->Show(nullptr))) return; // 用户取消
+
+    winrt::com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put()))) return;
+    PWSTR picked = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &picked))) return;
+    std::wstring path(picked);
+    CoTaskMemFree(picked);
+
+    std::wstring id;
+    if (!wp->Import(path, id)) {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"导入失败，详见 %APPDATA%\\DesktopSticker\\debug.log");
+        return;
+    }
+    // 导入是后台线程回报的，这里先本地刷新一次，事件回调稍后还会再刷
+    RefreshWallPaperControls();
+}
+
+void SettingsController::RemoveSelectedWallPaper() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    const std::wstring id = SelectedWallPaperId();
+    if (id.empty()) {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"请先在列表中选择一个壁纸");
+        return;
+    }
+    wp->Remove(id);
+    RefreshWallPaperControls();
+}
+
+void SettingsController::RegenerateSelectedVariant() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    const std::wstring id = SelectedWallPaperId();
+    if (id.empty()) {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"请先在列表中选择一个壁纸");
+        return;
+    }
+
+    // 档位选"原画"时没有副本可生成，按均衡档生成
+    auto settings = wp->GetSettings();
+    const auto kind = settings.preferred == VariantKind::Original ? VariantKind::Balanced
+                                                                 : settings.preferred;
+    if (wp->RegenerateVariant(id, kind)) {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"已在后台生成性能副本，完成后列表会自动刷新…");
+    } else {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"生成副本失败：缺少 tools\\ffmpeg\\ffmpeg.exe 或条目不存在");
+    }
+}
+
+void SettingsController::ChangeWallPaperRoot() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    winrt::com_ptr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.put())))) {
+        return;
+    }
+    dialog->SetTitle(L"选择新的壁纸库位置");
+    dialog->SetOptions(FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+    if (FAILED(dialog->Show(nullptr))) return; // 用户取消
+
+    winrt::com_ptr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.put()))) return;
+    PWSTR picked = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &picked))) return;
+    const std::wstring path(picked);
+    CoTaskMemFree(picked);
+
+    // 复制 + 逐文件校验 + 切换记录；旧位置保留不删（可回滚）
+    if (!wp->ChangeLibraryRoot(path)) {
+        if (wallPaperStatus_) wallPaperStatus_.Text(L"更改存储位置失败（目标不可写或复制校验不通过），详见 debug.log");
+        return;
+    }
+    RefreshWallPaperControls();
 }
 
 } // namespace desktopsticker::app
