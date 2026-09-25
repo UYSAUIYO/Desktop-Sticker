@@ -35,7 +35,7 @@ Run tests:
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
 cp DesktopSticker.WallPaper.dll Tests/  # ditto
-./Tests/DesktopSticker.Tests.exe        # expect: 122 passed, 0 failed
+./Tests/DesktopSticker.Tests.exe        # expect: 129 passed, 0 failed
 ```
 
 FFmpeg payload (dynamic wallpaper's decoder fallback + transcode backend):
@@ -100,6 +100,7 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - **Wallpaper storage placement**: library root is chosen once (largest free **fixed** drive — removable/network/optical are excluded so an unplugged USB drive can't be picked) and then pinned; startup re-verifies volume serial + root directory file ID so a reused drive letter fails closed. It never auto-migrates; "change location" copies, verifies and keeps the old copy.
 - **FFmpeg is dynamically loaded only** (`LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, never static-linked, no codec registered in Windows). `ffmpeg.exe` is invoked with an explicit argument array via `CreateProcessW` (no shell) and a timeout. Never write a transcode output over its input.
 - **Resource manager is read-only and must stay so**: it may only stat files and enumerate processes/threads/modules — never create, modify or delete anything. Storage scans and CPU/memory sampling run on worker threads; the storage scan in particular must not block the UI thread and only the newest in-flight request's result is delivered.
+- **The memory page only lists our own modules** (`is_own_module` in `resmon/Classify.h`): our exe / three feature DLLs, plus the bundled ffmpeg decode libraries — and the ffmpeg ones must actually resolve under `<exeDir>\ffmpeg\`, so a same-named library from System32 is never mistaken for our payload. System public DLLs, GPU drivers and third-party frameworks (including the self-contained Windows App SDK / DirectML / onnxruntime DLLs that live in our own directory) are excluded by design. Module ownership is decided from the **full path** (`GetModuleFileNameW`), never the base name.
 - **ResMon uses a plain Win32 window on purpose** (not WinUI), to avoid the XAML sub-window lifecycle traps documented above. `WebView2Loader.dll` must sit next to the EXE — the NuGet targets only copy it into the ResMon project's OutDir, so the EXE's `PostBuildEvent` copies it again.
 - **Thread names are load-bearing for the CPU tab**: `SetThreadDescription` is called at each thread's entry point (UI thread in `App.xaml.cpp`; the six worker threads in Features/WallPaper). If you add a thread, name it, or it shows as `线程 <tid>`.
 - **`layout.json` is versioned** (currently 7 — quad-column mirroring, per-column card count, dynamic card heights). Any change to the persisted shape needs a bumped version plus an auto-migration path; loaders must keep accepting old layouts without crashing.

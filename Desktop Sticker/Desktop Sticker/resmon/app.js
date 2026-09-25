@@ -140,7 +140,8 @@ function renderMemory(m) {
   document.getElementById('mem-ws').textContent = fmtBytes(m.workingSetBytes || 0);
   document.getElementById('mem-private').textContent = fmtBytes(m.privateBytes || 0);
   document.getElementById('mem-peak').textContent = fmtBytes(m.peakWorkingSetBytes || 0);
-  document.getElementById('mem-note').textContent = '按已加载模块的映像大小排序（不含虚拟大小）';
+  document.getElementById('mem-note').textContent =
+    '仅列出本程序自己的模块（自写代码 + 随包 ffmpeg 解码库），不含系统公共 DLL 与第三方框架；按映像大小排序';
 
   const tbody = document.getElementById('mem-modules');
   clear(tbody);

@@ -150,4 +150,24 @@ inline uint32_t category_color(StorageCategory c) {
     }
 }
 
+// 内存页只展示"我们自己的"模块：自写的 EXE / 三个功能 DLL，以及随包的 ffmpeg 解码库。
+// 系统公共 DLL（System32、显卡驱动、WinSxS）、第三方框架（Windows App SDK / onnxruntime /
+// DirectML / WebView2Loader）一律排除 —— 它们不是本程序的资源。
+inline bool is_own_module(const std::wstring& modulePath, const std::wstring& exeDir) {
+    using namespace detail;
+
+    const std::wstring name = lower(name_of(modulePath));
+    if (name == L"desktop_sticker.exe" || name == L"desktopsticker.features.dll" ||
+        name == L"desktopsticker.wallpaper.dll" || name == L"desktopsticker.resmon.dll") {
+        return true;
+    }
+
+    // ffmpeg 解码库：既要求 av*/sw* 前缀，又要求确实来自我们的 ffmpeg 负载目录，
+    // 避免把系统里同前缀的库误判成随包负载。
+    if (lower(ext_of(modulePath)) != L".dll") return false;
+    const bool ffmpegLike = name.rfind(L"av", 0) == 0 || name.rfind(L"sw", 0) == 0;
+    if (!ffmpegLike) return false;
+    return is_under(modulePath, trim_sep(exeDir) + L"\\ffmpeg");
+}
+
 } // namespace desktopsticker::resmon

@@ -145,7 +145,7 @@ private:
                                       static_cast<int64_t>(GetTickCount64()));
         }
         if (cmd == L"memory") {
-            return build_memory_response(memory_.Sample());
+            return build_memory_response(memory_.Sample(paths_.exeDir));
         }
         if (cmd == L"storage") {
             request_storage(); // 异步：重操作不阻塞 UI 线程

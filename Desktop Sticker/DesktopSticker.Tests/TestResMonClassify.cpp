@@ -97,3 +97,56 @@ TEST(Classify_RootWithTrailingSeparatorIsTolerated) {
     ASSERT_TRUE(classify_path(L"E:\\DesktopSticker\\Wallpaper\\a.mp4", r) ==
                 StorageCategory::Wallpaper);
 }
+
+// ---- 内存页的模块过滤：只认自写代码与随包 ffmpeg ----
+
+TEST(OwnModule_OurExeAndDlls) {
+    const std::wstring exe = L"C:\\App";
+    ASSERT_TRUE(is_own_module(L"C:\\App\\Desktop_Sticker.exe", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\DesktopSticker.Features.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\DesktopSticker.WallPaper.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\DesktopSticker.ResMon.dll", exe));
+}
+
+TEST(OwnModule_CaseInsensitive) {
+    ASSERT_TRUE(is_own_module(L"c:\\app\\desktop_sticker.exe", L"C:\\App"));
+}
+
+TEST(OwnModule_BundledFfmpegLibraries) {
+    const std::wstring exe = L"C:\\App";
+    ASSERT_TRUE(is_own_module(L"C:\\App\\ffmpeg\\avcodec-62.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\ffmpeg\\avformat-62.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\ffmpeg\\avutil-60.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\ffmpeg\\swscale-9.dll", exe));
+    ASSERT_TRUE(is_own_module(L"C:\\App\\ffmpeg\\swresample-6.dll", exe));
+}
+
+TEST(OwnModule_SystemAvLibraryIsNotOurs) {
+    // 同前缀但不在我们的 ffmpeg 负载目录里，绝不能算成随包负载
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\avcodec-99.dll", L"C:\\App"));
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\swscale-9.dll", L"C:\\App"));
+}
+
+TEST(OwnModule_SystemPublicDllsExcluded) {
+    const std::wstring exe = L"C:\\App";
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\SHELL32.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\windows.storage.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\ieframe.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\Windows.Media.dll", exe));
+}
+
+TEST(OwnModule_GpuDriverDllsExcluded) {
+    const std::wstring exe = L"C:\\App";
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\DriverStore\\FileRepository\\nv\\nvgpucomp64.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\Windows\\System32\\nvppex.dll", exe));
+}
+
+TEST(OwnModule_ThirdPartyFrameworksExcluded) {
+    // 自包含部署会把框架 DLL 放在程序目录里，但它们不是我们的资源
+    const std::wstring exe = L"C:\\App";
+    ASSERT_FALSE(is_own_module(L"C:\\App\\Microsoft.UI.Xaml.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\App\\onnxruntime.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\App\\DirectML.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\App\\WebView2Loader.dll", exe));
+    ASSERT_FALSE(is_own_module(L"C:\\App\\Microsoft.WindowsAppRuntime.dll", exe));
+}

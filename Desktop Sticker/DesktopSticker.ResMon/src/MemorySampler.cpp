@@ -1,9 +1,11 @@
 #include "pch.h"
 #include "MemorySampler.h"
 
+#include "desktopsticker/resmon/Classify.h"
+
 namespace desktopsticker::resmon {
 
-MemorySnapshot MemorySampler::Sample() {
+MemorySnapshot MemorySampler::Sample(const std::wstring& exeDir) {
     MemorySnapshot out;
 
     PROCESS_MEMORY_COUNTERS_EX mc{};
@@ -28,11 +30,13 @@ MemorySnapshot MemorySampler::Sample() {
                 MODULEINFO mi{};
                 if (!GetModuleInformation(proc, modules[i], &mi, sizeof(mi))) continue;
 
-                wchar_t name[MAX_PATH]{};
-                if (GetModuleBaseNameW(proc, modules[i], name, MAX_PATH) == 0) continue;
+                // 取完整路径做归属判定：仅靠基名无法区分系统库与随包负载
+                wchar_t full[MAX_PATH]{};
+                if (GetModuleFileNameW(modules[i], full, MAX_PATH) == 0) continue;
+                if (!is_own_module(full, exeDir)) continue;
 
                 ModuleRow row;
-                row.name = name;
+                row.name = detail::name_of(full);
                 row.imageBytes = mi.SizeOfImage;
                 out.modules.push_back(std::move(row));
             }
