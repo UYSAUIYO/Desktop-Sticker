@@ -100,6 +100,11 @@
     <ClCompile Include="TestResMonClassify.cpp" />
     <ClCompile Include="TestResMonCpuMath.cpp" />
     <ClCompile Include="TestResMonJson.cpp" />
+    <ClCompile Include="TestWallPaperBackendKind.cpp" />
+    <ClCompile Include="TestWallPaperFrameAdvance.cpp" />
+    <ClCompile Include="TestWallPaperClockPolicy.cpp" />
+    <ClCompile Include="TestWallPaperParamMerge.cpp" />
+    <ClCompile Include="TestWallPaperArbiter.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">

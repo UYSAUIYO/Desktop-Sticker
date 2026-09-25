@@ -91,6 +91,11 @@
     <ClInclude Include="include\desktopsticker\wallpaper\VariantPolicy.h" />
     <ClInclude Include="include\desktopsticker\wallpaper\FrameScheduler.h" />
     <ClInclude Include="include\desktopsticker\wallpaper\FfmpegCommand.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\BackendKind.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\FrameAdvance.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\ClockPolicy.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\ParamMerge.h" />
+    <ClInclude Include="include\desktopsticker\wallpaper\PresentationArbiter.h" />
     <ClInclude Include="src\D3dContext.h" />
     <ClInclude Include="src\DesktopHost.h" />
     <ClInclude Include="src\DriveInventory.h" />

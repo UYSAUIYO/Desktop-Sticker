@@ -40,6 +40,21 @@
     <ClInclude Include="include\desktopsticker\wallpaper\FfmpegCommand.h">
       <Filter>include\desktopsticker\wallpaper</Filter>
     </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\BackendKind.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\FrameAdvance.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\ClockPolicy.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\ParamMerge.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
+    <ClInclude Include="include\desktopsticker\wallpaper\PresentationArbiter.h">
+      <Filter>include\desktopsticker\wallpaper</Filter>
+    </ClInclude>
     <ClInclude Include="src\D3dContext.h">
       <Filter>src</Filter>
     </ClInclude>

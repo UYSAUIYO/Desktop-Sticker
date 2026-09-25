@@ -52,9 +52,19 @@ TEST(FfmpegCommand_UsesGivenEncoder) {
     ASSERT_STREQ(L"h264_mf", arg_after(a, L"-c:v"));
 }
 
-TEST(FfmpegCommand_NoAudioTrack) {
+// 壁纸支持出声（全局开关，默认静音），副本**必须保留音轨**：
+// 一旦丢音频，用户切到均衡/省电档就会突然没声音。
+TEST(FfmpegCommand_KeepsAudioTrack) {
     auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"libopenh264");
-    ASSERT_TRUE(contains(a, L"-an"));            // 壁纸静音，不输出音轨
+    ASSERT_FALSE(contains(a, L"-an"));                       // 绝不能静音
+    ASSERT_STREQ(L"aac", arg_after(a, L"-c:a"));             // 用 LGPL 兼容的内置 aac
+}
+
+TEST(FfmpegCommand_AudioCodecIsLgplSafe) {
+    // FDK-AAC 等有专利/许可问题，绝不能出现
+    auto a = build_transcode_args(L"a.mp4", L"b.mp4", VariantKind::Balanced, L"libopenh264");
+    ASSERT_FALSE(contains(a, L"libfdk_aac"));
+    ASSERT_FALSE(contains(a, L"libmp3lame"));
 }
 
 TEST(FfmpegCommand_PowerSaverUsesLowerBitrate) {
