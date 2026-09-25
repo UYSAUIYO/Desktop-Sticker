@@ -58,7 +58,8 @@ bool FfmpegApi::Load(const std::wstring& ffmpegDir) {
     HMODULE codec = load(L"avcodec-");
     HMODULE format = load(L"avformat-");
     HMODULE scale = load(L"swscale-");
-    if (!util || !codec || !format || !scale) return false;
+    HMODULE resample = load(L"swresample-");
+    if (!util || !codec || !format || !scale || !resample) return false;
 
     bool ok = true;
 #define DSTK_BIND(module, name)                                                  \
@@ -94,6 +95,10 @@ bool FfmpegApi::Load(const std::wstring& ffmpegDir) {
     DSTK_BIND(scale, sws_getContext);
     DSTK_BIND(scale, sws_scale);
     DSTK_BIND(scale, sws_freeContext);
+    DSTK_BIND(resample, swr_alloc_set_opts2);
+    DSTK_BIND(resample, swr_init);
+    DSTK_BIND(resample, swr_convert);
+    DSTK_BIND(resample, swr_free);
 #undef DSTK_BIND
 
     if (!ok) return false;

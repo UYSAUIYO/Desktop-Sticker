@@ -22,11 +22,16 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <mferror.h>
+#include <mmdeviceapi.h>
+#include <mmreg.h>
+#include <audioclient.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>

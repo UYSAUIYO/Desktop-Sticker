@@ -7,7 +7,7 @@
 // 保证"负载缺失不影响编译"，同时让完整构建拿到真实解码能力。
 #if defined(__has_include)
 #  if __has_include(<libavformat/avformat.h>) && __has_include(<libavcodec/avcodec.h>) && \
-      __has_include(<libswscale/swscale.h>)
+      __has_include(<libswscale/swscale.h>) && __has_include(<libswresample/swresample.h>)
 #    define DSTK_HAVE_FFMPEG_SDK 1
 #  endif
 #endif
@@ -18,6 +18,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 #pragma warning(pop)
@@ -63,6 +64,11 @@ public:
     DSTK_AV_FN(sws_getContext);
     DSTK_AV_FN(sws_scale);
     DSTK_AV_FN(sws_freeContext);
+    // swresample（音频兜底路径）
+    DSTK_AV_FN(swr_alloc_set_opts2);
+    DSTK_AV_FN(swr_init);
+    DSTK_AV_FN(swr_convert);
+    DSTK_AV_FN(swr_free);
 #undef DSTK_AV_FN
 #endif
 

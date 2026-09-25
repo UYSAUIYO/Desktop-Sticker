@@ -67,6 +67,12 @@
     <ClInclude Include="src\DriveInventory.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\AudioSource.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AudioEngine.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\FfmpegApi.h">
       <Filter>src</Filter>
     </ClInclude>
@@ -110,6 +116,12 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\FfmpegApi.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AudioEngine.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AudioSources.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\FfmpegTranscoder.cpp">
