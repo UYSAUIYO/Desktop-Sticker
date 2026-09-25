@@ -33,4 +33,24 @@ inline bool should_drop_to_catch_up(ClockMaster master, int64_t lagUs, int64_t t
     return lagUs > thresholdUs;
 }
 
+// 节拍用的时间取值：**必须与主时钟同源**。
+//
+// 这一层单独提出来是因为踩过坑：曾把 now 无条件取成音频时钟、而 master 仍判为 QPC，
+// 两个时钟纪元相差两个数量级（QPC 计数 vs 音频微秒），导致每帧等待被夹到上限、
+// 帧率掉到约 10fps。单测覆盖 choose_clock_master 是抓不到"取值与主时钟不一致"的。
+struct TimeSource {
+    ClockMaster master = ClockMaster::Qpc;
+    int64_t now100ns = 0;
+};
+
+inline TimeSource pick_time_source(const ClockInputs& in, int64_t qpc100ns, int64_t audioUs) {
+    ClockInputs inputs = in;
+    inputs.audioClockValid = inputs.audioClockValid && (audioUs >= 0);
+
+    TimeSource out;
+    out.master = choose_clock_master(inputs);
+    out.now100ns = (out.master == ClockMaster::Audio) ? audioUs * 10 : qpc100ns; // us → 100ns
+    return out;
+}
+
 } // namespace desktopsticker::wallpaper

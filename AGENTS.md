@@ -35,7 +35,7 @@ Run tests:
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
 cp DesktopSticker.WallPaper.dll Tests/  # ditto
-./Tests/DesktopSticker.Tests.exe        # expect: 192 passed, 0 failed
+./Tests/DesktopSticker.Tests.exe        # expect: 196 passed, 0 failed
 ```
 
 FFmpeg payload (dynamic wallpaper's decoder fallback + transcode backend):

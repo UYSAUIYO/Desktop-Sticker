@@ -53,3 +53,51 @@ TEST(ClockPolicy_ThresholdIsConfigurable) {
     ASSERT_FALSE(should_drop_to_catch_up(ClockMaster::Audio, 50000, 100000));
     ASSERT_TRUE(should_drop_to_catch_up(ClockMaster::Audio, 150000, 100000));
 }
+
+// ---- 回归：取值必须与主时钟同源 ----
+// 曾经 now 无条件取音频时钟而 master 判为 QPC，两个纪元相差两个数量级，卡到约 10fps。
+
+TEST(ClockPolicy_PickTimeUsesQpcWhenMasterIsQpc) {
+    ClockInputs in;
+    in.hasAudioSource = true;
+    in.audioMuted = true;          // 静音 → 主时钟是 QPC
+    in.audioClockValid = true;     // 音频时钟"有效"也不能拿来用
+
+    const auto src = pick_time_source(in, /*qpc100ns=*/1234567890123LL, /*audioUs=*/13730250LL);
+    ASSERT_TRUE(src.master == ClockMaster::Qpc);
+    ASSERT_EQ(1234567890123LL, src.now100ns);   // 必须是 QPC，不是 audioUs*10
+}
+
+TEST(ClockPolicy_PickTimeUsesAudioWhenMasterIsAudio) {
+    ClockInputs in;
+    in.hasAudioSource = true;
+    in.audioMuted = false;
+    in.audioClockValid = true;
+
+    const auto src = pick_time_source(in, 1234567890123LL, 13730250LL);
+    ASSERT_TRUE(src.master == ClockMaster::Audio);
+    ASSERT_EQ(137302500LL, src.now100ns);        // audioUs × 10
+}
+
+TEST(ClockPolicy_PickTimeFallsBackToQpcWhenAudioClockInvalid) {
+    ClockInputs in;
+    in.hasAudioSource = true;
+    in.audioMuted = false;
+    in.audioClockValid = false;    // 设备刚开、还没产出时钟
+
+    const auto src = pick_time_source(in, 999LL, 5000LL);
+    ASSERT_TRUE(src.master == ClockMaster::Qpc);
+    ASSERT_EQ(999LL, src.now100ns);
+}
+
+TEST(ClockPolicy_PickTimeTreatsNegativeAudioUsAsInvalid) {
+    // ClockUs() 用 -1 表示"无有效音频时钟"
+    ClockInputs in;
+    in.hasAudioSource = true;
+    in.audioMuted = false;
+    in.audioClockValid = true;
+
+    const auto src = pick_time_source(in, 777LL, -1LL);
+    ASSERT_TRUE(src.master == ClockMaster::Qpc);
+    ASSERT_EQ(777LL, src.now100ns);
+}

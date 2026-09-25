@@ -228,16 +228,13 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         ClockInputs inputs;
         inputs.hasAudioSource = (audio_ != nullptr);
         inputs.audioMuted = audio_ ? audio_->Muted() : true;
+        inputs.audioClockValid = true;   // 由 pick_time_source 按 audioUs 复核
 
-        int64_t now = qpc_100ns();
-        if (audio_) {
-            const int64_t audioUs = audio_->ClockUs();
-            if (audioUs >= 0) {
-                inputs.audioClockValid = true;
-                now = audioUs * 10;   // 微秒 → 100ns
-            }
-        }
-        const ClockMaster master = choose_clock_master(inputs);
+        // 取值与主时钟必须同源（见 ClockPolicy.h 的 TimeSource 注释：曾因此卡到约 10fps）
+        const int64_t audioUs = audio_ ? audio_->ClockUs() : -1;
+        const TimeSource src = pick_time_source(inputs, qpc_100ns(), audioUs);
+        const ClockMaster master = src.master;
+        const int64_t now = src.now100ns;
         if (master != lastMaster_) {
             // 两个时钟纪元不同，切换时必须重置期限，否则会瞬间"补上"巨量积压
             deadline = now;
