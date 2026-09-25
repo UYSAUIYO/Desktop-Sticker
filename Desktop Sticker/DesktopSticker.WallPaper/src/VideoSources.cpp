@@ -4,6 +4,7 @@
 #include "FfmpegApi.h"
 #include "Log.h"
 #include "Utf8.h"
+#include "desktopsticker/wallpaper/DecodeTarget.h"
 
 #include <atomic>
 
@@ -19,6 +20,7 @@ std::atomic<int> g_mfRefs{0};
 
 class MfVideoSource final : public IVideoSource {
 public:
+    MfVideoSource(int maxW, int maxH) : maxW_(maxW), maxH_(maxH) {}
     ~MfVideoSource() override { Close(); }
 
     bool Open(const std::wstring& path) override {
@@ -26,7 +28,11 @@ public:
 
         ComPtr<IMFAttributes> attrs;
         if (FAILED(MFCreateAttributes(&attrs, 1))) return false;
-        // 允许 Video Processor MFT 介入：硬解仍由 DXVA 完成，这里只是把输出转成 RGB32
+        // 允许 SourceReader 插入 Video Processor MFT，以便把解码输出转成 RGB32。
+        //
+        // 注意：这里**没有**配置硬件解码 —— 没有 MFCreateDXGIDeviceManager /
+        // MF_SOURCE_READER_D3D_MANAGER，也没有 MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS。
+        // 因此解码与 NV12→RGB32 转换都在 CPU 上跑，GPU 只负责我们自己的 D2D/DComp 上屏。
         attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
 
         if (FAILED(MFCreateSourceReaderFromURL(path.c_str(), attrs.Get(), &reader_))) {
@@ -34,23 +40,36 @@ public:
             return false;
         }
 
+        const DWORD videoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
         reader_->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS), FALSE);
-        reader_->SetStreamSelection(static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), TRUE);
+        reader_->SetStreamSelection(videoStream, TRUE);
 
-        ComPtr<IMFMediaType> outType;
-        if (FAILED(MFCreateMediaType(&outType))) return false;
-        outType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        outType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
-        if (FAILED(reader_->SetCurrentMediaType(
-                static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, outType.Get()))) {
-            wp_log("MF: no usable decoder/video stream for " + to_utf8(path));
-            Close();
-            return false;
+        // 源尺寸要从原生类型问：只有知道源多大才能算出等比的目标尺寸
+        UINT32 srcW = 0, srcH = 0;
+        {
+            ComPtr<IMFMediaType> nativeType;
+            if (SUCCEEDED(reader_->GetNativeMediaType(videoStream, 0, &nativeType))) {
+                MFGetAttributeSize(nativeType.Get(), MF_MT_FRAME_SIZE, &srcW, &srcH);
+            }
+        }
+        const ImageSize target = decode_target_size(static_cast<int>(srcW), static_cast<int>(srcH),
+                                                   maxW_, maxH_);
+
+        // 关键：把视频处理器当作"顺便缩放器"用。请求显示尺寸输出后，CPU 要转的
+        // 像素数按屏幕走而不是按源走 —— 4K 源在 1080p 屏上是 4 倍差距。
+        if (FAILED(set_output_type(videoStream, target))) {
+            if (target.width != static_cast<int>(srcW) || target.height != static_cast<int>(srcH)) {
+                wp_log("MF: scaled output rejected, decoding at source size");
+            }
+            if (FAILED(set_output_type(videoStream, {}))) {
+                wp_log("MF: no usable decoder/video stream for " + to_utf8(path));
+                Close();
+                return false;
+            }
         }
 
         ComPtr<IMFMediaType> current;
-        if (FAILED(reader_->GetCurrentMediaType(
-                static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &current))) {
+        if (FAILED(reader_->GetCurrentMediaType(videoStream, &current))) {
             Close();
             return false;
         }
@@ -67,7 +86,8 @@ public:
             return false;
         }
         wp_log("MF: opened " + to_utf8(path) + " " + std::to_string(width_) + "x" +
-               std::to_string(height_));
+               std::to_string(height_) + " (source " + std::to_string(srcW) + "x" +
+               std::to_string(srcH) + ")");
         return true;
     }
 
@@ -117,6 +137,19 @@ public:
     const char* Backend() const override { return "Media Foundation"; }
 
 private:
+    // size 为 {0,0} 表示不指定输出尺寸（按源分辨率解码）
+    HRESULT set_output_type(DWORD videoStream, const ImageSize& size) {
+        ComPtr<IMFMediaType> outType;
+        if (FAILED(MFCreateMediaType(&outType))) return E_FAIL;
+        outType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        outType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+        if (size.width > 0 && size.height > 0) {
+            MFSetAttributeSize(outType.Get(), MF_MT_FRAME_SIZE,
+                               static_cast<UINT32>(size.width), static_cast<UINT32>(size.height));
+        }
+        return reader_->SetCurrentMediaType(videoStream, nullptr, outType.Get());
+    }
+
     void SeekToStart() {
         PROPVARIANT var;
         PropVariantInit(&var);
@@ -127,6 +160,8 @@ private:
     }
 
     ComPtr<IMFSourceReader> reader_;
+    int maxW_ = 0;
+    int maxH_ = 0;
     int width_ = 0;
     int height_ = 0;
     double fps_ = 30.0;
@@ -138,6 +173,7 @@ private:
 
 class FfmpegVideoSource final : public IVideoSource {
 public:
+    FfmpegVideoSource(int maxW, int maxH) : maxW_(maxW), maxH_(maxH) {}
     ~FfmpegVideoSource() override { Close(); }
 
     bool Open(const std::wstring& path) override {
@@ -257,19 +293,25 @@ private:
         const int h = frame_->height;
         if (w <= 0 || h <= 0) return false;
 
-        if (!sws_ || swsSrcW_ != w || swsSrcH_ != h || swsSrcFmt_ != frame_->format) {
+        // 缩放目标按当前帧尺寸算：流中分辨率变化时也能跟上
+        const ImageSize target = decode_target_size(w, h, maxW_, maxH_);
+
+        if (!sws_ || swsSrcW_ != w || swsSrcH_ != h || swsSrcFmt_ != frame_->format ||
+            swsDstW_ != target.width || swsDstH_ != target.height) {
             if (sws_) api.sws_freeContext(sws_);
             sws_ = api.sws_getContext(w, h, static_cast<AVPixelFormat>(frame_->format),
-                                      w, h, AV_PIX_FMT_BGRA, SWS_BILINEAR,
+                                      target.width, target.height, AV_PIX_FMT_BGRA, SWS_BILINEAR,
                                       nullptr, nullptr, nullptr);
             swsSrcW_ = w;
             swsSrcH_ = h;
             swsSrcFmt_ = frame_->format;
+            swsDstW_ = target.width;
+            swsDstH_ = target.height;
             if (!sws_) return false;
         }
 
-        const int stride = w * 4;
-        bgra.resize(static_cast<size_t>(stride) * static_cast<size_t>(h));
+        const int stride = target.width * 4;
+        bgra.resize(static_cast<size_t>(stride) * static_cast<size_t>(target.height));
         uint8_t* dst[4] = { bgra.data(), nullptr, nullptr, nullptr };
         const int dstStride[4] = { stride, 0, 0, 0 };
         const int scaled = api.sws_scale(sws_, frame_->data, frame_->linesize, 0, h, dst, dstStride);
@@ -282,8 +324,8 @@ private:
                 static_cast<int64_t>(frame_->duration) * 1000LL * tb.num / tb.den);
         }
 
-        width = w;
-        height = h;
+        width = target.width;
+        height = target.height;
         return true;
     }
 
@@ -293,6 +335,9 @@ private:
     AVFrame* frame_ = nullptr;
     SwsContext* sws_ = nullptr;
     int swsSrcW_ = 0, swsSrcH_ = 0, swsSrcFmt_ = -1;
+    int swsDstW_ = 0, swsDstH_ = 0;
+    int maxW_ = 0;
+    int maxH_ = 0;
     int streamIndex_ = -1;
     int width_ = 0;
     int height_ = 0;
@@ -328,8 +373,9 @@ bool ffmpeg_fallback_available() {
 }
 
 std::unique_ptr<IVideoSource> open_video_source(const std::wstring& path,
-                                                std::string* chosenBackend) {
-    auto mf = std::make_unique<MfVideoSource>();
+                                                std::string* chosenBackend,
+                                                const VideoSourceOptions& options) {
+    auto mf = std::make_unique<MfVideoSource>(options.maxWidth, options.maxHeight);
     if (mf->Open(path)) {
         if (chosenBackend) *chosenBackend = mf->Backend();
         return mf;
@@ -337,7 +383,7 @@ std::unique_ptr<IVideoSource> open_video_source(const std::wstring& path,
 
 #ifdef DSTK_HAVE_FFMPEG_SDK
     // "系统缺少解码器时"的兜底：MF 打不开该素材才启用随包 FFmpeg
-    auto ff = std::make_unique<FfmpegVideoSource>();
+    auto ff = std::make_unique<FfmpegVideoSource>(options.maxWidth, options.maxHeight);
     if (ff->Open(path)) {
         wp_log("MF could not decode this media; using FFmpeg fallback");
         if (chosenBackend) *chosenBackend = ff->Backend();

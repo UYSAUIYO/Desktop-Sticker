@@ -24,10 +24,18 @@ public:
     virtual const char* Backend() const = 0;
 };
 
+// 解码输出上限：源分辨率高于屏幕时按显示尺寸解码，省下数倍 CPU 转换与搬运
+// （见 DecodeTarget.h）。0 = 不限制，按源分辨率解码。
+struct VideoSourceOptions {
+    int maxWidth = 0;
+    int maxHeight = 0;
+};
+
 // 优先级：MF 为主；MF 明确打不开该素材时才启用 FFmpeg 兜底。
 // 两者都不可用时返回 nullptr，调用方保持最后一帧并记录状态。
 std::unique_ptr<IVideoSource> open_video_source(const std::wstring& path,
-                                                std::string* chosenBackend = nullptr);
+                                                std::string* chosenBackend = nullptr,
+                                                const VideoSourceOptions& options = {});
 
 // FFmpeg 解码兜底是否可用（共享库是否加载成功）
 bool ffmpeg_fallback_available();

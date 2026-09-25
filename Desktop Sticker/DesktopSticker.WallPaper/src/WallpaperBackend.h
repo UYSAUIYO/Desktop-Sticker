@@ -61,6 +61,10 @@ public:
 
     virtual const char* Name() const = 0;
     virtual BackendKind Kind() const = 0;
+
+    // 已产出的**新**帧计数（保持帧不增）。供帧率诊断区分"真出帧"与"顶住上一帧"，
+    // 这也是判断卡顿的关键区别：节拍数不等于实际出帧数。
+    virtual uint32_t FrameSerial() const { return 0; }
 };
 
 // 按类型创建后端；不支持的类型返回 nullptr（模块据此降级）

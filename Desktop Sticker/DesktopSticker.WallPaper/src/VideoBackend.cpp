@@ -24,8 +24,13 @@ bool VideoBackend::Open(const BackendRequest& request, const BackendContext& ctx
     speed_ = clamp_speed(request.speed);
     audio_ = ctx.audio;
 
+    // 按显示尺寸解码：源分辨率高于窗口时能省下数倍 CPU 转换与搬运（见 DecodeTarget.h）
+    VideoSourceOptions opts;
+    opts.maxWidth = ctx.width;
+    opts.maxHeight = ctx.height;
+
     std::string backend;
-    source_ = open_video_source(request.sourcePath, &backend);
+    source_ = open_video_source(request.sourcePath, &backend, opts);
     if (!source_) {
         wp_log("video backend: no decoder could open " + to_utf8(request.sourcePath));
         return false;
@@ -115,6 +120,7 @@ void VideoBackend::SetSpeed(double speed) {
 
     lastW_ = w;
     lastH_ = h;
+    ++serial_;
     return w > 0 && h > 0;
 }
 

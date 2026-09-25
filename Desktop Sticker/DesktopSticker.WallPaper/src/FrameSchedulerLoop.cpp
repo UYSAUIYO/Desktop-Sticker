@@ -177,8 +177,62 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
            (window_.Embedded() ? "1" : "0"));
 
     int64_t deadline = qpc_100ns();
+    lastMaster_ = ClockMaster::Qpc;
+
+    // 系统默认定时器粒度约 15.6ms，会把 33ms 的等待量化成 31/47ms —— 实测节拍只有
+    // 27-29/s，而源是 30fps（丢的这几帧表现为偶发跳帧）。高精度可等待定时器只作用于
+    // 本进程，不像 timeBeginPeriod 那样改全局定时器状态。
+    HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr,
+                                               CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                               TIMER_ALL_ACCESS);
+    if (!frameTimer) {
+        wp_log("FrameSchedulerLoop: high-resolution timer unavailable; tick timing will jitter");
+    }
+
+    // 等一"拍"：有时间上限时交给高精度定时器，否则退回毫秒粒度（向下取整，宁可早醒）
+    auto wait_ticks = [&](int64_t hundredNs) {
+        if (frameTimer && hundredNs > 0) {
+            LARGE_INTEGER due;
+            due.QuadPart = -hundredNs;   // 负数 = 相对当前时间
+            if (SetWaitableTimer(frameTimer, &due, 0, nullptr, nullptr, FALSE)) {
+                MsgWaitForMultipleObjects(1, &frameTimer, FALSE, INFINITE, QS_ALLINPUT);
+                return;
+            }
+        }
+        const DWORD ms = hundredNs > 0 ? static_cast<DWORD>(hundredNs / 10000) : 0;
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, ms, QS_ALLINPUT);
+    };
+
+    // 帧率诊断：每周期的"节拍数 / 内容不同的帧数 / 解码与上屏耗时"。
+    // 之前几处卡顿（时钟纪元混用、余量被丢、整帧拷贝）全是靠这行数字定位的，
+    // 保留成常驻的低频日志（每 10 秒一行），以便回归时不用重编就能看出来。
+    int64_t diagDeadline = qpc_100ns() + 100000000LL;   // 100ns 单位
+    int64_t diagStart = qpc_100ns();
+    int diagTicks = 0;
+    int diagDistinct = 0;
+    int64_t diagDecodeUs = 0;
+    int64_t diagPresentUs = 0;
+    uint32_t diagLastSerial = 0;
+    int diagLastW = 0;
+    int diagLastH = 0;
 
     while (!quit_.load()) {
+        const int64_t diagNow = qpc_100ns();
+        if (diagNow >= diagDeadline) {
+            // 用实测经过时间做分母：写成固定 10.0 会把窗口超时误差算成速率偏差
+            const double secs = static_cast<double>(diagNow - diagStart) / 10000000.0;
+            const std::string backendName = backend_ ? backend_->Name() : "none";
+            wp_log("fps diag: frames=" + std::to_string(diagDistinct / secs) + "/s ticks=" +
+                   std::to_string(static_cast<int>(diagTicks / secs)) + "/s decode=" +
+                   std::to_string(diagTicks > 0 ? diagDecodeUs / diagTicks : 0) + "us present=" +
+                   std::to_string(diagTicks > 0 ? diagPresentUs / diagTicks : 0) + "us size=" +
+                   std::to_string(diagLastW) + "x" + std::to_string(diagLastH) + " backend=" +
+                   backendName);
+            diagDeadline = diagNow + 100000000LL;
+            diagStart = diagNow;
+            diagTicks = diagDistinct = 0;
+            diagDecodeUs = diagPresentUs = 0;
+        }
         bool quitRequested = false;
         pump_messages(quitRequested);
         if (quitRequested) quit_.store(true);
@@ -203,7 +257,7 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         if (paused_.load() || !backend_) {
             // 自呈现型接管时不能去动 DComp，否则会把它盖住
             if (!d3d_.Suspended()) d3d_.Clear(0.05f, 0.05f, 0.06f);
-            MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+            wait_ticks(10000000);   // 100ms
             deadline = qpc_100ns();
             lastMaster_ = ClockMaster::Qpc;
             continue;
@@ -211,14 +265,30 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
 
         if (backend_->SelfPresenting()) {
             backend_->Tick();
-            MsgWaitForMultipleObjects(0, nullptr, FALSE, 16, QS_ALLINPUT);
+            wait_ticks(1600000);    // 约 60Hz
             continue;
         }
 
         int w = 0, h = 0;
+        const int64_t t0 = qpc_100ns();
         if (backend_->ProduceFrame(frameBuffer_, w, h) && w > 0 && h > 0) {
+            const int64_t t1 = qpc_100ns();
+            diagDecodeUs += (t1 - t0) / 10;
+            diagLastW = w;
+            diagLastH = h;
             if (!d3d_.PresentBgra(frameBuffer_.data(), w, h, w * 4)) {
                 wp_log(std::string("present failed: ") + d3d_.LastError());
+            }
+            diagPresentUs += (qpc_100ns() - t1) / 10;
+        }
+        ++diagTicks;
+        {
+            const uint32_t serial = backend_->FrameSerial();
+            if (serial != diagLastSerial) {
+                // 后端被换掉时序号会归零，此时只记 1 帧，不能按无符号相减算
+                diagDistinct += (serial > diagLastSerial)
+                    ? static_cast<int>(serial - diagLastSerial) : 1;
+                diagLastSerial = serial;
             }
         }
 
@@ -248,13 +318,12 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
 
         const auto sched = schedule_frame(now, deadline);
         // 单次等待上限 100ms，保证停止请求能及时响应
-        const DWORD waitMs = sched.waitHundredNs > 0
-            ? static_cast<DWORD>(std::min<int64_t>(sched.waitHundredNs / 10000, 100))
-            : 0;
-        MsgWaitForMultipleObjects(0, nullptr, FALSE, waitMs, QS_ALLINPUT);
+        const int64_t capped = sched.waitHundredNs > 10000000 ? 10000000 : sched.waitHundredNs;
+        wait_ticks(capped > 0 ? capped : 0);
     }
 
     running_.store(false);
+    if (frameTimer) CloseHandle(frameTimer);
     if (backend_) {
         backend_->Close();
         backend_.reset();

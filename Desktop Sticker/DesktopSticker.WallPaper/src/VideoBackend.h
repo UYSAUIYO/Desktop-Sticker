@@ -23,6 +23,7 @@ public:
 
     const char* Name() const override { return name_.c_str(); }
     BackendKind Kind() const override { return kind_; }
+    uint32_t FrameSerial() const override { return serial_; }
 
 private:
     int64_t qpc_us() const;
@@ -37,6 +38,7 @@ private:
     FrameAdvanceState advanceState_;
     double speed_ = 1.0;
     bool paused_ = false;
+    uint32_t serial_ = 0;
     BackendKind kind_ = BackendKind::Video;
     std::string name_ = "视频";
     AudioEngine* audio_ = nullptr;
