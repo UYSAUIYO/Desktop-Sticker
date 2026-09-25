@@ -1,0 +1,22 @@
+Desktop Sticker invokes an unmodified FFmpeg executable as a separate
+background media-preparation tool. Its optional built-in playback fallback
+also dynamically loads the accompanying unmodified avformat, avcodec,
+avutil and swscale shared libraries through their public C interfaces.
+No codec is registered in Windows and no FFmpeg library is statically linked
+into Desktop Sticker. Compatible replacement shared libraries can be placed
+in the ffmpeg directory next to the application; retain the required ABI and
+dependent DLLs.
+
+Build distribution: BtbN/FFmpeg-Builds, Windows x64 LGPL shared build 8.1
+Project: https://github.com/BtbN/FFmpeg-Builds
+Pinned build: autobuild-2026-09-16-19-44 / ffmpeg-n8.1.2-53-g1005b294ff-win64-lgpl-shared-8.1.zip
+SHA-256: a654407793b1caef118550de3b99e46299dcabc6649ccf9a3a325f41ff4ea414
+FFmpeg source and license information: https://ffmpeg.org/
+
+The accompanying FFmpeg libraries are dynamically linked and distributed
+under GNU LGPL v3. See LICENSE-FFmpeg.txt in this directory.
+
+This pinned FFmpeg build enables the OpenH264 encoder. OpenH264 is distributed
+under its BSD license; see OpenH264-LICENSE.txt in this directory. This is a
+third-party FFmpeg build, not Cisco's official precompiled OpenH264 binary, and
+no Cisco patent-license coverage is asserted for it.

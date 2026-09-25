@@ -76,6 +76,21 @@ namespace winrt::Desktop_Sticker::implementation
             }
         }
 
+        // 动态桌面壁纸是可选组件：加载或初始化失败一律降级为"壁纸不可用"，
+        // 不影响分区、搜索启动器与桌面时钟，因此这里只记日志不弹提示。
+        m_host->SetWallPaperEvents(
+            [this]() {
+                if (m_dispatcher) m_dispatcher.TryEnqueue([this]() {
+                    if (m_settings) m_settings->RefreshWallPaper();
+                });
+            },
+            [this]() {
+                if (m_dispatcher) m_dispatcher.TryEnqueue([this]() {
+                    if (m_settings) m_settings->RefreshWallPaper();
+                });
+            });
+        m_host->LoadWallPaper();
+
         m_launcher = std::make_unique<desktopsticker::app::LauncherController>(m_host.get());
         m_settings = std::make_unique<desktopsticker::app::SettingsController>(m_host.get());
         impl->AttachSettings(m_settings.get());

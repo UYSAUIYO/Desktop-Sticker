@@ -95,7 +95,7 @@
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
       <WarningLevel>Level4</WarningLevel>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\..\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /bigobj /FS /utf-8</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -103,7 +103,9 @@
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.Features.dll" "$(OutDir)"
-xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"</Command>
+xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.WallPaper.dll" "$(OutDir)"
+xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"
+if exist "$(SolutionDir)..\tools\ffmpeg\" xcopy /Y /D "$(SolutionDir)..\tools\ffmpeg\*" "$(OutDir)ffmpeg\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -173,6 +175,10 @@ xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"</Command
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">
       <Project>{11111111-2222-3333-4444-555555555555}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
+    <ProjectReference Include="..\DesktopSticker.WallPaper\DesktopSticker.WallPaper.vcxproj">
+      <Project>{33333333-4444-5555-6666-777777777777}</Project>
       <LinkLibraryDependencies>false</LinkLibraryDependencies>
     </ProjectReference>
   </ItemGroup>

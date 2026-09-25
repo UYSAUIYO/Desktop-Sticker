@@ -11,6 +11,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DesktopSticker.Features", "
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DesktopSticker.Tests", "DesktopSticker.Tests\DesktopSticker.Tests.vcxproj", "{22222222-3333-4444-5555-666666666666}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DesktopSticker.WallPaper", "DesktopSticker.WallPaper\DesktopSticker.WallPaper.vcxproj", "{33333333-4444-5555-6666-777777777777}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|ARM64 = Debug|ARM64
@@ -75,6 +77,18 @@ Global
 		{22222222-3333-4444-5555-666666666666}.Release|x64.Build.0 = Release|x64
 		{22222222-3333-4444-5555-666666666666}.Release|x86.ActiveCfg = Release|x64
 		{22222222-3333-4444-5555-666666666666}.Release|x86.Build.0 = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|ARM64.ActiveCfg = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|ARM64.Build.0 = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|x64.ActiveCfg = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|x64.Build.0 = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|x86.ActiveCfg = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Debug|x86.Build.0 = Debug|x64
+		{33333333-4444-5555-6666-777777777777}.Release|ARM64.ActiveCfg = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Release|ARM64.Build.0 = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Release|x64.ActiveCfg = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Release|x64.Build.0 = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Release|x86.ActiveCfg = Release|x64
+		{33333333-4444-5555-6666-777777777777}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

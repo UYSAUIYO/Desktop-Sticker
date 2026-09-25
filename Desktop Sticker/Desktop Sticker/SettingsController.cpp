@@ -6,9 +6,11 @@
 
 #include <winrt/Microsoft.UI.Text.h>
 #include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -426,6 +428,135 @@ void SettingsController::SaveConfig() {
         if (!std::isnan(v)) cfg.zoneRowSpacing = std::clamp(static_cast<int>(v), 40, 120);
     }
     host_->Module()->SetConfig(cfg);
+}
+
+// ---- 动态壁纸 ----
+// 模块在后台线程回调，宿主已通过 DispatcherQueue 切回 UI 线程。
+// 标题栏 X 会销毁 XAML Window，因此这里必须先判断窗口是否仍然有效。
+
+void SettingsController::RefreshWallPaper() {
+    if (!window_ || closed_) return;
+    RefreshWallPaperControls();
+}
+
+void SettingsController::RefreshWallPaperControls() {
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wallPaperSwitch_) return;
+
+    wallpaperLoading_ = true; // 抑制控件事件回写配置
+    const bool available = (wp != nullptr) && wp->Available();
+
+    wallPaperSwitch_.IsEnabled(available);
+    if (wallPaperPauseFullscreenSwitch_) wallPaperPauseFullscreenSwitch_.IsEnabled(available);
+    if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsEnabled(available);
+    if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsEnabled(available);
+    if (wallPaperVariantCombo_) wallPaperVariantCombo_.IsEnabled(available);
+    if (wallPaperList_) wallPaperList_.IsEnabled(available);
+    if (wallPaperImportButton_) wallPaperImportButton_.IsEnabled(available);
+    if (wallPaperRemoveButton_) wallPaperRemoveButton_.IsEnabled(available);
+    if (wallPaperVariantButton_) wallPaperVariantButton_.IsEnabled(available);
+
+    if (!available) {
+        wallPaperSwitch_.IsOn(false);
+        if (wallPaperStatus_) {
+            wallPaperStatus_.Text(L"动态壁纸不可用（组件缺失，或存储位置校验未通过；详见 debug.log）");
+        }
+        if (wallPaperList_) wallPaperList_.Items().Clear();
+        wallpaperLoading_ = false;
+        return;
+    }
+
+    const auto settings = wp->GetSettings();
+    wallPaperSwitch_.IsOn(settings.enabled);
+    if (wallPaperPauseFullscreenSwitch_) wallPaperPauseFullscreenSwitch_.IsOn(settings.pauseOnFullscreen);
+    if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsOn(settings.pauseOnLock);
+    if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsOn(wp->IsUserPaused());
+    if (wallPaperVariantCombo_) {
+        const int index = settings.preferred == VariantKind::PowerSaver ? 2
+                        : settings.preferred == VariantKind::Balanced ? 1 : 0;
+        wallPaperVariantCombo_.SelectedIndex(index);
+    }
+
+    if (wallPaperList_) {
+        wallPaperList_.Items().Clear();
+        const auto items = wp->ListItems();
+        for (const auto& item : items) {
+            // 缩略图直接读库里生成好的 poster.png（比把 HICON 转成 WinUI 图像源简单可靠），
+            // 尚未生成时退回文件名文字。
+            auto row = ListViewItem();
+            auto rowPanel = StackPanel();
+            rowPanel.Orientation(Orientation::Horizontal);
+            rowPanel.Spacing(8);
+
+            const std::wstring poster =
+                std::filesystem::path(settings.libraryRoot) / L"media" / item.id / L"poster.png";
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(poster, ec)) {
+                auto image = Microsoft::UI::Xaml::Controls::Image();
+                image.Width(48);
+                image.Height(27);
+                image.Stretch(Microsoft::UI::Xaml::Media::Stretch::UniformToFill);
+                auto bitmap = Microsoft::UI::Xaml::Media::Imaging::BitmapImage();
+                bitmap.UriSource(winrt::Windows::Foundation::Uri(poster));
+                image.Source(bitmap);
+                rowPanel.Children().Append(image);
+            }
+
+            auto label = TextBlock();
+            label.Text(item.name);
+            label.VerticalAlignment(VerticalAlignment::Center);
+            rowPanel.Children().Append(label);
+
+            row.Content(rowPanel);
+            row.Tag(box_value(item.id));
+            wallPaperList_.Items().Append(row);
+        }
+        // 选中当前壁纸
+        for (uint32_t i = 0; i < wallPaperList_.Items().Size(); ++i) {
+            auto row = wallPaperList_.Items().GetAt(i).try_as<ListViewItem>();
+            if (!row) continue;
+            const auto id = unbox_value_or<hstring>(row.Tag(), L"");
+            if (std::wstring(id.c_str()) == settings.activeId) {
+                wallPaperList_.SelectedIndex(static_cast<int>(i));
+                break;
+            }
+        }
+    }
+
+    if (wallPaperStatus_) {
+        const auto items = wp->ListItems();
+        wallPaperStatus_.Text(L"存储位置：" + settings.libraryRoot +
+                              L"\n共 " + std::to_wstring(items.size()) + L" 个视频");
+    }
+    wallpaperLoading_ = false;
+}
+
+void SettingsController::SaveWallPaper() {
+    if (wallpaperLoading_) return;
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) return;
+
+    auto settings = wp->GetSettings();
+    if (wallPaperSwitch_) settings.enabled = wallPaperSwitch_.IsOn();
+    if (wallPaperPauseFullscreenSwitch_) settings.pauseOnFullscreen = wallPaperPauseFullscreenSwitch_.IsOn();
+    if (wallPaperPauseLockSwitch_) settings.pauseOnLock = wallPaperPauseLockSwitch_.IsOn();
+    if (wallPaperVariantCombo_) {
+        const int index = wallPaperVariantCombo_.SelectedIndex();
+        settings.preferred = index == 2 ? VariantKind::PowerSaver
+                           : index == 1 ? VariantKind::Balanced
+                                        : VariantKind::Original;
+    }
+    if (wallPaperList_) {
+        const int sel = wallPaperList_.SelectedIndex();
+        if (sel >= 0 && static_cast<uint32_t>(sel) < wallPaperList_.Items().Size()) {
+            auto row = wallPaperList_.Items().GetAt(static_cast<uint32_t>(sel)).try_as<ListViewItem>();
+            if (row) {
+                settings.activeId = std::wstring(unbox_value_or<hstring>(row.Tag(), L"").c_str());
+            }
+        }
+    }
+    wp->SetSettings(settings);
+    if (wallPaperUserPauseSwitch_) wp->SetUserPaused(wallPaperUserPauseSwitch_.IsOn());
 }
 
 } // namespace desktopsticker::app

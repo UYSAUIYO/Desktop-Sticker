@@ -8,10 +8,12 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 - `Desktop Sticker/Desktop Sticker/` — WinUI 3 EXE project: `App`, `MainWindow`, `LauncherController`, `SettingsController`, `Host`. `Host` loads the Features DLL at runtime via `LoadLibrary`. `assets/weather/S2/` holds the QWeather icon set (61 PNGs, CC BY 4.0, license text next to it).
 - `Desktop Sticker/DesktopSticker.Features/` — plain C++20 Win32 DLL (Direct2D/DirectWrite rendering, no WinRT/XAML in its pch): zones, desktop icon management, search index, pinyin, hotkey, config. `src/widgets/` has the clock + weather component.
 - `Desktop Sticker/DesktopSticker.Tests/` — unit tests using the homegrown framework in `test_framework.h` (`namespace dtest`, no gtest).
+- `Desktop Sticker/DesktopSticker.WallPaper/` — dynamic wallpaper DLL: D3D11 + DXGI + DirectComposition presentation, MF-primary decode with an FFmpeg shared-library fallback, media library, storage placement. Strategy logic lives in **header-only pure functions** under `include/desktopsticker/wallpaper/` so `dtest` can unit-test it without D3D/MF; OS adapters (drive enumeration, fullscreen detection, subprocess) live in `src/`.
 - `Desktop Sticker/Desktop Sticker (Package)/` — MSIX packaging project; the app actually runs unpackaged/self-contained, don't rely on package identity.
-- `third_party/nlohmann/json.hpp` — only third-party dependency (include root is `third_party/`).
-- `tools/*.ps1` — PowerShell UI harness for manual verification (see below).
+- `third_party/nlohmann/json.hpp` — only third-party dependency (include root is `third_party/`). `third_party/` also holds the FFmpeg/OpenH264/MotionWallpaper notices.
+- `tools/*.ps1` — PowerShell UI harness for manual verification (see below). `tools/prepare_ffmpeg.ps1` fetches the pinned FFmpeg payload (see below).
 - `docs/acceptance.md` — manual acceptance checklist; read before/after touching zone or launcher behavior. `docs/superpowers/` holds the original plan/spec.
+- `THIRD_PARTY_NOTICES.md` — third-party disclosure (FFmpeg LGPL v3, OpenH264 BSD, MotionWallpaper MIT).
 
 ## Build & test (Release x64 only)
 
@@ -30,8 +32,21 @@ Run tests:
 ```bash
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
-./Tests/DesktopSticker.Tests.exe        # expect: 38 passed, 0 failed
+cp DesktopSticker.WallPaper.dll Tests/  # ditto
+./Tests/DesktopSticker.Tests.exe        # expect: 85 passed, 0 failed
 ```
+
+FFmpeg payload (dynamic wallpaper's decoder fallback + transcode backend):
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/prepare_ffmpeg.ps1
+```
+
+Downloads the pinned BtbN LGPL shared build into `tools/ffmpeg/` (runtime) and extracts its
+headers into `tools/ffmpeg-sdk/` (build-time, for `decltype(&av_*)` declarations). Both are
+gitignored and SHA-256 verified. **The build still succeeds without them** — the FFmpeg path is
+gated by `__has_include` and degrades to "fallback decoder unavailable". PowerShell reads `.ps1`
+as GBK unless the file has a UTF-8 BOM, so keep the BOM on scripts containing Chinese comments.
 
 Output paths are split (both gitignored):
 - EXE → `Desktop Sticker/x64/Release/Desktop Sticker/Desktop_Sticker.exe`
@@ -39,8 +54,9 @@ Output paths are split (both gitignored):
 
 Gotchas:
 - The Debug test exe crashes on this machine (Debug CRT environment issue) — always test in Release.
-- `DesktopSticker.Features.dll` must sit next to the EXE and next to the tests exe. The EXE's `PostBuildEvent` copies it from `bin\$(Platform)\$(Configuration)\` to OutDir, and `build.bat test` copies it into `Tests\`.
-- The same PostBuildEvent also xcopies `assets\weather\` next to the EXE; if weather icons vanish at runtime it's this step, not the code (WIC load has a hand-drawn fallback).
+- `DesktopSticker.Features.dll` and `DesktopSticker.WallPaper.dll` must sit next to the EXE and next to the tests exe. The EXE's `PostBuildEvent` copies them from `bin\$(Platform)\$(Configuration)\` to OutDir, and `build.bat test` copies the Features one into `Tests\`.
+- The same PostBuildEvent also xcopies `assets\weather\` and `tools\ffmpeg\` next to the EXE; if weather icons or the wallpaper fallback vanish at runtime it's this step, not the code.
+- Don't name a header `desktopsticker/Export.h` in a new project: the EXE includes several DLLs' headers, and an identical relative path means `#pragma once` silently skips the second one. WallPaper uses `WallPaperExport.h` for this reason.
 - `bin/`, `obj/`, `packages/`, `Generated Files/`, `x64/` are gitignored; NuGet restore is needed for a fresh checkout (packages.config).
 
 ## Architecture boundary (keep it)
@@ -49,6 +65,9 @@ Gotchas:
 - DLL → EXE notifications go through the `FeatureEvents` callbacks (`hotkeyTriggered`, `indexUpdated`, `zonesChanged`).
 - `IFeatureModule::GetIcon` returns a **cached** HICON owned by the module — callers must not `DestroyIcon` it.
 - The Features DLL is pure Win32 + Direct2D with `WIN32_LEAN_AND_MEAN`/`NOMINMAX` in its pch; don't drag WinRT into it, and don't link the WinUI app into it.
+- The WallPaper DLL has its **own** boundary: `desktopsticker::IWallPaperModule` (`DesktopSticker.WallPaper/include/desktopsticker/IWallPaperModule.h`) + `CreateWallPaperModule` / `DestroyWallPaperModule`. It deliberately does **not** reuse `IFeatureModule`. The EXE loads it as a second, optional module via `Host::LoadWallPaper()`; failure must degrade to "wallpaper unavailable" and never affect zones/search/clock.
+- `WallPaperEvents` callbacks may fire on a **worker thread** — the EXE marshals to the UI thread with `DispatcherQueue` before touching XAML.
+- WallPaper links its own graphics stack (`d3d11 dxgi d2d1 dcomp dwmapi mfplat mfreadwrite mf mfuuid`). Keep it out of the Features DLL.
 - Threading: the UI thread owns all windows and layout state; the hotkey-hook, directory-watch, and weather threads talk to it only via posted messages or locked snapshots.
 
 ## Manual UI verification (tools/)
@@ -71,6 +90,10 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - **WinUI sub-window lifecycle**: clicking the title bar X (or any `WM_CLOSE`) **destroys** the XAML `Window` object — it is not "hide". Every secondary window (`SettingsController`, `LauncherController`) must subscribe `Closed`, set a `closed_` flag, and rebuild the whole window on the next `Show`; calling `Show`/`AppWindow()` on a destroyed window stalls and throws (crash via tray subclass proc). `Show`/`Hide` must be try/caught because tray menu paths run inside native window procedures.
 - Zones must also survive monitor/resolution changes; tray "Exit" must restore all native desktop icons and leave no stray zone windows.
 - App is single-instance; hotkey is double-Space (configurable to `Alt+Space`) and must not fire while a text input has focus.
+- **Wallpaper desktop embedding**: the wallpaper is a child of the wallpaper-host `WorkerW` (the one *after* the `SHELLDLL_DefView` WorkerW) held at `HWND_BOTTOM`, so it sits below desktop icons and below zone cards. `DesktopHost::FindWallpaperWorkerW` is a **self-contained reimplementation** — it deliberately does not touch Features' load-bearing `DesktopShellIntegration`; on failure the window degrades to bottom-most. `WallPaperWindow::ReassertBottom()` must be re-called after zone z-order changes.
+- **Wallpaper must be excluded from the "double-click blank desktop" detection**, and its window is `WS_EX_NOACTIVATE` + `HTTRANSPARENT` so it never steals clicks. Do not add `WS_EX_TRANSPARENT` (transparent hit-testing has repeatedly broken zone input).
+- **Wallpaper storage placement**: library root is chosen once (largest free **fixed** drive — removable/network/optical are excluded so an unplugged USB drive can't be picked) and then pinned; startup re-verifies volume serial + root directory file ID so a reused drive letter fails closed. It never auto-migrates; "change location" copies, verifies and keeps the old copy.
+- **FFmpeg is dynamically loaded only** (`LoadLibraryExW` with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR`, never static-linked, no codec registered in Windows). `ffmpeg.exe` is invoked with an explicit argument array via `CreateProcessW` (no shell) and a timeout. Never write a transcode output over its input.
 - **`layout.json` is versioned** (currently 7 — quad-column mirroring, per-column card count, dynamic card heights). Any change to the persisted shape needs a bumped version plus an auto-migration path; loaders must keep accepting old layouts without crashing.
 
 ## Conventions
@@ -78,3 +101,5 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - C++20, precompiled headers (`pch.h`) per project; new files must be added to the `.vcxproj` (and `.filters`) — there's no globbing.
 - Commit messages: lowercase English `feat:`/`fix:` one-liners summarizing behavior (match existing style).
 - Comments/UI strings in Chinese are fine; keep identifiers in English.
+- In the WallPaper project, put strategy/decision logic in **header-only pure functions** under `include/desktopsticker/wallpaper/` (no OS, no D3D) and keep OS/subprocess/GPU work in `src/`. That is what makes the logic unit-testable with `dtest` and is why the test count can grow without a GPU.
+- New `.ps1` files containing non-ASCII must be saved **with a UTF-8 BOM**; PowerShell reads BOM-less scripts as GBK and fails to parse Chinese comments.

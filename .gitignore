@@ -60,3 +60,7 @@ Desktop.ini
 
 # User config
 *.local
+
+# FFmpeg payload + build-time SDK (fetched by tools/prepare_ffmpeg.ps1, never committed)
+tools/ffmpeg/
+tools/ffmpeg-sdk/

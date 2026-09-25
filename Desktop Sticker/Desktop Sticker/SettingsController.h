@@ -14,10 +14,16 @@ public:
     void Hide();
     bool Visible() const { return visible_; }
 
+    // 壁纸模块在后台线程回调（库变更 / 播放状态变化），宿主已切回 UI 线程；
+    // 对已销毁的 XAML Window 必须先判断有效性，不能直接访问控件。
+    void RefreshWallPaper();
+
 private:
     void EnsureWindow();
     void RefreshApps();
     void SaveConfig();
+    void SaveWallPaper();
+    void RefreshWallPaperControls();
 
     Host* host_ = nullptr;
     bool visible_ = false;
@@ -35,6 +41,19 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::NumberBox rowSpacingBox_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBox appPathBox_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ListView appList_{ nullptr };
+
+    // 动态壁纸卡片
+    bool wallpaperLoading_ = false;
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseFullscreenSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseLockSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperList_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperStatus_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportButton_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperRemoveButton_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Button wallPaperVariantButton_{ nullptr };
 };
 
 } // namespace desktopsticker::app

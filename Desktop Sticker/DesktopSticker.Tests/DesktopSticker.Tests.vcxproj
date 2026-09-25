@@ -44,7 +44,7 @@
       <PreprocessorDefinitions>_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -52,7 +52,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)bin\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>DesktopSticker.Features.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>DesktopSticker.Features.lib;DesktopSticker.WallPaper.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -62,7 +62,7 @@
       <PreprocessorDefinitions>NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\DesktopSticker.Features\include;$(ProjectDir)..\DesktopSticker.Features\src\widgets\include;$(ProjectDir)..\DesktopSticker.WallPaper\include;$(ProjectDir)..\DesktopSticker.WallPaper\src;$(ProjectDir)..\..\third_party;$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <SupportJustMyCode>false</SupportJustMyCode>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
     </ClCompile>
@@ -70,7 +70,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)bin\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>DesktopSticker.Features.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>DesktopSticker.Features.lib;DesktopSticker.WallPaper.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -88,10 +88,21 @@
     <ClCompile Include="TestIconClassifier.cpp" />
     <ClCompile Include="TestLayoutMath.cpp" />
     <ClCompile Include="TestClockText.cpp" />
+    <ClCompile Include="TestWallPaperStoragePlacement.cpp" />
+    <ClCompile Include="TestWallPaperPausePolicy.cpp" />
+    <ClCompile Include="TestWallPaperVariantPolicy.cpp" />
+    <ClCompile Include="TestWallPaperFrameScheduler.cpp" />
+    <ClCompile Include="TestWallPaperFfmpegCommand.cpp" />
+    <ClCompile Include="TestWallPaperStore.cpp" />
+    <ClCompile Include="TestWallPaperMediaLibrary.cpp" />
+    <ClCompile Include="TestWallPaperDriveIdentity.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">
       <Project>{11111111-2222-3333-4444-555555555555}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\DesktopSticker.WallPaper\DesktopSticker.WallPaper.vcxproj">
+      <Project>{33333333-4444-5555-6666-777777777777}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

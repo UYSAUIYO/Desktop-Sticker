@@ -27,6 +27,15 @@ Windows 11 桌面整理工具：把杂乱的桌面图标自动分类收纳进可
 - **当前小时天气**：气温、天气现象、风向风力，彩色天气图标（[QWeather S2](https://github.com/qwd/WeatherIcon) 图标集）；
 - 数据来源：IP 定位（**直连取真实 IP，不走代理**）+ [Open-Meteo](https://open-meteo.com) 免费接口，无需任何 API 密钥；后台每 30 分钟刷新，失败快速重试。
 
+### 动态桌面壁纸
+
+- 把视频作为桌面壁纸循环播放，位于**原生桌面图标与分区卡片之下**，不影响分区收纳与交互；
+- **解码双路径**：系统解码器（Media Foundation）为主；系统无法解码该素材时，自动改用随包 FFmpeg 共享库实时解码；
+- **性能副本**：用未经修改的 `ffmpeg.exe` 后台转码出「均衡」「省电」副本，供高码率素材或配置较低的机器使用；副本可随时重建或删除，**源文件始终保持字节不变**；
+- **自动暂停**：全屏应用遮挡时暂停、锁屏/息屏时停止、支持手动暂停，切回桌面自动恢复；
+- **媒体库**：导入（逐字节复制源文件）、缩略图、列表切换、重命名、删除；
+- **存储位置**：首次启用时自动选剩余空间最大的**固定盘**（`<盘>:\DesktopSticker\Wallpaper\`），记录卷序列号与根目录文件 ID，防止盘符被复用后写错卷。
+
 ### 设置
 
 Win11 系统设置风格界面（Mica 背景卡片、跟随系统深浅色），通过托盘菜单或 `--settings` 启动参数打开：
@@ -35,6 +44,7 @@ Win11 系统设置风格界面（Mica 背景卡片、跟随系统深浅色），
 - 热键唤醒方式（双击空格 / `Alt+Space`）；
 - 磁贴：每列卡片数、列间距、行间距；
 - 桌面时钟开关；
+- 动态壁纸：启用开关、壁纸列表与缩略图、档位（原画/均衡/省电）、全屏与锁屏自动暂停、手动暂停、导入与更改存储位置；
 - 手动添加 / 移除应用；
 - 一键恢复桌面图标。
 
@@ -72,7 +82,7 @@ build.bat test
 Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 ```
 
-自研轻量测试框架（`dtest`），当前 **38 项**全部通过，覆盖配置存储、布局数学、图标分类、拼音检索、热键判定、时钟文案。仅支持 Release（本机 Debug CRT 环境问题）。
+自研轻量测试框架（`dtest`），当前 **85 项**全部通过，覆盖配置存储、布局数学、图标分类、拼音检索、热键判定、时钟文案，以及动态壁纸的盘符选择、暂停优先级、档位解析、帧调度、ffmpeg 命令行构造、JSON 存储容错与媒体库源文件安全。仅支持 Release（本机 Debug CRT 环境问题）。
 
 ## 使用说明
 
@@ -89,6 +99,7 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 | 双击磁贴 | 打开对应文件 |
 | 拖动磁贴 | 到其他分区=移动；到桌面空白=还原为桌面图标 |
 | 右键磁贴 / 标题 | 打开、移出 / 重命名、删除分区 |
+| 设置页「动态壁纸」 | 启用开关、导入视频、切换壁纸、选择档位、暂停规则、更改存储位置 |
 
 > 首次启动会自动记录所有原生图标的原始位置并移入分区；退出程序时自动还原。`layout.json` 损坏时布局会自动重建，但图标原始位置记录不会丢失。
 
@@ -101,7 +112,10 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 | `config.json` | 热键方案、搜索范围、磁贴间距与每列卡片数、时钟开关等 |
 | `layout.json` | 分区列表与位置、磁贴分类结果、原生图标原始位置（含版本号，自动迁移） |
 | `apps.json` | 手动添加的应用列表 |
-| `debug.log` | 运行日志（按 `[workspace]` `[zone]` `[hotkey]` `[weather]` 等来源标记，超 5MB 自动轮转） |
+| `wallpaper.json` | 动态壁纸开关、当前壁纸、档位、暂停规则与存储位置记录（卷序列号 + 根目录文件 ID） |
+| `debug.log` | 运行日志（按 `[workspace]` `[zone]` `[hotkey]` `[weather]` `[wallpaper]` 等来源标记，超 5MB 自动轮转） |
+
+> 壁纸媒体库不在 `%APPDATA%`，而在首次启用时自动选定的固定盘上：`<盘>:\DesktopSticker\Wallpaper\`（含 `library.json` 与 `media\<id>\`）。
 
 ## 项目结构
 
@@ -119,6 +133,9 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 │  │  ├─ src/                         分区、热键、检索、定位、图标等服务
 │  │  └─ src/widgets/                 桌面小组件（时钟、天气服务）
 │  ├─ DesktopSticker.Tests/           单元测试（dtest 框架）
+│  ├─ DesktopSticker.WallPaper/       动态壁纸 DLL（D3D11 + DirectComposition + MF/FFmpeg）
+│  │  ├─ include/desktopsticker/      IWallPaperModule 接口与纯策略头（header-only）
+│  │  └─ src/                         呈现、解码、媒体库、存储、暂停策略
 │  └─ bin/x64/Release/                构建输出
 ├─ third_party/nlohmann/json.hpp      唯一第三方依赖
 └─ docs/acceptance.md                 手工验收清单
@@ -135,6 +152,15 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 ## 图标版权
 
 `assets/weather/S2/` 内的天气图标来自 [qwd/WeatherIcon](https://github.com/qwd/WeatherIcon)（和风天气），遵循 **CC BY 4.0** 许可，许可文本见 `assets/weather/LICENSE-CC-BY-4.0.txt`。
+
+## 第三方组件与许可
+
+完整的第三方声明见仓库根目录 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
+- **FFmpeg**：动态壁纸以两种方式使用未经修改的 FFmpeg —— 以子进程方式运行 `ffmpeg.exe` 生成性能副本，以及通过公开 C 接口动态加载 `avformat` / `avcodec` / `avutil` / `swscale` 共享库作为解码兜底。**不静态链接任何 FFmpeg 库，也不向 Windows 注册系统解码器。** 负载为固定版本的 BtbN Windows x64 LGPL shared build，按 **GNU LGPL v3** 授权；许可正文见 `third_party/LICENSE-FFmpeg.txt`。
+- **获取负载**：负载不入版本库，首次构建前运行 `tools/prepare_ffmpeg.ps1`（按锁定版本下载并校验 SHA-256）。缺负载时**编译仍可通过**，只是 FFmpeg 兜底解码与副本生成不可用。
+- **OpenH264**：所固定的 FFmpeg 构建启用了 Cisco OpenH264 编码器（**BSD** 许可，见 `third_party/OpenH264-LICENSE.txt`）。这是第三方 FFmpeg 构建中集成的 OpenH264，**不是** Cisco 官方预编译二进制，本声明不主张 Cisco 对官方预编译二进制提供的专利许可适用于该构建。正式分发前，发布者仍需独立确认适用地区的 H.264 专利许可要求。
+- **MotionWallpaper**：动态壁纸组件的实现方式参考并部分移植自 [MotionWallpaper](https://github.com/1114656/MotionWallpaper)（MIT，见 `third_party/MotionWallpaper-MIT.txt`）。
 
 ## 已知限制与排查
 
