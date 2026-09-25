@@ -15,6 +15,11 @@
   <PropertyGroup>
     <WebView2LoaderPreference>Static</WebView2LoaderPreference>
   </PropertyGroup>
+  <!-- Vulkan 头文件由 tools/prepare_vulkan.ps1 拉取，只在跑过之后存在。
+       不存在时这个属性为空 —— 编译不受影响，VulkanBackend 走 __has_include 的降级分支。 -->
+  <PropertyGroup>
+    <DstkVulkanInclude Condition="Exists('$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Hpp\vulkan\vulkan.hpp')">$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Hpp;$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Headers\include;</DstkVulkanInclude>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
@@ -47,10 +52,10 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1;VK_USE_PLATFORM_WIN32_KHR=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;$(DstkVulkanInclude)%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -68,10 +73,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>DESKTOPSTICKER_WALLPAPER_BUILD;_WINDLL;_UNICODE;UNICODE;NDEBUG;VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1;VK_USE_PLATFORM_WIN32_KHR=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)src;$(ProjectDir)..\..\third_party;$(ProjectDir)..\..\tools\ffmpeg-sdk\include;$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\include;$(DstkVulkanInclude)%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>%(AdditionalOptions) /FS /utf-8</AdditionalOptions>
@@ -108,6 +113,8 @@
     <ClInclude Include="src\WallpaperBackend.h" />
     <ClInclude Include="src\VideoBackend.h" />
     <ClInclude Include="src\WebBackend.h" />
+    <ClInclude Include="src\VulkanBackend.h" />
+    <ClInclude Include="src\VulkanBuiltinShaders.h" />
     <ClInclude Include="src\ImageSequenceBackend.h" />
     <ClInclude Include="src\AudioEngine.h" />
     <ClInclude Include="src\FfmpegApi.h" />
@@ -134,6 +141,7 @@
     <ClCompile Include="src\FfmpegTranscoder.cpp" />
     <ClCompile Include="src\BackendRegistry.cpp" />
     <ClCompile Include="src\WebBackend.cpp" />
+    <ClCompile Include="src\VulkanBackend.cpp" />
     <ClCompile Include="src\ImageSequenceBackend.cpp" />
     <ClCompile Include="src\VideoBackend.cpp" />
     <ClCompile Include="src\FrameSchedulerLoop.cpp" />

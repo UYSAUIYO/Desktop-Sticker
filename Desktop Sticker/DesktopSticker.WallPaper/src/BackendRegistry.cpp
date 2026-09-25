@@ -4,6 +4,7 @@
 #include "ImageSequenceBackend.h"
 #include "Log.h"
 #include "VideoBackend.h"
+#include "VulkanBackend.h"
 #include "WebBackend.h"
 
 namespace desktopsticker::wallpaper {
@@ -36,7 +37,11 @@ std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind) {
             }
             return std::make_unique<WebBackend>();
         case BackendKind::Shader3D:
-            return nullptr;
+            if (!vulkan_available()) {
+                wp_log("shader backend requested but no usable Vulkan device was found");
+                return nullptr;
+            }
+            return std::make_unique<VulkanBackend>();
     }
     return nullptr;
 }
@@ -50,7 +55,7 @@ bool backend_available(BackendKind kind) {
         case BackendKind::Web:
             return web_runtime_available();
         case BackendKind::Shader3D:
-            return false;
+            return vulkan_available();
     }
     return false;
 }

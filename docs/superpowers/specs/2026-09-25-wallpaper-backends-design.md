@@ -186,6 +186,21 @@ class AudioEngine {                        // 模块持有，后端无关
 
 ## 8. ④ 3D / 着色器后端（Vulkan + Vulkan-Hpp）
 
+> **阶段 0 结果（2026-09-25 已实机验证，通过）**：一个内置全屏着色器已铺满桌面，位于桌面图标/
+> 分区卡片/时钟之下，稳定 60.5fps（`vulkan diag: ticks=60.5/s acquire≈20us present≈52us`）。
+> 两个原计划里的风险点都有结论：
+> 1. **交换链在嵌入 `WorkerW` 的壁纸窗口上能正常呈现** —— 不需要额外宿主窗口（③ Web 栽的那类问题在
+>    这里不存在，因为 Vulkan 的 present 走驱动/DXGI，不是自己的窗口合成）。
+> 2. **不需要动 DComp 目标**：让位规则（`D3dContext::Suspend()` 撤空自己的 visual）就足够，
+>    §8.1 原来担心的 external memory 互操作确实没必要做。
+>
+> 实现期的两个坑（都会**硬崩**，且 try/catch 抓不到）：实例上必须启用
+> `VK_KHR_surface` + `VK_KHR_win32_surface`，否则 `vkCreateWin32SurfaceKHR` 在动态分发器里是空指针；
+> 设备创建后必须 `VULKAN_HPP_DEFAULT_DISPATCHER.init(*device)`，否则所有设备级入口为空。
+> 因此初始化整段加了 SEH 兜底（降级而非崩溃）。
+> 另：`FrameSchedulerLoop::wait_ticks` 的单位是 100ns，曾误按毫秒写成 `1600000`，把自呈现型后端
+> 压到 6fps —— 已修，并在 AGENTS.md 里记下这条。
+
 ### 8.1 呈现
 
 - 用 **Vulkan-Hpp**（`vk::raii::*`）；`VULKAN_HPP_DEFAULT_DISPATCHER` 从系统 `vulkan-1.dll` **动态解析全部入口**，不加导入库、不硬依赖。

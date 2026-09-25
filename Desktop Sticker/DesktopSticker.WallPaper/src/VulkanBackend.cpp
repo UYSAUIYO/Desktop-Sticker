@@ -1,0 +1,675 @@
+#include "pch.h"
+#include "VulkanBackend.h"
+
+#include "Log.h"
+#include "Utf8.h"
+#include "VulkanBuiltinShaders.h"
+#include "desktopsticker/wallpaper/FrameAdvance.h"   // clamp_speed
+
+#if defined(DSTK_HAVE_VULKAN)
+
+// 动态入口解析：从系统 vulkan-1.dll 取全部函数指针，不链接导入库、不依赖 Vulkan SDK
+// （规格 §8.1）。下面三个宏必须在 include 之前定义，且与 vcxproj 里的定义保持一致。
+#ifndef VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
+#  define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
+#endif
+// 不定义它就没有 vk::Win32SurfaceCreateInfoKHR（平台类型是按需生成的）
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#  define VK_USE_PLATFORM_WIN32_KHR 1
+#endif
+#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan_raii.hpp>
+
+#include <array>
+#include <cstdlib>
+#include <limits>
+
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+
+namespace desktopsticker::wallpaper {
+
+namespace {
+
+int64_t qpc_us() {
+    static const int64_t freq = [] {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart > 0 ? f.QuadPart : 1;
+    }();
+    LARGE_INTEGER c{};
+    QueryPerformanceCounter(&c);
+    return c.QuadPart * 1000000LL / freq;
+}
+
+// 用 Win32 读环境变量：getenv 在这个工程里按 C4996 处理（不可用）
+bool env_flag_set(const wchar_t* name) {
+    wchar_t buf[8]{};
+    const DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    return n > 0 && n < std::size(buf) && buf[0] == L'1';
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+
+struct VulkanBackend::Impl {
+    ~Impl() { destroy(); }
+
+    // 访问违例兜底。Vulkan 有一类失败是 try/catch 抓不到的：动态分发器里的空指针、
+    // 驱动的越界访问 —— 第一版就撞上了（进程无声退出，事件日志只剩 "unknown 模块 偏移 0"）。
+    // 壁纸后端的约定是"不可用就降级"，所以初始化整段用 SEH 兜住。
+    // 一个函数里只能有一种异常处理方式（C2713），所以 C++ 的 try/catch 留在调用方 Open()，
+    // 本函数只做 SEH 转发。
+    static bool init_seh(Impl* self, HWND hwnd, int width, int height) {
+        __try {
+            return self->init(hwnd, width, height);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    // ---- 生命周期 ----
+    bool init(HWND hwnd, int width, int height);
+    void destroy();
+    void wait_idle();
+
+    // ---- 分步构建 ----
+    bool create_instance();
+    bool create_surface(HWND hwnd);
+    bool pick_physical_device();
+    bool create_device();
+    bool build_swapchain(int width, int height);
+    bool build_pipeline();
+    bool build_sync_and_commands();
+    bool rebuild_swapchain(int width, int height);
+
+    bool draw(float timeSeconds);
+    bool submit_and_present();
+
+    // ---- 顺序敏感：raii 成员按声明**逆序**析构，依赖别人的必须后声明 ----
+    vk::raii::Context context;                 // 无依赖
+    vk::raii::Instance instance{ nullptr };
+    vk::raii::SurfaceKHR surface{ nullptr };
+    vk::raii::PhysicalDevice physical{ nullptr };
+    vk::raii::Device device{ nullptr };
+    vk::raii::Queue queue{ nullptr };
+
+    uint32_t queueFamily = 0;
+
+    // 交换链相关：分辨率变化时要整块重建，所以单独一层，重建 = 换一个对象
+    struct Swap {
+        vk::raii::SwapchainKHR swapchain{ nullptr };
+        vk::Extent2D extent{};
+        std::vector<vk::raii::ImageView> views;
+        std::vector<vk::raii::Framebuffer> framebuffers;
+        std::vector<vk::raii::CommandBuffer> cmdBuffers;
+        vk::raii::Semaphore imageAvailable{ nullptr };
+        vk::raii::Semaphore renderFinished{ nullptr };
+        vk::raii::Fence inFlight{ nullptr };
+    };
+    std::unique_ptr<Swap> swap;
+    vk::Format format = vk::Format::eB8G8R8A8Unorm;   // Win32 表面上必然可呈现，所以固定不变
+
+    // 与交换链无关、只依赖 format 的东西：建一次就够
+    vk::raii::RenderPass renderPass{ nullptr };
+    vk::raii::PipelineLayout layout{ nullptr };
+    vk::raii::Pipeline pipeline{ nullptr };
+    vk::raii::CommandPool cmdPool{ nullptr };
+
+    HWND hwnd = nullptr;
+    uint32_t imageIndex = 0;
+    double timeSeconds = 0.0;
+    int64_t lastTickUs = 0;
+    double speed = 1.0;
+    int swapWidth = 0;
+    int swapHeight = 0;
+    std::string lastError;
+
+    // 帧率诊断（与渲染循环的 fps diag 同样的用途：卡顿时能直接看出时间花在哪一段）
+    int64_t diagStartUs = 0;
+    int diagTicks = 0;
+    int64_t diagAcquireUs = 0;
+    int64_t diagPresentUs = 0;
+};
+
+// ---------------------------------------------------------------------------
+
+bool VulkanBackend::Impl::init(HWND wnd, int width, int height) {
+    hwnd = wnd;
+
+    // 先把入口解析出来：DynamicLoader 自己负责 LoadLibrary("vulkan-1.dll")
+    vk::detail::DynamicLoader loader;
+    const PFN_vkGetInstanceProcAddr gipa =
+        loader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+    if (!gipa) {
+        lastError = "vulkan-1.dll 不可用";
+        return false;
+    }
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(gipa);
+
+    if (!create_instance()) return false;
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance);
+    if (!create_surface(hwnd)) return false;
+    if (!pick_physical_device()) return false;
+    if (!create_device()) return false;
+    if (!build_swapchain(width, height)) return false;
+    if (!build_pipeline()) return false;
+    if (!build_sync_and_commands()) return false;
+
+    timeSeconds = 0.0;
+    lastTickUs = qpc_us();
+    return true;
+}
+
+bool VulkanBackend::Impl::create_instance() {
+    const uint32_t loaderVersion = context.enumerateInstanceVersion();
+    if (loaderVersion < VK_MAKE_API_VERSION(0, 1, 1, 0)) {
+        lastError = "Vulkan loader 低于 1.1";
+        return false;
+    }
+
+    // 请求 1.1 而不是 loader 的最高版本：壁纸不需要新特性，降版本能少踩驱动的坑
+    const vk::ApplicationInfo appInfo("DesktopSticker", 1, "WallPaper", 1, VK_API_VERSION_1_1);
+
+    // 表面扩展**必须**在实例上启用：不启用的话 vkCreateWin32SurfaceKHR 在动态分发器里
+    // 就是空指针，调用时直接崩在地址 0（第一版就是这么挂的：进程无声退出，事件日志
+    // 只有 "unknown 模块 偏移 0"）。所以先确认它们真的存在，再启用。
+    const char* instanceExts[] = { VK_KHR_SURFACE_EXTENSION_NAME,
+                                  VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
+    const auto haveExts = context.enumerateInstanceExtensionProperties();
+    for (const char* want : instanceExts) {
+        bool found = false;
+        for (const auto& e : haveExts) {
+            if (std::strcmp(e.extensionName, want) == 0) { found = true; break; }
+        }
+        if (!found) {
+            lastError = std::string("缺少实例扩展 ") + want;
+            return false;
+        }
+    }
+
+    // 校验层只在显式设了 DSTK_VULKAN_VALIDATION=1 且系统真的装了时才开，
+    // 绝不因为它缺失就启动失败
+    const char* layerName = "VK_LAYER_KHRONOS_validation";
+    bool useLayer = false;
+    if (env_flag_set(L"DSTK_VULKAN_VALIDATION")) {
+        for (const auto& l : context.enumerateInstanceLayerProperties()) {
+            if (std::strcmp(l.layerName, layerName) == 0) { useLayer = true; break; }
+        }
+        if (!useLayer) wp_log("vulkan: validation layer requested but not installed; skipping");
+    }
+
+    if (useLayer) {
+        instance = vk::raii::Instance(
+            context, vk::InstanceCreateInfo(vk::InstanceCreateFlags{}, &appInfo, 1, &layerName,
+                                            static_cast<uint32_t>(std::size(instanceExts)),
+                                            instanceExts));
+    } else {
+        instance = vk::raii::Instance(
+            context, vk::InstanceCreateInfo(vk::InstanceCreateFlags{}, &appInfo, 0, nullptr,
+                                            static_cast<uint32_t>(std::size(instanceExts)),
+                                            instanceExts));
+    }
+    return *instance != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::create_surface(HWND target) {
+    const vk::Win32SurfaceCreateInfoKHR info(vk::Win32SurfaceCreateFlagsKHR{},
+                                             GetModuleHandleW(nullptr), target);
+    surface = vk::raii::SurfaceKHR(instance, info);
+    return *surface != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::pick_physical_device() {
+    // 优先独显；虚拟显示器（本机有 OrayIddDriver / GameViewer）一般不暴露 Vulkan，
+    // 但真出现了也要能筛掉 —— 判据是"有图形队列 + 能向本窗口呈现"
+    const auto devices = instance.enumeratePhysicalDevices();
+    if (devices.empty()) {
+        lastError = "没有 Vulkan 物理设备";
+        return false;
+    }
+
+    int best = -1;
+    vk::PhysicalDeviceType bestType = vk::PhysicalDeviceType::eCpu;
+    for (size_t i = 0; i < devices.size(); ++i) {
+        const auto fp = devices[i].getProperties();
+        const auto families = devices[i].getQueueFamilyProperties();
+        bool usable = false;
+        for (uint32_t f = 0; f < families.size(); ++f) {
+            if (!(families[f].queueFlags & vk::QueueFlagBits::eGraphics)) continue;
+            if (devices[i].getSurfaceSupportKHR(f, *surface) != VK_TRUE) continue;
+            usable = true;
+            break;
+        }
+        if (!usable) {
+            wp_log(std::string("vulkan: skip device '") + std::string(fp.deviceName.data()) +
+                   "' (no graphics+present queue)");
+            continue;
+        }
+        const bool discrete = fp.deviceType == vk::PhysicalDeviceType::eDiscreteGpu;
+        const bool bestDiscrete = bestType == vk::PhysicalDeviceType::eDiscreteGpu;
+        if (best < 0 || (discrete && !bestDiscrete)) {
+            best = static_cast<int>(i);
+            bestType = fp.deviceType;
+        }
+    }
+    if (best < 0) {
+        lastError = "没有能向壁纸窗口呈现的 Vulkan 设备";
+        return false;
+    }
+
+    physical = devices[static_cast<size_t>(best)];
+    const auto families = physical.getQueueFamilyProperties();
+    for (uint32_t f = 0; f < families.size(); ++f) {
+        if ((families[f].queueFlags & vk::QueueFlagBits::eGraphics) &&
+            physical.getSurfaceSupportKHR(f, *surface) == VK_TRUE) {
+            queueFamily = f;
+            break;
+        }
+    }
+    wp_log(std::string("vulkan: using device '") + std::string(physical.getProperties().deviceName.data()) + "'");
+    return true;
+}
+
+bool VulkanBackend::Impl::create_device() {
+    const float priority = 1.0f;
+    const vk::DeviceQueueCreateInfo qci({}, queueFamily, 1, &priority);
+    const char* exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    device = vk::raii::Device(
+        physical, vk::DeviceCreateInfo(vk::DeviceCreateFlags{}, 1, &qci, 0, nullptr, 1, exts));
+    queue = vk::raii::Queue(device, queueFamily, 0);
+
+    // 设备级入口（vkCreateSwapchainKHR / vkQueueSubmit / vkCmd* …）也在动态分发器里，
+    // 初始化过 device 之后才非空 —— 漏了这一步同样会崩在地址 0
+    VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
+    return *device != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_swapchain(int width, int height) {
+    const auto caps = physical.getSurfaceCapabilitiesKHR(*surface);
+    if (caps.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+        swapWidth = static_cast<int>(caps.currentExtent.width);
+        swapHeight = static_cast<int>(caps.currentExtent.height);
+    } else {
+        swapWidth = std::clamp(width, static_cast<int>(caps.minImageExtent.width),
+                               static_cast<int>(caps.maxImageExtent.width));
+        swapHeight = std::clamp(height, static_cast<int>(caps.minImageExtent.height),
+                                static_cast<int>(caps.maxImageExtent.height));
+    }
+
+    vk::SurfaceFormatKHR chosen{};
+    bool haveFormat = false;
+    for (const auto& f : physical.getSurfaceFormatsKHR(*surface)) {
+        if (f.format == format) { chosen = f; haveFormat = true; break; }
+    }
+    if (!haveFormat) {
+        lastError = "表面不支持 B8G8R8A8";
+        return false;
+    }
+
+    // FIFO 一定被支持；它是 vsync 锁定的，壁纸不需要 MAILBOX 那种冲高帧率
+    uint32_t imageCount = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
+
+    auto s = std::make_unique<Swap>();
+    s->extent = vk::Extent2D(static_cast<uint32_t>(swapWidth), static_cast<uint32_t>(swapHeight));
+    s->swapchain = vk::raii::SwapchainKHR(
+        device, vk::SwapchainCreateInfoKHR(vk::SwapchainCreateFlagsKHR{}, *surface, imageCount,
+                                           format, chosen.colorSpace, s->extent, 1,
+                                           vk::ImageUsageFlagBits::eColorAttachment,
+                                           vk::SharingMode::eExclusive, 0, nullptr,
+                                           caps.currentTransform,
+                                           vk::CompositeAlphaFlagBitsKHR::eOpaque,
+                                           vk::PresentModeKHR::eFifo, VK_TRUE, nullptr));
+
+    const auto images = s->swapchain.getImages();
+    s->views.reserve(images.size());
+    for (const auto& img : images) {
+        s->views.emplace_back(device, vk::ImageViewCreateInfo(
+            {}, img, vk::ImageViewType::e2D, format,
+            vk::ComponentMapping{}, vk::ImageSubresourceRange(
+                vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1)));
+    }
+
+    // 渲染通道只在建交换链时依赖视图数量，所以放在这里一次性完成
+    if (*renderPass == VK_NULL_HANDLE) {
+        const vk::AttachmentDescription color(
+            {}, format, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear,
+            vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
+            vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
+            vk::ImageLayout::ePresentSrcKHR);
+        const vk::AttachmentReference ref(0, vk::ImageLayout::eColorAttachmentOptimal);
+        const vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr,
+                                             1, &ref);
+        renderPass = vk::raii::RenderPass(
+            device, vk::RenderPassCreateInfo({}, color, subpass));
+    }
+
+    s->framebuffers.reserve(s->views.size());
+    for (const auto& v : s->views) {
+        const vk::ImageView attachments[] = { *v };
+        s->framebuffers.emplace_back(device, vk::FramebufferCreateInfo(
+            {}, *renderPass, 1, attachments, s->extent.width, s->extent.height, 1));
+    }
+
+    imageIndex = 0;
+    swap = std::move(s);
+    wp_log("vulkan: swapchain " + std::to_string(swapWidth) + "x" + std::to_string(swapHeight) +
+           ", " + std::to_string(images.size()) + " images");
+    return true;
+}
+
+bool VulkanBackend::Impl::build_pipeline() {
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kFullscreenVertSpv), kFullscreenVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kDefaultFragSpv), kDefaultFragSpv));
+
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    const vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex |
+                                              vk::ShaderStageFlagBits::eFragment,
+                                          0, sizeof(ShaderPushConstants));
+    layout = vk::raii::PipelineLayout(device, vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1,
+                                                                          &pushRange));
+
+    const vk::PipelineVertexInputStateCreateInfo vertexInput;   // 不用顶点缓冲
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_FALSE, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    pipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, nullptr, &blend, &dynamic, *layout,
+                                       *renderPass, 0));
+    return *pipeline != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_sync_and_commands() {
+    cmdPool = vk::raii::CommandPool(
+        device, vk::CommandPoolCreateInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+                                          queueFamily));
+
+    auto& s = *swap;
+    s.imageAvailable = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo{});
+    s.renderFinished = vk::raii::Semaphore(device, vk::SemaphoreCreateInfo{});
+    s.inFlight = vk::raii::Fence(device, vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled));
+
+    const vk::CommandBufferAllocateInfo alloc(*cmdPool, vk::CommandBufferLevel::ePrimary,
+                                             static_cast<uint32_t>(s.framebuffers.size()));
+    s.cmdBuffers = device.allocateCommandBuffers(alloc);
+    return true;
+}
+
+bool VulkanBackend::Impl::rebuild_swapchain(int width, int height) {
+    if (*device == VK_NULL_HANDLE) return false;
+    wait_idle();
+    swap.reset();          // 先放掉依赖旧交换链的一切，再重建
+    return build_swapchain(width, height) && build_sync_and_commands();
+}
+
+bool VulkanBackend::Impl::draw(float timeSecondsValue) {
+    auto& s = *swap;
+
+    const int64_t t0 = qpc_us();
+    device.waitForFences(*s.inFlight, VK_TRUE, UINT64_MAX);
+    const auto acquired = s.swapchain.acquireNextImage(UINT64_MAX, *s.imageAvailable, nullptr);
+    diagAcquireUs += qpc_us() - t0;
+    const vk::Result acqResult = acquired.first;
+    if (acqResult == vk::Result::eErrorOutOfDateKHR ||
+        acqResult == vk::Result::eSuboptimalKHR) {
+        return false;      // 调用方据此重建交换链
+    }
+    imageIndex = acquired.second;
+
+    // 帧缓冲数量可能与图像数量一致，但保险起见按索引取
+    if (imageIndex >= s.cmdBuffers.size() || imageIndex >= s.framebuffers.size()) return false;
+
+    device.resetFences(*s.inFlight);
+    vk::CommandBuffer cmd = *s.cmdBuffers[imageIndex];
+    cmd.begin(vk::CommandBufferBeginInfo{});
+
+    const vk::ClearValue clear(vk::ClearColorValue(std::array<float, 4>{ 0.0f, 0.0f, 0.0f, 1.0f }));
+    const vk::Rect2D area({ 0, 0 }, s.extent);
+    cmd.beginRenderPass(vk::RenderPassBeginInfo(*renderPass, *s.framebuffers[imageIndex], area,
+                                                1, &clear),
+                        vk::SubpassContents::eInline);
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
+    const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(s.extent.width),
+                                static_cast<float>(s.extent.height), 0.0f, 1.0f);
+    cmd.setViewport(0, { viewport });
+    cmd.setScissor(0, { area });
+
+    ShaderPushConstants pc{};
+    pc.iTime[0] = timeSecondsValue;
+    pc.iResolution[0] = static_cast<float>(s.extent.width);
+    pc.iResolution[1] = static_cast<float>(s.extent.height);
+    cmd.pushConstants<ShaderPushConstants>(*layout,
+                                           vk::ShaderStageFlagBits::eVertex |
+                                               vk::ShaderStageFlagBits::eFragment,
+                                           0, pc);
+    cmd.draw(3, 1, 0, 0);
+    cmd.endRenderPass();
+    cmd.end();
+    return true;
+}
+
+bool VulkanBackend::Impl::submit_and_present() {
+    auto& s = *swap;
+
+    const vk::PipelineStageFlags waitStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    const vk::Semaphore waitSemaphores[] = { *s.imageAvailable };
+    const vk::Semaphore signalSemaphores[] = { *s.renderFinished };
+    const vk::CommandBuffer cmds[] = { *s.cmdBuffers[imageIndex] };
+    queue.submit(vk::SubmitInfo(1, waitSemaphores, &waitStage, 1, cmds, 1, signalSemaphores),
+                 *s.inFlight);
+
+    const vk::SwapchainKHR swapchains[] = { *s.swapchain };
+    const uint32_t indices[] = { imageIndex };
+    const int64_t t1 = qpc_us();
+    try {
+        queue.presentKHR(vk::PresentInfoKHR(1, signalSemaphores, 1, swapchains, indices));
+    } catch (const vk::OutOfDateKHRError&) {
+        diagPresentUs += qpc_us() - t1;
+        return false;      // 交换链过期：重建后下一拍再出图
+    }
+    diagPresentUs += qpc_us() - t1;
+    return true;
+}
+
+void VulkanBackend::Impl::wait_idle() {
+    if (*device != VK_NULL_HANDLE) device.waitIdle();
+}
+
+void VulkanBackend::Impl::destroy() {
+    swap.reset();
+    cmdPool = nullptr;
+    pipeline = nullptr;
+    layout = nullptr;
+    renderPass = nullptr;
+    queue = nullptr;
+    device = nullptr;
+    physical = nullptr;
+    surface = nullptr;
+    instance = nullptr;
+    hwnd = nullptr;
+    swapWidth = swapHeight = 0;
+}
+
+// ---------------------------------------------------------------------------
+
+VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {}
+
+VulkanBackend::~VulkanBackend() { Close(); }
+
+bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ctx) {
+    Close();
+    if (!ctx.window) {
+        lastError_ = "no host window";
+        return false;
+    }
+    if (!ctx.dcompDevice) {
+        // D3dContext 还没建起来时没法让位，Vulkan 与它会抢同一个 HWND
+        wp_log("vulkan backend: DComp host missing; refusing to open");
+        lastError_ = "no DComp host";
+        return false;
+    }
+
+    try {
+        if (!Impl::init_seh(impl_.get(), ctx.window, ctx.width, ctx.height)) {
+            lastError_ = impl_->lastError.empty() ? "Vulkan init failed" : impl_->lastError;
+            wp_log("vulkan backend: " + lastError_);
+            impl_->destroy();
+            return false;
+        }
+    } catch (const std::exception& e) {
+        lastError_ = e.what();
+        wp_log(std::string("vulkan backend: exception: ") + e.what());
+        impl_->destroy();
+        return false;
+    }
+
+    impl_->speed = clamp_speed(request.speed);
+    wp_log("vulkan backend opened (stage-0 spike, built-in shader): " + to_utf8(request.sourcePath));
+    return true;
+}
+
+void VulkanBackend::Close() {
+    if (!impl_) return;
+    try {
+        impl_->destroy();
+    } catch (...) {
+        // 析构路径不允许抛出去
+    }
+}
+
+void VulkanBackend::Tick() {
+    // 暂停就彻底停提交（规格 §3.1：自呈现型必须真正停），画面留在最后一帧
+    if (!impl_ || !impl_->swap || paused_) return;
+
+    // 着色器时间按速度推进（规格 §11：速度缩放 iTime 的推进速率）
+    const int64_t now = qpc_us();
+    if (impl_->lastTickUs > 0 && now > impl_->lastTickUs) {
+        impl_->timeSeconds +=
+            static_cast<double>(now - impl_->lastTickUs) / 1e6 * impl_->speed;
+    }
+    impl_->lastTickUs = now;
+
+    try {
+        if (!impl_->draw(static_cast<float>(impl_->timeSeconds))) {
+            RECT rc{};
+            int w = impl_->swapWidth, h = impl_->swapHeight;
+            if (impl_->hwnd && GetClientRect(impl_->hwnd, &rc)) {
+                w = rc.right - rc.left;
+                h = rc.bottom - rc.top;
+            }
+            if (!impl_->rebuild_swapchain(w, h)) {
+                lastError_ = impl_->lastError;
+                wp_log("vulkan backend: swapchain rebuild failed: " + lastError_);
+                return;
+            }
+            return;
+        }
+        if (!impl_->submit_and_present()) {
+            RECT rc{};
+            if (impl_->hwnd && GetClientRect(impl_->hwnd, &rc)) {
+                impl_->rebuild_swapchain(rc.right - rc.left, rc.bottom - rc.top);
+            }
+        }
+        ++frames_;
+
+        // 每 2 秒一行：出帧率 + acquire/present 各自耗时（卡顿时先看这里）
+        const int64_t now2 = qpc_us();
+        if (impl_->diagStartUs == 0) impl_->diagStartUs = now2;
+        ++impl_->diagTicks;
+        if (now2 - impl_->diagStartUs >= 2000000) {
+            const double secs = static_cast<double>(now2 - impl_->diagStartUs) / 1e6;
+            wp_log("vulkan diag: ticks=" + std::to_string(impl_->diagTicks / secs) + "/s acquire=" +
+                   std::to_string(impl_->diagAcquireUs / impl_->diagTicks) + "us present=" +
+                   std::to_string(impl_->diagPresentUs / impl_->diagTicks) + "us");
+            impl_->diagStartUs = now2;
+            impl_->diagTicks = 0;
+            impl_->diagAcquireUs = impl_->diagPresentUs = 0;
+        }
+    } catch (const std::exception& e) {
+        lastError_ = e.what();
+        wp_log(std::string("vulkan backend: present exception: ") + e.what());
+    }
+}
+
+void VulkanBackend::SetPaused(bool paused) {
+    if (!impl_) return;
+    paused_ = paused;
+    if (!paused) impl_->lastTickUs = qpc_us();   // 恢复时别把暂停时长算进 iTime
+}
+
+void VulkanBackend::SetSpeed(double speed) {
+    if (!impl_) return;
+    impl_->speed = clamp_speed(speed);
+}
+
+bool vulkan_available() {
+    static const bool available = [] {
+        try {
+            vk::raii::Context ctx;
+            if (ctx.enumerateInstanceVersion() < VK_MAKE_API_VERSION(0, 1, 1, 0)) return false;
+            vk::detail::DynamicLoader loader;
+            if (!loader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr")) {
+                return false;
+            }
+            const vk::ApplicationInfo appInfo("DesktopSticker", 1, "WallPaper", 1,
+                                              VK_API_VERSION_1_1);
+            const vk::raii::Instance instance(
+                ctx, vk::InstanceCreateInfo(vk::InstanceCreateFlags{}, &appInfo));
+            return !instance.enumeratePhysicalDevices().empty();
+        } catch (...) {
+            return false;
+        }
+    }();
+    return available;
+}
+
+} // namespace desktopsticker::wallpaper
+
+#else  // !DSTK_HAVE_VULKAN
+
+// 没有 Vulkan 头文件时：④ 整体不可用，其余后端与主程序照常编译（规格 §13）
+namespace desktopsticker::wallpaper {
+
+// 必须有完整定义：unique_ptr<Impl> 的析构要在这里实例化
+struct VulkanBackend::Impl {};
+
+VulkanBackend::VulkanBackend() = default;
+VulkanBackend::~VulkanBackend() = default;
+bool VulkanBackend::Open(const BackendRequest&, const BackendContext&) {
+    lastError_ = "built without Vulkan headers";
+    wp_log("vulkan backend: this build has no Vulkan headers; ④ unavailable");
+    return false;
+}
+void VulkanBackend::Close() {}
+void VulkanBackend::Tick() {}
+void VulkanBackend::SetPaused(bool paused) { paused_ = paused; }
+void VulkanBackend::SetSpeed(double) {}
+bool vulkan_available() { return false; }
+
+} // namespace desktopsticker::wallpaper
+
+#endif // DSTK_HAVE_VULKAN

@@ -192,7 +192,9 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         wp_log("FrameSchedulerLoop: high-resolution timer unavailable; tick timing will jitter");
     }
 
-    // 等一"拍"：有时间上限时交给高精度定时器，否则退回毫秒粒度（向下取整，宁可早醒）
+    // 等一"拍"：hundredNs 是 **100ns 单位**（QPC 同款），不是毫秒 ——
+    // 16ms 要写 160000，写成 1600000 就变成 160ms（曾因此把自呈现型后端压到 6fps）。
+    // 有时间上限时交给高精度定时器，否则退回毫秒粒度（向下取整，宁可早醒）
     auto wait_ticks = [&](int64_t hundredNs) {
         if (frameTimer && hundredNs > 0) {
             LARGE_INTEGER due;
@@ -218,6 +220,17 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
     uint32_t diagLastSerial = 0;
     int diagLastW = 0;
     int diagLastH = 0;
+
+    // 用后端自己的帧序号统计"真正出了几帧"：产帧型与自呈现型共用同一条路径，
+    // 否则自呈现型会一直显示 0/s，看着像卡死
+    auto count_frames = [&] {
+        const uint32_t serial = backend_->FrameSerial();
+        if (serial == diagLastSerial) return;
+        // 后端被换掉时序号会归零，此时只记 1 帧，不能按无符号相减算
+        diagDistinct += (serial > diagLastSerial)
+            ? static_cast<int>(serial - diagLastSerial) : 1;
+        diagLastSerial = serial;
+    };
 
     while (!quit_.load()) {
         const int64_t diagNow = qpc_100ns();
@@ -260,7 +273,7 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         if (paused_.load() || !backend_) {
             // 自呈现型接管时不能去动 DComp，否则会把它盖住
             if (!d3d_.Suspended()) d3d_.Clear(0.05f, 0.05f, 0.06f);
-            wait_ticks(10000000);   // 100ms
+            wait_ticks(1000000);   // 100ms = 1,000,000 × 100ns
             deadline = qpc_100ns();
             lastMaster_ = ClockMaster::Qpc;
             continue;
@@ -269,7 +282,8 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         if (backend_->SelfPresenting()) {
             backend_->Tick();
             ++diagTicks;   // 自呈现型也要计入节拍数，否则日志显示 0/s 像卡死了
-            wait_ticks(1600000);    // 约 60Hz
+            count_frames();
+            wait_ticks(160000);     // 16ms ≈ 60Hz
             continue;
         }
 
@@ -286,15 +300,7 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
             diagPresentUs += (qpc_100ns() - t1) / 10;
         }
         ++diagTicks;
-        {
-            const uint32_t serial = backend_->FrameSerial();
-            if (serial != diagLastSerial) {
-                // 后端被换掉时序号会归零，此时只记 1 帧，不能按无符号相减算
-                diagDistinct += (serial > diagLastSerial)
-                    ? static_cast<int>(serial - diagLastSerial) : 1;
-                diagLastSerial = serial;
-            }
-        }
+        count_frames();
 
         // 主时钟：有音轨且未静音时跟音频时钟走（音画不漂），否则用 QPC。
         // 注意：`should_drop_to_catch_up` 那套"落后即丢帧"尚未接线 —— 它需要帧 PTS
