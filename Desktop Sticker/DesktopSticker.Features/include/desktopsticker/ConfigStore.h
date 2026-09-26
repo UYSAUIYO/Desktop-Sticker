@@ -21,6 +21,8 @@ struct AppConfig {
     int zoneColumnCards = 4;
     // 桌面时钟小组件（顶部居中，点击穿透）
     bool showClock = true;
+    // 双击桌面空白处（左键）切换磁贴/时钟/图标的显隐（干净桌面）
+    bool dblClickCleanMode = true;
 };
 
 class DESKTOPSTICKER_API ConfigStore {

@@ -375,6 +375,12 @@ void SettingsController::EnsureWindow() {
                clockSwitch_);
     clockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
 
+    dblClickCleanSwitch_ = ToggleSwitch();
+    placeRight(makeCard(widgetGroup, L"\uE762", L"双击空白处隐藏磁贴",
+                        L"在桌面空白处双击鼠标左键，隐藏/再次显示磁贴、时钟与图标"),
+               dblClickCleanSwitch_);
+    dblClickCleanSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveConfig(); });
+
     // ============ 第二个二级页面：桌面壁纸 ============
     // 本块构建的内容全部挂在 wallPaperRoot 上，由左侧导航切换显示。
     {
@@ -676,6 +682,7 @@ void SettingsController::EnsureWindow() {
     startMenuSwitch_.IsOn(cfg.searchStartMenu);
     followThemeSwitch_.IsOn(cfg.followSystemTheme);
     clockSwitch_.IsOn(cfg.showClock);
+    dblClickCleanSwitch_.IsOn(cfg.dblClickCleanMode);
     hotkeyModeCombo_.SelectedIndex(cfg.hotkeyMode == L"custom" ? 1 : 0);
     zoneCardsCombo_.SelectedIndex(cfg.zoneColumnCards >= 5 ? 1 : 0);
     columnSpacingBox_.Value(static_cast<double>(cfg.zoneColumnSpacing));
@@ -733,6 +740,7 @@ void SettingsController::SaveConfig() {
     if (startMenuSwitch_) cfg.searchStartMenu = startMenuSwitch_.IsOn();
     cfg.followSystemTheme = followThemeSwitch_.IsOn();
     if (clockSwitch_) cfg.showClock = clockSwitch_.IsOn();
+    if (dblClickCleanSwitch_) cfg.dblClickCleanMode = dblClickCleanSwitch_.IsOn();
 
     auto item = hotkeyModeCombo_.SelectedItem().try_as<ComboBoxItem>();
     if (item) {

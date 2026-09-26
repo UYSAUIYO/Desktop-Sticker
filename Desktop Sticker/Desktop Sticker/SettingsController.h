@@ -44,6 +44,7 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch searchKnownFoldersSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch startMenuSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch clockSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch dblClickCleanSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch followThemeSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox hotkeyModeCombo_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox zoneCardsCombo_{ nullptr };

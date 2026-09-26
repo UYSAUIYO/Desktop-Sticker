@@ -43,6 +43,7 @@ bool ConfigStore::Load() {
         cfg.zoneRowSpacing = j.value("zoneRowSpacing", 72);
         cfg.zoneColumnCards = j.value("zoneColumnCards", 4);
         cfg.showClock = j.value("showClock", true);
+        cfg.dblClickCleanMode = j.value("dblClickCleanMode", true);
         config_ = cfg;
         return true;
     } catch (...) {
@@ -70,6 +71,7 @@ bool ConfigStore::Save() const {
     j["zoneRowSpacing"] = config_.zoneRowSpacing;
     j["zoneColumnCards"] = config_.zoneColumnCards;
     j["showClock"] = config_.showClock;
+    j["dblClickCleanMode"] = config_.dblClickCleanMode;
 
     // 原子替换（tmp + MoveFileEx 统一封装）
     return WriteFileAtomic(configPath_, j.dump(2));

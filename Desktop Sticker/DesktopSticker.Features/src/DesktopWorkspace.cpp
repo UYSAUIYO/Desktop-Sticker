@@ -125,7 +125,10 @@ bool DesktopWorkspace::Initialize() {
         inputForwarder_ = std::make_unique<MouseInputForwarder>(
             &shell_, [this](POINT pt) { return ZoneAtPoint(pt); });
         inputForwarder_->isCleanMode = [this]() { return cleanMode_; };
-        inputForwarder_->onBlankDesktopDoubleClick = [this]() { ToggleCleanDesktop(); };
+        // 手势可由设置关闭：每次触发时读最新配置，设置页改动即时生效
+        inputForwarder_->onBlankDesktopDoubleClick = [this]() {
+            if (config_->GetConfig().dblClickCleanMode) ToggleCleanDesktop();
+        };
         inputForwarder_->Start();
         StartDesktopWatcher();
         if (config_->GetConfig().showClock) CreateClock();
