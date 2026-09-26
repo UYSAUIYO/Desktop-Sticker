@@ -558,12 +558,16 @@ void DesktopWorkspace::SetCleanMode(bool hidden) {
     dstklog::Write(L"workspace", std::wstring(L"clean desktop mode -> ") +
                                        (cleanMode_ ? L"on (tiles hidden)" : L"off (tiles shown)"));
     for (auto& w : zoneWindows_) {
-        ShowWindow(w->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
+        ShowWindow(w->Hwnd(), hidden ? SW_HIDE : SW_SHOW);
+        // 分层窗口（ULW）在隐藏再显示后表面内容会丢（窗口 visible 但位图没重新合成，
+        // 时钟靠自己的秒级定时器自愈，磁贴不会）——显示后必须强制重绘把位图重新推上去
+        if (!hidden) w->Refresh();
     }
     if (clock_ && clock_->Hwnd()) {
-        ShowWindow(clock_->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
+        ShowWindow(clock_->Hwnd(), hidden ? SW_HIDE : SW_SHOW);
     }
-    if (iconManager_) iconManager_->HideAllIcons(cleanMode_);
+    // 原生图标列表的显隐不归这里管：正常状态它就应该是隐藏的（图标由磁贴展示），
+    // 之前在这里 HideAllIcons(false) 会把未分类的原生图标整个放出来
 }
 
 void DesktopWorkspace::RestoreDesktop() {
