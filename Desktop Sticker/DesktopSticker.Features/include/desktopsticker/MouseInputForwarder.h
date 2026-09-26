@@ -41,6 +41,8 @@ private:
     POINT forwardDownPt_{};
     DWORD blankDownTick_ = 0;
     POINT blankDownPt_{};
+    bool blankCandidateLog_ = true;  // 双击候选到达只报一次（诊断）
+    bool blankRejectLog_ = true;     // 桌面层拒绝只报一次（诊断"双击无效"用）
 };
 
 } // namespace desktopsticker

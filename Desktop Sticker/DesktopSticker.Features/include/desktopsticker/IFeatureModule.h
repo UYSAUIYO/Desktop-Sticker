@@ -44,6 +44,9 @@ public:
     virtual void SetConfig(const AppConfig& config) = 0;
     virtual void OpenItem(const std::wstring& path) = 0;
     virtual void RestoreDesktop() = 0;
+    // 磁贴显隐（干净桌面模式）：托盘菜单切换用。true = 磁贴/时钟已隐藏
+    virtual bool TilesHidden() = 0;
+    virtual void SetTilesHidden(bool hidden) = 0;
     // 取文件/快捷方式关联图标（磁贴与搜索面板共用的统一提取管线，含 UWP 关联类型兜底）。
     // 返回的 HICON 由模块缓存持有，调用方不得 DestroyIcon。
     virtual HICON GetIcon(const std::wstring& path, int size) = 0;

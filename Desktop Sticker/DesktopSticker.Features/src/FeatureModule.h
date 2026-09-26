@@ -30,6 +30,8 @@ public:
     void SetConfig(const AppConfig& config) override;
     void OpenItem(const std::wstring& path) override;
     void RestoreDesktop() override;
+    bool TilesHidden() override;
+    void SetTilesHidden(bool hidden) override;
     HICON GetIcon(const std::wstring& path, int size) override;
 
 private:

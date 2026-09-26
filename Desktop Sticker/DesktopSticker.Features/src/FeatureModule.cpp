@@ -148,6 +148,14 @@ void FeatureModule::RestoreDesktop() {
     if (workspace_) workspace_->RestoreDesktop();
 }
 
+bool FeatureModule::TilesHidden() {
+    return workspace_ && workspace_->IsCleanMode();
+}
+
+void FeatureModule::SetTilesHidden(bool hidden) {
+    if (workspace_) workspace_->SetCleanMode(hidden);
+}
+
 HICON FeatureModule::GetIcon(const std::wstring& path, int size) {
     return iconService_ ? iconService_->GetIcon(path, size) : nullptr;
 }

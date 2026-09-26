@@ -29,6 +29,9 @@ public:
     void Shutdown();
 
     void ToggleCleanDesktop();
+    // 磁贴显隐的绝对设置（托盘菜单用）：true = 隐藏磁贴/时钟
+    bool IsCleanMode() const { return cleanMode_; }
+    void SetCleanMode(bool hidden);
     void RestoreDesktop();
     void Refresh();
     void SetZoneSpacing(int columnSpacing, int rowSpacing);

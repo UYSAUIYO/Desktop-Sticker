@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "desktopsticker/MouseInputForwarder.h"
 
+#include "desktopsticker/Log.h"
+
 #include <commctrl.h>
 #include <cstdlib>
 
@@ -93,19 +95,36 @@ void MouseInputForwarder::DetectDesktopBlankDoubleClick(const POINT& pt) {
     blankDownTick_ = now;
     blankDownPt_ = pt;
     if (!dblclk) return;
+    if (blankCandidateLog_) {
+        blankCandidateLog_ = false; // 诊断：双击候选确实到达（之后被哪一关拦下看后续日志）
+        dstklog::Write(L"input", L"blank dbl-click candidate reached the desktop-layer check");
+    }
 
-    // 确认双击发生在桌面层（Progman/WorkerW/listView），而不是其他应用窗口上
+    // 确认双击发生在桌面层，而不是其他应用窗口上。
+    // 判定放宽为"根是任意 WorkerW/Progman"：壁纸嵌入会造出第二个 WorkerW，
+    // shell 记录的那个不一定还是 DefView 当前的根（实测：hit=SHELLDLL_DefView、
+    // root=另一个 WorkerW，旧检查因此把所有双击都拒了）。
     HWND hit = WindowFromPoint(pt);
     if (!hit) return;
     const HWND root = GetAncestor(hit, GA_ROOT);
     const auto& w = shell_->Windows();
-    if (root != w.workerw && root != w.progman && hit != w.listView) return;
-
-    // 双击落在时钟小组件上：不是桌面空白（时钟嵌入桌面层，GA_ROOT 检查拦不住它）
-    {
-        wchar_t cls[64]{};
-        GetClassNameW(hit, cls, 64);
-        if (wcscmp(cls, L"DesktopSticker.ClockWindow") == 0) return;
+    wchar_t hitCls[64]{}, rootCls[64]{};
+    GetClassNameW(hit, hitCls, 64);
+    GetClassNameW(root, rootCls, 64);
+    const bool desktopLayer =
+        root == w.workerw || root == w.progman || hit == w.listView || hit == w.defView ||
+        wcscmp(rootCls, L"WorkerW") == 0 || wcscmp(rootCls, L"Progman") == 0;
+    // 自家表面明确不算桌面空白：壁纸（HTTRANSPARENT 平时不会成为 hit，兜底排除）
+    // 与时钟（嵌入桌面层，GA_ROOT 检查拦不住它）
+    const bool ownSurface = wcscmp(hitCls, L"DesktopSticker.WallPaper.Window") == 0 ||
+                            wcscmp(hitCls, L"DesktopSticker.ClockWindow") == 0;
+    if (!desktopLayer || ownSurface) {
+        if (blankRejectLog_) {
+            blankRejectLog_ = false; // 只报一次：改动桌面构成后重启应用会再报
+            dstklog::Write(L"input", std::wstring(L"blank dbl-click rejected: hit=") +
+                           hitCls + L" root=" + rootCls);
+        }
+        return;
     }
 
     // 干净桌面模式：分区已隐藏、图标列表已隐藏，直接恢复
@@ -113,7 +132,10 @@ void MouseInputForwarder::DetectDesktopBlankDoubleClick(const POINT& pt) {
         if (onBlankDesktopDoubleClick) onBlankDesktopDoubleClick();
         return;
     }
-    if (!w.listView || !IsWindow(w.listView) || !IsWindowVisible(w.listView)) return;
+    // 注意：列表窗口在正常模式下被 HideAllIcons(true) 整体隐藏（图标由磁贴展示），
+    // 所以这里**不能**检查 IsWindowVisible——那会让手势在正常模式下永远失效。
+    // 只要求列表存在；LVM_HITTEST 对隐藏窗口同样有效。
+    if (!w.listView || !IsWindow(w.listView)) return;
 
     // LVM_HITTEST 的 LVHITTESTINFO* 必须位于 Explorer 进程内存，否则 Explorer 崩溃
     DWORD pid = 0;

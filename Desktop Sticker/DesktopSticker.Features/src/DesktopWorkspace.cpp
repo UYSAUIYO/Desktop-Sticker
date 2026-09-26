@@ -549,7 +549,14 @@ void DesktopWorkspace::DestroyZoneWindows() {
 }
 
 void DesktopWorkspace::ToggleCleanDesktop() {
-    cleanMode_ = !cleanMode_;
+    SetCleanMode(!cleanMode_);
+}
+
+void DesktopWorkspace::SetCleanMode(bool hidden) {
+    if (cleanMode_ == hidden) return;
+    cleanMode_ = hidden;
+    dstklog::Write(L"workspace", std::wstring(L"clean desktop mode -> ") +
+                                       (cleanMode_ ? L"on (tiles hidden)" : L"off (tiles shown)"));
     for (auto& w : zoneWindows_) {
         ShowWindow(w->Hwnd(), cleanMode_ ? SW_HIDE : SW_SHOW);
     }
