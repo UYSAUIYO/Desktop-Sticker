@@ -384,7 +384,7 @@ void ClockWidget::ReleaseD2D() {
     if (wicFactory_) wicFactory_->Release();
     wicFactory_ = nullptr;
     fmtTime_ = nullptr; fmtSub_ = nullptr; fmtLoc_ = nullptr; fmtNum_ = nullptr;
-    fmtCard_ = nullptr; fmtTemp_ = nullptr; fmtDesc_ = nullptr;
+    fmtCard_ = nullptr; fmtVal_ = nullptr; fmtTemp_ = nullptr; fmtDesc_ = nullptr;
     timeGradBrush_ = nullptr; timeStops_ = nullptr;
     sunCoreBrush_ = nullptr; sunCoreStops_ = nullptr;
     sunGlowBrush_ = nullptr; sunGlowStops_ = nullptr;
@@ -464,7 +464,12 @@ ID2D1Bitmap* ClockWidget::IconBitmap(int qcode) {
                                            WICBitmapPaletteTypeCustom)) &&
                 SUCCEEDED(target_->CreateBitmapFromWicBitmap(conv, nullptr, &bmp))) {
                 iconBitmaps_[qcode] = bmp;
-                if (attempt == 999 && qcode != 999) iconBitmaps_[999] = bmp;
+                if (attempt == 999 && qcode != 999) {
+                    // 兜底图同时缓存到 999：map 的每个键各持一份引用，
+                    // 不 AddRef 的话 ReleaseD2D 会对同一位图 Release 两次
+                    bmp->AddRef();
+                    iconBitmaps_[999] = bmp;
+                }
             }
             if (conv) conv->Release();
             if (frame) frame->Release();

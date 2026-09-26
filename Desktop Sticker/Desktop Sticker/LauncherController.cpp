@@ -312,13 +312,22 @@ void LauncherController::BuildGroup(const std::wstring& source, const wchar_t* t
         tile.Tapped([this, globalIdx](auto const&, auto const&) {
             OpenIndex(globalIdx);
         });
-        tile.PointerEntered([this, globalIdx](winrt::Windows::Foundation::IInspectable const&,
+        // RunSearch 会整体重建 tiles_/results_：事件若与重建交错，globalIdx 可能越界。
+        // 捕获 tile 自身的弱引用来摸背景，越界直接放弃。
+        winrt::weak_ref<Border> weakTile = tile;
+        tile.PointerEntered([this, weakTile, globalIdx](winrt::Windows::Foundation::IInspectable const&,
                                               winrt::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
-            if (globalIdx != selectedIndex_) tiles_[static_cast<size_t>(globalIdx)].Background(hoverBrush_);
+            if (globalIdx != selectedIndex_ && globalIdx >= 0 &&
+                static_cast<size_t>(globalIdx) < tiles_.size()) {
+                if (auto t = weakTile.get()) t.Background(hoverBrush_);
+            }
         });
-        tile.PointerExited([this, globalIdx](winrt::Windows::Foundation::IInspectable const&,
+        tile.PointerExited([this, weakTile, globalIdx](winrt::Windows::Foundation::IInspectable const&,
                                              winrt::Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
-            if (globalIdx != selectedIndex_) tiles_[static_cast<size_t>(globalIdx)].Background(idleBrush_);
+            if (globalIdx != selectedIndex_ && globalIdx >= 0 &&
+                static_cast<size_t>(globalIdx) < tiles_.size()) {
+                if (auto t = weakTile.get()) t.Background(idleBrush_);
+            }
         });
 
         LoadTileIconAsync(results_[static_cast<size_t>(globalIdx)].path, img);

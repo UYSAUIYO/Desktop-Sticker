@@ -15,6 +15,7 @@ public:
     using TextInputPredicate = std::function<bool()>;
 
     explicit HotkeyService(Clock clock = DefaultClock);
+    ~HotkeyService();   // 兜底 Stop：joinable 的 std::thread 直接析构会 std::terminate
 
     bool Start();
     void Stop();

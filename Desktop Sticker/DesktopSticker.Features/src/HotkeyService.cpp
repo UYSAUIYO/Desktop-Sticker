@@ -36,6 +36,10 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 HotkeyService::HotkeyService(Clock clock)
     : clock_(std::move(clock)) {}
 
+HotkeyService::~HotkeyService() {
+    Stop();   // 兜底：调用方漏调 Stop 时，joinable 的 std::thread 析构会 std::terminate
+}
+
 long long HotkeyService::DefaultClock() {
     return static_cast<long long>(GetTickCount64());
 }

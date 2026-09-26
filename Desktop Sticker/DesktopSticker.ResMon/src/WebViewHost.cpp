@@ -29,6 +29,14 @@ bool pump_until(const std::function<bool()>& done, DWORD timeoutMs) {
 
 } // namespace
 
+// WebView2 持有完成回调直到异步操作结束，回调可能晚于 Create 返回（超时/重入 Destroy）。
+// 等待状态必须放堆上、由回调自己持有 shared_ptr——按引用捕获栈变量就是悬垂写。
+struct CreateAwait {
+    bool done = false;
+    Microsoft::WRL::ComPtr<ICoreWebView2Environment> env;
+    Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller;
+};
+
 WebViewHost::~WebViewHost() {
     Destroy();
 }
@@ -36,6 +44,7 @@ WebViewHost::~WebViewHost() {
 bool WebViewHost::Create(HWND hwnd, const std::wstring& assetsDir, const std::wstring& userDataDir,
                          CommandHandler handler) {
     Destroy();
+    abandoned_ = false;
 
     hwnd_ = hwnd;
     assetsDir_ = assetsDir;
@@ -51,41 +60,36 @@ bool WebViewHost::Create(HWND hwnd, const std::wstring& assetsDir, const std::ws
     std::error_code ec;
     std::filesystem::create_directories(userDataDir, ec);
 
-    bool envDone = false;
-    bool envOk = false;
-    HRESULT envResult = E_FAIL;
+    auto awaitEnv = std::make_shared<CreateAwait>();
     auto envHandler = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-        [&](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
-            envResult = hr;
-            if (SUCCEEDED(hr) && env) {
-                env_ = env;
-                envOk = true;
-            }
-            envDone = true;
+        [awaitEnv](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
+            if (SUCCEEDED(hr) && env) awaitEnv->env = env;
+            awaitEnv->done = true;
             return S_OK;
         });
 
     const HRESULT startHr = CreateCoreWebView2EnvironmentWithOptions(
         nullptr, userDataDir.c_str(), nullptr, envHandler.Get());
     if (FAILED(startHr)) return false;
-    if (!pump_until([&] { return envDone; }, kAsyncTimeoutMs) || !envOk) {
-        (void)envResult;
+    if (!pump_until([&] { return awaitEnv->done || abandoned_; }, kAsyncTimeoutMs) || abandoned_ ||
+        !awaitEnv->env) {
         return false;
     }
+    env_ = awaitEnv->env;
 
-    bool ctlDone = false;
-    bool ctlOk = false;
+    auto awaitCtl = std::make_shared<CreateAwait>();
     auto ctlHandler = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-        [&](HRESULT hr, ICoreWebView2Controller* controller) -> HRESULT {
-            if (SUCCEEDED(hr) && controller) {
-                controller_ = controller;
-                ctlOk = true;
-            }
-            ctlDone = true;
+        [awaitCtl](HRESULT hr, ICoreWebView2Controller* controller) -> HRESULT {
+            if (SUCCEEDED(hr) && controller) awaitCtl->controller = controller;
+            awaitCtl->done = true;
             return S_OK;
         });
     if (FAILED(env_->CreateCoreWebView2Controller(hwnd_, ctlHandler.Get()))) return false;
-    if (!pump_until([&] { return ctlDone; }, kAsyncTimeoutMs) || !ctlOk) return false;
+    if (!pump_until([&] { return awaitCtl->done || abandoned_; }, kAsyncTimeoutMs) || abandoned_ ||
+        !awaitCtl->controller) {
+        return false;
+    }
+    controller_ = awaitCtl->controller;
 
     if (FAILED(controller_->get_CoreWebView2(&core_)) || !core_) return false;
 
@@ -201,6 +205,7 @@ HRESULT WebViewHost::on_web_message(ICoreWebView2WebMessageReceivedEventArgs* ar
 }
 
 void WebViewHost::Destroy() {
+    abandoned_ = true;   // 若 Create 正在泵消息等待，让它立刻放弃
     ready_ = false;
     handler_ = nullptr;
 

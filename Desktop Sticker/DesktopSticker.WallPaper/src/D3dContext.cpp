@@ -260,6 +260,7 @@ bool D3dContext::Resize(int width, int height) {
     targetBitmap_.Reset();
     frameBitmap_.Reset();
     frameWidth_ = frameHeight_ = 0;
+    backBufferRtv_.Reset();   // DXGI 要求 ResizeBuffers 前释放后缓冲的全部引用
 
     const HRESULT hr = swapChain_->ResizeBuffers(0, static_cast<UINT>(width),
                                                  static_cast<UINT>(height),

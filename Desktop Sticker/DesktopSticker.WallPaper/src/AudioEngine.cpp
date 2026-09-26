@@ -41,7 +41,9 @@ void AudioEngine::SetSource(std::unique_ptr<IAudioSource> source) {
         source_ = std::move(source);
         sourceChanged_ = true;
     }
-    converter_.Reset();
+    // converter_ 的重置交给音频线程：ensure_open_locked 看到 sourceChanged_ 会在
+    // **自己的线程**上 Reset（converter_ 只归音频线程碰）。在这里跨线程 Reset
+    // 与音频线程的 Process 构成数据竞争，double 撕裂会让重采样相位变 NaN。
 }
 
 void AudioEngine::SetMuted(bool muted) { muted_.store(muted); }

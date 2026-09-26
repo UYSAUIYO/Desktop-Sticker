@@ -61,9 +61,13 @@ HICON IconService::ExtractWithImageFactory(const std::wstring& path, int size) {
 
 HICON IconService::GetIcon(const std::wstring& path, int size) {
     const auto key = std::make_pair(path, size);
-    auto it = cache_.find(key);
-    if (it != cache_.end()) return it->second;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        const auto it = cache_.find(key);
+        if (it != cache_.end()) return it->second;
+    }
 
+    // 提取在锁外做：可能走 Shell 慢路径，别让别的线程在缓存锁上干等
     HICON icon = ExtractWithShell(path, size);
     if (!icon) icon = ExtractWithImageFactory(path, size);
     if (!icon) {
@@ -75,11 +79,18 @@ HICON IconService::GetIcon(const std::wstring& path, int size) {
         SHGetFileInfoW(L".exe", FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi), flags);
         icon = sfi.hIcon;
     }
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    if (const auto it = cache_.find(key); it != cache_.end()) {
+        // 并发提取：别的线程已经先入缓存，自己这份销毁防泄漏
+        if (icon) DestroyIcon(icon);
+        return it->second;
+    }
     if (icon) cache_[key] = icon;
     return icon;
 }
 
 void IconService::ClearCache() {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
     for (auto& [key, icon] : cache_) {
         if (icon) DestroyIcon(icon);
     }

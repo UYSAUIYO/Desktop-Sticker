@@ -35,6 +35,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool ready_ = false;
+    bool abandoned_ = false;   // Create 等待期间被重入 Destroy 时置位，Create 据此尽早放弃
     std::wstring assetsDir_;
     CommandHandler handler_;
     EventRegistrationToken msgToken_{};

@@ -15,6 +15,9 @@ Host::Host() {
 }
 
 Host::~Host() {
+    // ResMon 也要卸载：之前全工程无人调用 UnloadResMon，模块对象与整个
+    // DLL 映射要拖到进程退出才由 OS 回收
+    UnloadResMon();
     UnloadWallPaper();
     UnloadFeatures();
 }

@@ -45,6 +45,16 @@ bool pump_until(const std::function<bool()>& done, DWORD timeoutMs) {
     return true;
 }
 
+// WebView2 持有完成回调直到异步操作结束；回调可能晚于本函数返回（超时/WM_QUIT/
+// 中途 Close）才触发。等待状态必须放堆上由回调自己持有 shared_ptr——
+// 按引用捕获本函数的栈变量就是悬垂写。
+struct WebView2Await {
+    bool done = false;
+    bool ok = false;
+    Microsoft::WRL::ComPtr<ICoreWebView2Environment> env;
+    Microsoft::WRL::ComPtr<ICoreWebView2CompositionController> composition;
+};
+
 } // namespace
 
 bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) {
@@ -76,15 +86,14 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
     }
     std::filesystem::create_directories(userData, ec);
 
-    bool envDone = false;
-    bool envOk = false;
+    auto awaitEnv = std::make_shared<WebView2Await>();
     auto envHandler = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-        [&](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
+        [awaitEnv](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
             if (SUCCEEDED(hr) && env) {
-                env_ = env;
-                envOk = true;
+                awaitEnv->env = env;
+                awaitEnv->ok = true;
             }
-            envDone = true;
+            awaitEnv->done = true;
             return S_OK;
         });
 
@@ -95,12 +104,13 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
         wp_log("web backend: CreateCoreWebView2EnvironmentWithOptions failed");
         return false;
     }
-    if (!pump_until([&] { return envDone; }, kAsyncTimeoutMs) || !envOk) {
+    if (!pump_until([&] { return awaitEnv->done; }, kAsyncTimeoutMs) || !awaitEnv->ok) {
         lastError_ = "WebView2 environment";
         wp_log("web backend: WebView2 environment unavailable (runtime not installed?)");
         Close();
         return false;
     }
+    env_ = awaitEnv->env;
 
     // CreateCoreWebView2CompositionController 是 ICoreWebView2Environment3 起的接口
     Microsoft::WRL::ComPtr<ICoreWebView2Environment3> env3;
@@ -111,15 +121,14 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
         return false;
     }
 
-    bool ctlDone = false;
-    bool ctlOk = false;
+    auto awaitCtl = std::make_shared<WebView2Await>();
     auto ctlHandler = Callback<ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
-        [&](HRESULT hr, ICoreWebView2CompositionController* controller) -> HRESULT {
+        [awaitCtl](HRESULT hr, ICoreWebView2CompositionController* controller) -> HRESULT {
             if (SUCCEEDED(hr) && controller) {
-                composition_ = controller;
-                ctlOk = true;
+                awaitCtl->composition = controller;
+                awaitCtl->ok = true;
             }
-            ctlDone = true;
+            awaitCtl->done = true;
             return S_OK;
         });
     if (FAILED(env3->CreateCoreWebView2CompositionController(hwnd_, ctlHandler.Get()))) {
@@ -128,12 +137,13 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
         Close();
         return false;
     }
-    if (!pump_until([&] { return ctlDone; }, kAsyncTimeoutMs) || !ctlOk) {
+    if (!pump_until([&] { return awaitCtl->done; }, kAsyncTimeoutMs) || !awaitCtl->ok) {
         lastError_ = "composition controller";
         wp_log("web backend: composition controller unavailable");
         Close();
         return false;
     }
+    composition_ = awaitCtl->composition;
 
     // 视觉宿主对象同时实现 ICoreWebView2Controller（bounds/visible/CoreWebView2 都在那边）
     if (FAILED(composition_.As(&controller_)) || !controller_ ||
@@ -295,17 +305,17 @@ void WebBackend::suspend(bool want) {
         return;
     }
 
-    bool done = false;
-    bool ok = false;
+    auto awaitSuspend = std::make_shared<WebView2Await>();
     auto handler = Callback<ICoreWebView2TrySuspendCompletedHandler>(
-        [&](HRESULT hr, BOOL succeeded) -> HRESULT {
-            ok = SUCCEEDED(hr) && succeeded;
-            done = true;
+        [awaitSuspend](HRESULT hr, BOOL succeeded) -> HRESULT {
+            awaitSuspend->ok = SUCCEEDED(hr) && succeeded;
+            awaitSuspend->done = true;
             return S_OK;
         });
     if (FAILED(core3->TrySuspend(handler.Get()))) return;
-    if (!pump_until([&] { return done; }, 3000)) return;
-    wp_log(ok ? "web backend: suspended" : "web backend: suspend refused (page still active)");
+    if (!pump_until([&] { return awaitSuspend->done; }, 3000)) return;
+    wp_log(awaitSuspend->ok ? "web backend: suspended"
+                            : "web backend: suspend refused (page still active)");
 }
 
 } // namespace desktopsticker::wallpaper

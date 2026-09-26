@@ -100,7 +100,8 @@ bool ResMonWindow::Create() {
 
 void ResMonWindow::Destroy() {
     if (!hwnd_) return;
-    onDestroy_(); // 先让宿主释放 WebView2 控制器，再销毁窗口
+    // WebView2 的释放统一交给 WM_DESTROY 里的 onDestroy_（用户点 X 走的也是这条路），
+    // 这里只负责销毁窗口，避免 handler 被调用两次
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
     clientW_ = clientH_ = 0;
@@ -151,6 +152,9 @@ LRESULT CALLBACK ResMonWindow::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             DestroyWindow(hwnd); // 销毁而非隐藏
             return 0;
         case WM_DESTROY: {
+            // 用户点 X 也要释放 WebView2 控制器（之前只有 Destroy() 显式调，
+            // 点 X 关窗后控制器/浏览器进程一直存活到下次 Show 或模块 Shutdown）
+            if (self && self->onDestroy_) self->onDestroy_();
             if (self) self->hwnd_ = nullptr;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             return 0;

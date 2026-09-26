@@ -867,7 +867,15 @@ bool video_subsystem_start() {
 }
 
 void video_subsystem_stop() {
-    if (g_mfRefs.fetch_sub(1) == 1) {
+    // Start 在 video_subsystem_start 之前失败时，Stop 仍会无条件走到这里；
+    // 计数为 0 再递减会下溢成 -1，下一次 start 的 fetch_add 返回 -1 就跳过 MFStartup，
+    // 之后所有 MF 调用永久失败——这里把下溢挡死。
+    int prev = g_mfRefs.fetch_sub(1);
+    if (prev <= 0) {
+        g_mfRefs.store(0);
+        return;
+    }
+    if (prev == 1) {
         MFShutdown();
     }
 }

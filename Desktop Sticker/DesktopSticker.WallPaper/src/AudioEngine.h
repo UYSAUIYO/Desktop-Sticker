@@ -77,7 +77,8 @@ private:
     std::unique_ptr<IAudioSource> source_;
     bool sourceChanged_ = false;
 
-    // 以下仅音频线程访问
+    // 以下仅音频线程访问（converter_ 也只在音频线程 Reset/Process——
+    // SetSource 只置 sourceChanged_，重置由 ensure_open_locked 在音频线程完成）
     IAudioClient* client_ = nullptr;
     IAudioRenderClient* render_ = nullptr;
     IAudioClock* clock_ = nullptr;

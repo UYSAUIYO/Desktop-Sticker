@@ -250,14 +250,18 @@ void WallPaperModuleImpl::Shutdown() {
 }
 
 std::vector<WallPaperItem> WallPaperModuleImpl::ListItems() {
+    std::lock_guard<std::mutex> lock(libraryMutex_);   // worker 线程会并发 Update
     if (!library_) return {};
     return library_->List();
 }
 
 bool WallPaperModuleImpl::Import(const std::wstring& srcPath, std::wstring& outId) {
-    if (!library_) return false;
-    if (!library_->Import(srcPath, outId)) return false;
-
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        if (!library_) return false;
+        if (!library_->Import(srcPath, outId)) return false;
+    }
+    // 锁外调用：queue_prepare_artifacts 会 join 上一个 worker，worker 又要拿这把锁
     queue_prepare_artifacts(outId); // 缩略图与性能副本后台生成，不阻塞调用方
     if (events_.libraryChanged) events_.libraryChanged();
 
@@ -272,13 +276,19 @@ bool WallPaperModuleImpl::Import(const std::wstring& srcPath, std::wstring& outI
 }
 
 bool WallPaperModuleImpl::Rename(const std::wstring& id, const std::wstring& name) {
-    if (!library_ || !library_->Rename(id, name)) return false;
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        if (!library_ || !library_->Rename(id, name)) return false;
+    }
     if (events_.libraryChanged) events_.libraryChanged();
     return true;
 }
 
 bool WallPaperModuleImpl::Remove(const std::wstring& id) {
-    if (!library_ || !library_->Remove(id)) return false;
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        if (!library_ || !library_->Remove(id)) return false;
+    }
 
     if (state_.settings.activeId == id) {
         state_.settings.activeId.clear();
@@ -300,12 +310,16 @@ HICON WallPaperModuleImpl::GetThumbnail(const std::wstring& id, int size) {
     }
 
     // 优先用生成好的 poster.png，缺失时退回 Shell 缩略图
-    std::wstring picture = library_->PosterPath(id);
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(picture, ec)) {
-        picture.clear();
-        for (const auto& item : library_->List()) {
-            if (item.id == id) { picture = library_->SourcePath(item); break; }
+    std::wstring picture;
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        picture = library_->PosterPath(id);
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(picture, ec)) {
+            picture.clear();
+            for (const auto& item : library_->List()) {
+                if (item.id == id) { picture = library_->SourcePath(item); break; }
+            }
         }
     }
     if (picture.empty()) return nullptr;
@@ -323,6 +337,11 @@ HICON WallPaperModuleImpl::GetThumbnail(const std::wstring& id, int size) {
     }
 
     std::lock_guard<std::mutex> lock(thumbMutex_);
+    if (const auto it = thumbs_.find(key); it != thumbs_.end()) {
+        // 并发 miss：别的线程已经先缓存了，自己的这份是多余的，销毁防泄漏
+        if (icon) DestroyIcon(icon);
+        return it->second;
+    }
     thumbs_[key] = icon; // 失败也缓存 nullptr，避免反复尝试
     return icon;
 }
@@ -416,7 +435,12 @@ bool WallPaperModuleImpl::ChangeLibraryRoot(const std::wstring& newRoot) {
     state_.settings.libraryRoot = newRoot;
     store_.SaveState(state_);
 
-    library_ = std::make_unique<MediaLibrary>(newRoot, store_);
+    {
+        // 整个换根在锁内：转码 worker 持着同一把锁调 library_->Update，
+        // 不锁的话 worker 会在已销毁的旧 MediaLibrary 上写（UAF）
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        library_ = std::make_unique<MediaLibrary>(newRoot, store_);
+    }
     if (state_.settings.enabled && !state_.settings.activeId.empty()) {
         request_play(state_.settings.activeId);
     }
@@ -454,32 +478,35 @@ bool WallPaperModuleImpl::request_play(const std::wstring& id) {
 
     std::wstring path;
     BackendKind kind = BackendKind::Video;
-    for (const auto& item : library_->List()) {
-        if (item.id != id) continue;
-        kind = item.kind;
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        for (const auto& item : library_->List()) {
+            if (item.id != id) continue;
+            kind = item.kind;
 
-        if (kind != BackendKind::Video) {
-            // 目录型后端：源就是条目里的对应子目录
-            const std::filesystem::path dir(library_->ItemDir(item.id));
-            path = (dir / backend_kind_content_subdir(kind)).wstring();
+            if (kind != BackendKind::Video) {
+                // 目录型后端：源就是条目里的对应子目录
+                const std::filesystem::path dir(library_->ItemDir(item.id));
+                path = (dir / backend_kind_content_subdir(kind)).wstring();
+                break;
+            }
+
+            // 档位只对视频有意义：首选副本不存在就回落原画
+            VariantAvailability avail;
+            avail.hasBalanced = item.hasBalanced &&
+                std::filesystem::is_regular_file(library_->VariantPath(id, VariantKind::Balanced,
+                                                                       kVariantRevision));
+            avail.hasPowerSaver = item.hasPowerSaver &&
+                std::filesystem::is_regular_file(library_->VariantPath(id, VariantKind::PowerSaver,
+                                                                       kVariantRevision));
+            const VariantKind effective =
+                resolve_effective_variant(state_.settings.preferred, avail);
+
+            path = (effective == VariantKind::Original)
+                       ? library_->SourcePath(item)
+                       : library_->VariantPath(id, effective, kVariantRevision);
             break;
         }
-
-        // 档位只对视频有意义：首选副本不存在就回落原画
-        VariantAvailability avail;
-        avail.hasBalanced = item.hasBalanced &&
-            std::filesystem::is_regular_file(library_->VariantPath(id, VariantKind::Balanced,
-                                                                   kVariantRevision));
-        avail.hasPowerSaver = item.hasPowerSaver &&
-            std::filesystem::is_regular_file(library_->VariantPath(id, VariantKind::PowerSaver,
-                                                                   kVariantRevision));
-        const VariantKind effective =
-            resolve_effective_variant(state_.settings.preferred, avail);
-
-        path = (effective == VariantKind::Original)
-                   ? library_->SourcePath(item)
-                   : library_->VariantPath(id, effective, kVariantRevision);
-        break;
     }
     if (path.empty()) return false;
 

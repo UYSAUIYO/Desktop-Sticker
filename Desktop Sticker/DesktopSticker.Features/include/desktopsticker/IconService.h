@@ -1,5 +1,6 @@
 #pragma once
 #include <map>
+#include <mutex>
 #include <string>
 
 #include "desktopsticker/Export.h"
@@ -20,6 +21,8 @@ private:
     HICON ExtractWithShell(const std::wstring& path, int size);
     HICON ExtractWithImageFactory(const std::wstring& path, int size);
 
+    // 缓存可能被 UI 线程（磁贴渲染）与宿主搜索面板并发访问，map 必须有锁
+    mutable std::mutex cacheMutex_;
     std::map<std::pair<std::wstring, int>, HICON> cache_;
 };
 
