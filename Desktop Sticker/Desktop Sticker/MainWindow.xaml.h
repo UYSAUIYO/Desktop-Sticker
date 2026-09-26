@@ -30,6 +30,11 @@ namespace winrt::Desktop_Sticker::implementation
         void OnTrayMessage(WPARAM wParam, LPARAM lParam);
 
     private:
+        // 退出前显式停掉各功能模块。Application::Exit()/窗口析构链不会可靠地走到
+        // 模块 Shutdown（实测：XAML 壳没了、模块还活着——磁贴留在桌面、壁纸线程继续跑）。
+        void ShutdownModules();
+        bool m_modulesShutDown = false;
+
         static LRESULT CALLBACK TraySubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                                  UINT_PTR id, DWORD_PTR data);
 

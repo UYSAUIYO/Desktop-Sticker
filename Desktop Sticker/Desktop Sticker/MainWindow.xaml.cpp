@@ -29,7 +29,30 @@ namespace winrt::Desktop_Sticker::implementation
         this->m_inner.as<::IWindowNative>()->get_WindowHandle(&hwnd);
         m_hwnd = hwnd;
         SetWindowSubclass(m_hwnd, TraySubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
+        // 主窗口被关（WM_CLOSE / close_app.ps1）时同样要走完整清理：
+        // Closed 里显式停模块并退出，别指望 Application 的析构链
+        Closed([this](IInspectable const&, IInspectable const&) {
+            ShutdownModules();
+            try { Application::Current().Exit(); } catch (...) {}
+        });
         AddTrayIcon();
+    }
+
+    void MainWindow::ShutdownModules()
+    {
+        // 顺序：磁贴（用户可见的销毁+图标还原）→ 壁纸（停渲染/音频线程）→ 资源管理器。
+        // 三者的 Shutdown 都幂等，之后析构链再触发一次也无害。
+        if (m_modulesShutDown) return;
+        m_modulesShutDown = true;
+        try {
+            if (m_host && m_host->Module()) m_host->Module()->Shutdown();
+        } catch (...) {}
+        try {
+            if (m_host && m_host->WallPaper()) m_host->WallPaper()->Shutdown();
+        } catch (...) {}
+        try {
+            if (m_host && m_host->ResMon()) m_host->ResMon()->Shutdown();
+        } catch (...) {}
     }
 
     void MainWindow::AttachSettings(desktopsticker::app::SettingsController* settings)
@@ -104,7 +127,10 @@ namespace winrt::Desktop_Sticker::implementation
                 } else if (cmd == 4 && resmonOk) {
                     m_host->ResMon()->Show();
                 } else if (cmd == 3) {
-                    // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）
+                    // 显式退出 WinUI 应用（仅 WM_CLOSE 不会结束应用）。
+                    // Exit() 的收尾不会可靠走到模块析构（实测磁贴残留、壁纸线程存活），
+                    // 必须先在这里显式停模块，把磁贴销毁、图标还原做完。
+                    ShutdownModules();
                     Application::Current().Exit();
                 }
             } catch (...) {
