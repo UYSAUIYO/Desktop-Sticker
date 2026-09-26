@@ -15,6 +15,14 @@ namespace desktopsticker {
 enum class VariantKind { Original, Balanced, PowerSaver };
 
 // 壁纸后端类型。决定用哪条渲染/解码管线。
+// 解码 / 渲染路径。用户可以在设置里指定；每一档失败都会记日志并向下退让，不会黑屏。
+enum class DecodePath {
+    Auto,               // 硬件优先：FFmpeg+NVDEC → MF/D3D11 → 软件
+    FfmpegHardware,     // 只用 FFmpeg + NVIDIA 硬解（NVDEC/CUDA）
+    MediaFoundationD3d, // 只用 MF + D3D11 硬解（DXVA）
+    Cpu,                // 纯软件解码（兼容性最好，最费 CPU）
+};
+
 enum class BackendKind {
     Video,          // 视频文件（MF 为主，FFmpeg 兜底）
     AnimatedImage,  // GIF / 动态 WebP / APNG
@@ -48,6 +56,8 @@ struct WallPaperSettings {
     // 音频全局开关，**默认关闭**；音量 0..1
     bool audioEnabled = false;
     float audioVolume = 1.0f;
+    // 解码/渲染路径（自动 / FFmpeg+Vulkan 硬解 / MF+D3D11 硬解 / 纯 CPU）
+    DecodePath decodePath = DecodePath::Auto;
 };
 
 } // namespace desktopsticker

@@ -24,7 +24,7 @@ public:
     void Close() override;
 
     bool SelfPresenting() const override { return false; }
-    bool ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) override;
+    bool ProduceFrame(VideoFrame& out) override;
     void SetPaused(bool paused) override;
     void SetSpeed(double speed) override;
     double TargetFps() const override;

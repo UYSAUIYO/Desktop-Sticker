@@ -32,7 +32,7 @@ public:
     void Close() override;
 
     bool SelfPresenting() const override { return true; }
-    bool ProduceFrame(std::vector<uint8_t>&, int&, int&) override { return false; }
+    bool ProduceFrame(VideoFrame&) override { return false; }
     void Tick() override;
 
     void SetPaused(bool paused) override;

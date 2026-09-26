@@ -79,6 +79,11 @@ void FrameSchedulerLoop::SetPaused(bool paused) {
     paused_.store(paused);
 }
 
+std::string FrameSchedulerLoop::BackendName() const {
+    std::lock_guard<std::mutex> lock(backendNameMutex_);
+    return backendName_;
+}
+
 void FrameSchedulerLoop::pump_messages(bool& quit) {
     MSG msg;
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -115,6 +120,13 @@ void FrameSchedulerLoop::apply_pending_backend() {
         const auto d = arbiter_.OnBackendClosed();
         if (d.change) d3d_.Resume();
     }
+    if (backend_ == nullptr) {
+        // 没有后端了：回显归零，免得设置页还显示着上一次的帧率
+        measuredFps_.store(0.0);
+        playing_.store(false);
+        std::lock_guard<std::mutex> lock(backendNameMutex_);
+        backendName_ = "-";
+    }
     lastPaused_ = false;   // 新后端要以当前状态重新同步一次
 
     if (clear || !has) return;
@@ -124,6 +136,7 @@ void FrameSchedulerLoop::apply_pending_backend() {
     ctx.width = window_.Width();
     ctx.height = window_.Height();
     ctx.d3dDevice = d3d_.Device();
+    ctx.nv12Present = d3d_.Nv12Available();
     ctx.exeDir = exeDir_;
     ctx.libraryRoot = libraryRoot_;
     ctx.audio = audio_;
@@ -152,6 +165,10 @@ void FrameSchedulerLoop::apply_pending_backend() {
     lastPaused_ = paused_.load();
     lastSpeed_ = speed_.load();
     wp_log(std::string("backend active: ") + candidate->Name());
+    {
+        std::lock_guard<std::mutex> lock(backendNameMutex_);
+        backendName_ = candidate->Name();
+    }
     backend_ = std::move(candidate);
 }
 
@@ -220,6 +237,20 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
     uint32_t diagLastSerial = 0;
     int diagLastW = 0;
     int diagLastH = 0;
+    int64_t diagWantUs = 0;   // 请求的等待时长
+    int64_t diagLateUs = 0;   // 实际等待 - 请求（>0 = 睡过头）
+    int64_t diagPumpUs = 0;   // 消息泵 + 后端切换 + 每拍的非解码开销
+    double diagSrcFps = 0.0;  // 后端上报的源帧率与据此算出的节拍时长（诊断"节拍网格不对"）
+    int64_t diagFrameMs = 0;
+    std::string diagMaster = "qpc";
+    // 设置页要显示的实时帧率：1 秒窗口（日志仍按 10 秒一行，免得刷屏）
+    int64_t pubStart = qpc_100ns();
+    int pubFrames = 0;
+    int64_t diagPeriodUs = 0;  // 实测拍长（相邻两次循环顶端的间隔）
+    int64_t diagSleptUs = 0;   // 实测睡眠时长（不区分是否睡过头）
+    int64_t lastPumpStart = 0;
+    int diagMissed = 0;        // 错过期限（网格跳步）的次数
+    int64_t diagMaxPumpUs = 0; // 单拍最大耗时
 
     // 用后端自己的帧序号统计"真正出了几帧"：产帧型与自呈现型共用同一条路径，
     // 否则自呈现型会一直显示 0/s，看着像卡死
@@ -227,8 +258,10 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         const uint32_t serial = backend_->FrameSerial();
         if (serial == diagLastSerial) return;
         // 后端被换掉时序号会归零，此时只记 1 帧，不能按无符号相减算
-        diagDistinct += (serial > diagLastSerial)
+        const int added = (serial > diagLastSerial)
             ? static_cast<int>(serial - diagLastSerial) : 1;
+        diagDistinct += added;
+        pubFrames += added;
         diagLastSerial = serial;
     };
 
@@ -243,13 +276,41 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
                    std::to_string(diagTicks > 0 ? diagDecodeUs / diagTicks : 0) + "us present=" +
                    std::to_string(diagTicks > 0 ? diagPresentUs / diagTicks : 0) + "us size=" +
                    std::to_string(diagLastW) + "x" + std::to_string(diagLastH) + " backend=" +
-                   backendName);
+                   backendName + " want=" + std::to_string(diagTicks > 0 ? diagWantUs / diagTicks : 0) +
+                   "us late=" + std::to_string(diagTicks > 0 ? diagLateUs / diagTicks : 0) +
+                   "us pump=" + std::to_string(diagTicks > 0 ? diagPumpUs / diagTicks : 0) +
+                   "us srcFps=" + std::to_string(diagSrcFps) + " frameMs=" +
+                   std::to_string(diagFrameMs) + " master=" + diagMaster +
+                   " period=" + std::to_string(diagTicks > 0 ? diagPeriodUs / diagTicks : 0) +
+                   "us slept=" + std::to_string(diagTicks > 0 ? diagSleptUs / diagTicks : 0) +
+                   "us missed=" + std::to_string(static_cast<int>(diagMissed / secs)) + "/s maxPump=" +
+                   std::to_string(diagMaxPumpUs) + "us");
             diagDeadline = diagNow + 100000000LL;
             diagStart = diagNow;
             diagTicks = diagDistinct = 0;
             diagDecodeUs = diagPresentUs = 0;
+            diagWantUs = diagLateUs = diagPumpUs = 0;
+            diagPeriodUs = diagSleptUs = 0;
+            diagMissed = 0;
+            diagMaxPumpUs = 0;
         }
+        {
+            const int64_t pubNow = qpc_100ns();
+            if (pubNow - pubStart >= 10000000LL) {   // 1 秒
+                const double secs = static_cast<double>(pubNow - pubStart) / 10000000.0;
+                measuredFps_.store(secs > 0.0 ? pubFrames / secs : 0.0);
+                lastFrameW_.store(diagLastW);
+                lastFrameH_.store(diagLastH);
+                playing_.store(backend_ != nullptr && !paused_.load());
+                pubStart = pubNow;
+                pubFrames = 0;
+            }
+        }
+
         bool quitRequested = false;
+        const int64_t pumpStart = qpc_100ns();
+        if (lastPumpStart != 0) diagPeriodUs += (pumpStart - lastPumpStart) / 10;
+        lastPumpStart = pumpStart;
         pump_messages(quitRequested);
         if (quitRequested) quit_.store(true);
         if (quit_.load()) break;
@@ -287,20 +348,34 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
             continue;
         }
 
-        int w = 0, h = 0;
+        // 产帧型：CPU 给 BGRA 缓冲、GPU 给 NV12 纹理，两条上屏路径
+        VideoFrame frame;
+        frame.pixels = &frameBuffer_;
         const int64_t t0 = qpc_100ns();
-        if (backend_->ProduceFrame(frameBuffer_, w, h) && w > 0 && h > 0) {
+        if (backend_->ProduceFrame(frame) && frame.width > 0 && frame.height > 0) {
             const int64_t t1 = qpc_100ns();
             diagDecodeUs += (t1 - t0) / 10;
-            diagLastW = w;
-            diagLastH = h;
-            if (!d3d_.PresentBgra(frameBuffer_.data(), w, h, w * 4)) {
+            diagLastW = frame.width;
+            diagLastH = frame.height;
+            static int s_presTrace = 0;
+            if (s_presTrace++ < 12) {
+                wp_log(std::string("loop: frame gpu=") + (frame.on_gpu() ? "1" : "0") +
+                       " " + std::to_string(frame.width) + "x" + std::to_string(frame.height) +
+                       " -> presenting");
+            }
+            const bool presented =
+                frame.on_gpu()
+                    ? d3d_.PresentNv12(frame.texture, frame.subresource, frame.width, frame.height)
+                    : d3d_.PresentBgra(frame.pixels->data(), frame.width, frame.height,
+                                       frame.width * 4);
+            if (!presented) {
                 wp_log(std::string("present failed: ") + d3d_.LastError());
             }
             diagPresentUs += (qpc_100ns() - t1) / 10;
         }
         ++diagTicks;
         count_frames();
+        diagPumpUs += (qpc_100ns() - pumpStart) / 10;
 
         // 主时钟：有音轨且未静音时跟音频时钟走（音画不漂），否则用 QPC。
         // 注意：`should_drop_to_catch_up` 那套"落后即丢帧"尚未接线 —— 它需要帧 PTS
@@ -324,12 +399,26 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         const double fps = backend_->TargetFps();
         const int64_t frameDuration =
             static_cast<int64_t>(10000000.0 / (fps > 1.0 ? fps : 30.0));
+        diagSrcFps = fps;
+        diagFrameMs = frameDuration / 10000;   // 100ns → ms
+        diagMaster = (master == ClockMaster::Audio) ? "audio" : "qpc";
         deadline = next_deadline_not_before(deadline, frameDuration, now);
 
         const auto sched = schedule_frame(now, deadline);
+        if (sched.skipBacklog) ++diagMissed;
+        {
+            const int64_t thisPump = (qpc_100ns() - pumpStart) / 10;
+            if (thisPump > diagMaxPumpUs) diagMaxPumpUs = thisPump;
+        }
         // 单次等待上限 100ms，保证停止请求能及时响应
         const int64_t capped = sched.waitHundredNs > 10000000 ? 10000000 : sched.waitHundredNs;
+        diagWantUs += capped / 10;
+        const int64_t beforeWait = qpc_100ns();
         wait_ticks(capped > 0 ? capped : 0);
+        // 只统计真正的"睡过头"（提前醒来不算，那属于调度抖动）
+        const int64_t sleptUs = (qpc_100ns() - beforeWait) / 10;
+        diagSleptUs += sleptUs;
+        if (sleptUs > capped / 10) diagLateUs += sleptUs - capped / 10;
     }
 
     running_.store(false);

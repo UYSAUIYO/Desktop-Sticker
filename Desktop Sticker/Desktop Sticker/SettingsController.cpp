@@ -7,12 +7,14 @@
 // 壁纸后端的"能力"是纯函数（谁能调速/谁能出声/谁是自呈现型），
 // 放在 header-only 的 BackendKind.h 里，EXE 侧直接复用，不必给模块接口加 vtable
 #include <desktopsticker/wallpaper/BackendKind.h>
+#include <desktopsticker/wallpaper/DecodePath.h>
 
 #include <winrt/Microsoft.UI.Text.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <shobjidl.h>
@@ -30,6 +32,15 @@ namespace {
 SolidColorBrush Solid(BYTE a, BYTE r, BYTE g, BYTE b) {
     return SolidColorBrush(winrt::Windows::UI::Color{a, r, g, b});
 }
+
+// 播放方式下拉的档位与顺序；填项 / 回读 / 回显三处共用一份，避免各自写错顺序
+constexpr desktopsticker::DecodePath kDecodePaths[] = {
+    desktopsticker::DecodePath::Auto,
+    desktopsticker::DecodePath::FfmpegHardware,
+    desktopsticker::DecodePath::MediaFoundationD3d,
+    desktopsticker::DecodePath::Cpu,
+};
+constexpr int kDecodePathCount = static_cast<int>(sizeof(kDecodePaths) / sizeof(kDecodePaths[0]));
 
 } // namespace
 
@@ -49,6 +60,11 @@ void SettingsController::EnsureWindow() {
     window_.Closed([this](auto&&, auto&&) {
         closed_ = true;
         visible_ = false;
+        // 计时器必须在窗口销毁前停掉：否则下一次 Tick 会访问已销毁的控件
+        if (playbackTimer_) {
+            playbackTimer_.Stop();
+            playbackTimer_ = nullptr;
+        }
     });
     desktopsticker::app::AppLog("settings", "EnsureWindow begin");
 
@@ -420,6 +436,49 @@ void SettingsController::EnsureWindow() {
                wallPaperAudioSwitch_);
     wallPaperAudioSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
 
+    wallPaperDecodePathCombo_ = ComboBox();
+    wallPaperDecodePathCombo_.MinWidth(230);
+    {
+        // 四档：自动 / FFmpeg+Vulkan 硬解 / MF+D3D11 硬解 / CPU 软解。
+        // 名字与顺序必须与 DecodePath 的持久化映射一致（见 DecodePath.h）。
+        for (auto p : kDecodePaths) {
+            auto entry = ComboBoxItem();
+            entry.Content(box_value(desktopsticker::wallpaper::decode_path_name(p)));
+            wallPaperDecodePathCombo_.Items().Append(entry);
+        }
+    }
+    placeRight(makeCard(wallPaperGroup, L"\uE950", L"播放方式",
+                        L"换一条解码/呈现路径，切换后立刻重开（不必重启）；某条路不可用会自动回落"),
+               wallPaperDecodePathCombo_);
+    wallPaperDecodePathCombo_.SelectionChanged([this](winrt::Windows::Foundation::IInspectable const&, SelectionChangedEventArgs const&) { SaveWallPaper(); });
+
+    // 当前播放状态：整宽一行，由计时器每秒刷新
+    {
+        auto border = Border();
+        border.CornerRadius(CornerRadiusHelper::FromUniformRadius(8));
+        border.Background(cardBg);
+        border.BorderBrush(cardStroke);
+        border.BorderThickness(ThicknessHelper::FromLengths(1, 1, 1, 1));
+        border.Padding(ThicknessHelper::FromLengths(20, 12, 20, 12));
+
+        auto stack = StackPanel();
+        stack.Spacing(4);
+        auto header = TextBlock();
+        header.Text(L"当前播放状态");
+        header.FontSize(14);
+        stack.Children().Append(header);
+
+        wallPaperPlaybackText_ = TextBlock();
+        wallPaperPlaybackText_.FontSize(12);
+        wallPaperPlaybackText_.Foreground(textSecondary);
+        wallPaperPlaybackText_.TextWrapping(TextWrapping::Wrap);
+        wallPaperPlaybackText_.Text(L"—");
+        stack.Children().Append(wallPaperPlaybackText_);
+
+        border.Child(stack);
+        wallPaperGroup.Children().Append(border);
+    }
+
     {
         // 音量：滑块 + 百分比文字，右对齐成一组
         auto panel = StackPanel();
@@ -623,6 +682,12 @@ void SettingsController::EnsureWindow() {
     rowSpacingBox_.Value(static_cast<double>(cfg.zoneRowSpacing));
     RefreshApps();
     RefreshWallPaperControls(); // 壁纸状态由模块持有，窗口重建后必须重新拉取
+
+    // 帧率是"活的"，只能靠定时器刷；1 秒一次足够，且只在窗口存活期间跑
+    playbackTimer_ = winrt::Microsoft::UI::Xaml::DispatcherTimer();
+    playbackTimer_.Interval(std::chrono::milliseconds(1000));
+    playbackTimer_.Tick([this](auto&&, auto&&) { RefreshPlaybackText(); });
+    playbackTimer_.Start();
     loading_ = false;
 }
 
@@ -726,7 +791,9 @@ void SettingsController::RefreshWallPaperControls() {
             wallPaperStatus_.Text(L"动态壁纸不可用（组件缺失，或存储位置校验未通过；详见 debug.log）");
         }
         if (wallPaperGrid_) wallPaperGrid_.Items().Clear();
+        if (wallPaperDecodePathCombo_) wallPaperDecodePathCombo_.IsEnabled(false);
         wallpaperLoading_ = false;
+        RefreshPlaybackText();   // 这里会显示"壁纸模块不可用"，别让上一次的帧率留在界面上
         return;
     }
 
@@ -739,6 +806,14 @@ void SettingsController::RefreshWallPaperControls() {
         const int index = settings.preferred == VariantKind::PowerSaver ? 2
                         : settings.preferred == VariantKind::Balanced ? 1 : 0;
         wallPaperVariantCombo_.SelectedIndex(index);
+    }
+    if (wallPaperDecodePathCombo_) {
+        int index = 0;
+        for (int i = 0; i < kDecodePathCount; ++i) {
+            if (kDecodePaths[i] == settings.decodePath) { index = i; break; }
+        }
+        wallPaperDecodePathCombo_.SelectedIndex(index);
+        wallPaperDecodePathCombo_.IsEnabled(available);
     }
     if (wallPaperSpeedCombo_) {
         // 与 EnsureWindow 里的档位数组一致；找不到就落到 1×
@@ -841,6 +916,35 @@ void SettingsController::RefreshWallPaperControls() {
                               L"\n共 " + std::to_wstring(items.size()) + L" 个壁纸");
     }
     wallpaperLoading_ = false;
+    RefreshPlaybackText();   // 控件刷新时顺手刷一次回显，不必等下一个 Tick
+}
+
+// 设置页要能回答："现在到底走的哪条路、多少帧"。请求的路径与实际后端分开显示 ——
+// 请求的那条路可能因为环境不可用而回落，只显示选择值会骗人。
+void SettingsController::RefreshPlaybackText() {
+    if (!window_ || closed_ || !wallPaperPlaybackText_) return;
+
+    auto* wp = host_ ? host_->WallPaper() : nullptr;
+    if (!wp || !wp->Available()) {
+        wallPaperPlaybackText_.Text(L"壁纸模块不可用（详见 debug.log）");
+        return;
+    }
+
+    const auto st = wp->PlaybackStatus();
+    std::wstring text = L"设置：" + st.requestedPath + L"\n实际：" +
+                        (st.backend.empty() ? L"-" : st.backend);
+    if (st.playing && st.fps > 0.0) {
+        // 一位小数自己拼，不依赖 printf 家族（EXE 的 pch 没包 <cstdio>）
+        const long long tenths = static_cast<long long>(st.fps * 10.0 + 0.5);
+        text += L"\n实测 " + std::to_wstring(tenths / 10) + L"." +
+                std::to_wstring(tenths % 10) + L" fps · 帧 " + std::to_wstring(st.width) +
+                L"×" + std::to_wstring(st.height);
+    } else if (st.playing) {
+        text += L"\n正在启动…";
+    } else {
+        text += L"\n未在播放（已暂停、未启用，或刚切换完正在启动）";
+    }
+    wallPaperPlaybackText_.Text(text);
 }
 
 void SettingsController::SaveWallPaper() {
@@ -862,6 +966,10 @@ void SettingsController::SaveWallPaper() {
         static const double kSpeeds[] = { 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0 };
         const int index = wallPaperSpeedCombo_.SelectedIndex();
         if (index >= 0 && index < 8) settings.speed = kSpeeds[index];
+    }
+    if (wallPaperDecodePathCombo_) {
+        const int index = wallPaperDecodePathCombo_.SelectedIndex();
+        if (index >= 0 && index < kDecodePathCount) settings.decodePath = kDecodePaths[index];
     }
     if (wallPaperAudioSwitch_) settings.audioEnabled = wallPaperAudioSwitch_.IsOn();
     if (wallPaperVolumeSlider_) {

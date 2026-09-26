@@ -4,6 +4,7 @@
 #include "Log.h"
 #include "Utf8.h"
 #include "desktopsticker/wallpaper/BackendKind.h"
+#include "desktopsticker/wallpaper/DecodePath.h"
 
 #include <nlohmann/json.hpp>
 
@@ -15,7 +16,7 @@ namespace desktopsticker::wallpaper {
 namespace {
 
 constexpr int kLibraryVersion = 2;   // v2：条目新增 kind 字段
-constexpr int kStateVersion = 1;
+constexpr int kStateVersion = 2;   // v2：补上速度/音频/解码路径（旧文件按默认值读入）
 
 const char* variant_to_string(VariantKind k) {
     switch (k) {
@@ -91,6 +92,12 @@ PersistedState WallPaperStore::LoadState() const {
             state.settings.preferred = variant_from_string(s.value("preferred", "original"));
             state.settings.pauseOnFullscreen = s.value("pauseOnFullscreen", true);
             state.settings.pauseOnLock = s.value("pauseOnLock", true);
+            // 这三个曾经漏存，导致设置页里的速度/声音/音量重启即丢
+            state.settings.speed = s.value("speed", 1.0);
+            state.settings.audioEnabled = s.value("audioEnabled", false);
+            state.settings.audioVolume = s.value("audioVolume", 1.0f);
+            state.settings.decodePath =
+                decode_path_from_string(s.value("decodePath", std::string("auto")));
         }
         if (j.contains("storage")) {
             const auto& st = j["storage"];
@@ -117,6 +124,10 @@ bool WallPaperStore::SaveState(const PersistedState& state) const {
         {"preferred", variant_to_string(state.settings.preferred)},
         {"pauseOnFullscreen", state.settings.pauseOnFullscreen},
         {"pauseOnLock", state.settings.pauseOnLock},
+        {"speed", state.settings.speed},
+        {"audioEnabled", state.settings.audioEnabled},
+        {"audioVolume", state.settings.audioVolume},
+        {"decodePath", decode_path_to_string(state.settings.decodePath)},
     };
     j["storage"] = {
         {"root", to_utf8(state.storage.root)},

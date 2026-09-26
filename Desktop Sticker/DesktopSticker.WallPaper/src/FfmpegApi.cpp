@@ -59,6 +59,9 @@ bool FfmpegApi::Load(const std::wstring& ffmpegDir) {
     HMODULE format = load(L"avformat-");
     HMODULE scale = load(L"swscale-");
     HMODULE resample = load(L"swresample-");
+    HMODULE filter = load(L"avfilter-");
+    // avfilter 只用于"GPU 侧缩放/转换"这条加速链；它缺失不该让解码整体不可用，
+    // 所以不放进下面这个必要条件里，后面单独看一眼。
     if (!util || !codec || !format || !scale || !resample) return false;
 
     bool ok = true;
@@ -99,7 +102,42 @@ bool FfmpegApi::Load(const std::wstring& ffmpegDir) {
     DSTK_BIND(resample, swr_init);
     DSTK_BIND(resample, swr_convert);
     DSTK_BIND(resample, swr_free);
+    // 硬件解码（NVDEC）相关：都在 avutil 里
+    DSTK_BIND(util, av_hwdevice_ctx_create);
+    DSTK_BIND(util, av_hwframe_transfer_data);
+    DSTK_BIND(util, av_buffer_ref);
+    DSTK_BIND(util, av_buffer_unref);
+    DSTK_BIND(util, av_get_pix_fmt_name);
+    DSTK_BIND(util, av_strerror);
+    DSTK_BIND(util, av_free);
 #undef DSTK_BIND
+
+    // 滤镜链（GPU 侧缩放/像素格式转换）是可选的加速路径：avfilter 缺失或符号不全时
+    // 只关掉这条链，解码与其它功能照旧，不能让整体加载失败。
+    bool filterOk = (filter != nullptr);
+    if (filter) {
+#define DSTK_BIND_F(name)                                                        \
+    do {                                                                         \
+        name = reinterpret_cast<decltype(name)>(GetProcAddress(filter, #name));   \
+        if (!name) { wp_log("ffmpeg symbol missing: " #name); filterOk = false; } \
+    } while (0)
+        DSTK_BIND_F(avfilter_get_by_name);
+        DSTK_BIND_F(avfilter_graph_alloc);
+        DSTK_BIND_F(avfilter_graph_alloc_filter);
+        DSTK_BIND_F(avfilter_init_dict);
+        DSTK_BIND_F(avfilter_graph_create_filter);
+        DSTK_BIND_F(avfilter_link);
+        DSTK_BIND_F(avfilter_graph_config);
+        DSTK_BIND_F(avfilter_graph_free);
+        DSTK_BIND_F(av_buffersrc_add_frame_flags);
+        DSTK_BIND_F(av_buffersrc_parameters_alloc);
+        DSTK_BIND_F(av_buffersrc_parameters_set);
+        DSTK_BIND_F(av_buffersink_get_frame);
+#undef DSTK_BIND_F
+    } else {
+        wp_log("avfilter unavailable; GPU-side scale/convert chain disabled");
+    }
+    filter_ok_ = filterOk;
 
     if (!ok) return false;
 

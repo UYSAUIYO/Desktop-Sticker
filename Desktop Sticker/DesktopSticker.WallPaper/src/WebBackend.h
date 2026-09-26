@@ -33,7 +33,7 @@ public:
 
     // 内容由 WebView2 经 DComp 画，调用方不调用 ProduceFrame，只每轮 Tick
     bool SelfPresenting() const override { return true; }
-    bool ProduceFrame(std::vector<uint8_t>&, int&, int&) override { return false; }
+    bool ProduceFrame(VideoFrame&) override { return false; }
     void Tick() override;
 
     void SetPaused(bool paused) override;

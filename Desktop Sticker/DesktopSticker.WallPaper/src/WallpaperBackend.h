@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "AudioEngine.h"
+#include "VideoSource.h"   // VideoFrame：产帧型的结果（CPU BGRA 或 GPU NV12 纹理）
 #include "desktopsticker/wallpaper/Types.h"
 
 namespace desktopsticker::wallpaper {
@@ -21,6 +22,8 @@ struct BackendContext {
     int width = 0;
     int height = 0;
     ID3D11Device* d3dDevice = nullptr; // 仅产帧型需要
+    // 能否把 NV12 纹理直接画上屏；为 false 时视频解码不要走硬解（画不出来等于黑屏）
+    bool nv12Present = false;
     std::wstring exeDir;               // 内置资源所在
     std::wstring libraryRoot;          // 壁纸库根
     AudioEngine* audio = nullptr;      // 可为 nullptr（无音频设备时）
@@ -37,6 +40,7 @@ struct BackendRequest {
     std::wstring sourcePath;   // 视频/动图 = 文件；序列/网页/着色器 = 目录
     std::wstring paramsPath;   // 可选：Shader3D 的参数 JSON
     double speed = 1.0;
+    DecodePath decodePath = DecodePath::Auto;   // 用户选的解码/渲染路径
 };
 
 class IWallpaperBackend {
@@ -50,8 +54,10 @@ public:
     // true = 自己呈现，调用方不调用 ProduceFrame
     virtual bool SelfPresenting() const = 0;
 
-    // 产帧型：产出一帧 BGRA（stride = w*4）。返回 false 表示本轮无新帧
-    virtual bool ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) = 0;
+    // 产帧型：产出一帧。返回 false 表示本轮没有**新**帧 —— 此时不要重新呈现，
+    // DComp 会保住上一帧（"保持帧"就是靠这个，不必把同一帧再画一遍）。
+    // 调用方负责把 out.pixels 指向自己的缓冲（CPU 路径零拷贝）。
+    virtual bool ProduceFrame(VideoFrame& out) = 0;
 
     // 自呈现型：每轮调用一次，由后端决定是否重绘
     virtual void Tick() {}

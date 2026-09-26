@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace desktopsticker::wallpaper {
@@ -21,6 +22,8 @@ public:
 
     // 上传一帧 BGRA（stride 为字节跨度）并按 cover 铺满窗口后呈现
     bool PresentBgra(const uint8_t* pixels, int width, int height, int stride);
+    // 直接画硬件解码出来的 NV12 纹理（GPU 色彩转换 + cover 缩放，全程不落回内存）
+    bool PresentNv12(ID3D11Texture2D* texture, uint32_t subresource, int width, int height);
     // 无视频时的纯色底
     bool Clear(float r, float g, float b);
 
@@ -37,6 +40,9 @@ public:
     bool SetRootVisual(IDCompositionVisual* visual);
     void RestoreRootVisual();
 
+    // 能否把 NV12 纹理直接画上屏。硬解前必须先问这个：开了硬解却画不出来会变成"黑屏不动"
+    bool Nv12Available() const { return device3_ && backBufferRtv_; }
+
     bool Valid() const { return targetBitmap_ != nullptr; }
     ID3D11Device* Device() const { return device_.Get(); }
     const char* LastError() const { return lastError_.c_str(); }
@@ -46,9 +52,13 @@ private:
     bool create_dcomp(HWND hwnd);
     bool create_d2d_target();
     bool ensure_frame_bitmap(int width, int height);
+    // NV12 上屏的 D3D11 管线（着色器运行时编译一次；SRV 建在**我们自己的**纹理上）
+    bool ensure_nv12_pipeline();
+    bool ensure_nv12_copy(int width, int height);
     void fail(const char* stage, long hr);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
+    Microsoft::WRL::ComPtr<ID3D11Device3> device3_;   // NV12 的 SRV 需要 desc1
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
     Microsoft::WRL::ComPtr<IDCompositionDevice> dcompDevice_;
@@ -59,6 +69,23 @@ private:
     Microsoft::WRL::ComPtr<ID2D1DeviceContext> d2dContext_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> targetBitmap_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> frameBitmap_;
+
+    // 交换链后缓冲的 RTV：GPU 路径直接画，不经过 D2D
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> backBufferRtv_;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader> nv12Vs_;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> nv12Ps_;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> nv12Params_;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> nv12Sampler_;
+    // 全屏三角形必须用 CullNone（默认光栅化状态会把它整面剔除，见 D3dContext.cpp）
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> nv12Rs_;
+    // 解码器给的纹理**不能直接建 SRV**（实测 CreateShaderResourceView1 返回 E_FAIL：
+    // 它不是按 SHADER_RESOURCE 用途建的），所以先拷进我们自己的 NV12 纹理再采样。
+    // 一次 GPU 侧拷贝，4K 也就十几 MB，比走 CPU 便宜得多。
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> nv12Copy_;
+    int nv12CopyWidth_ = 0;
+    int nv12CopyHeight_ = 0;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nv12Luma_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nv12Chroma_;
 
     int width_ = 0;
     int height_ = 0;

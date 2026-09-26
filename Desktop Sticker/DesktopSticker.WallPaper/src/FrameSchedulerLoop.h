@@ -5,6 +5,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -51,6 +52,14 @@ public:
     void ReassertBottom() { window_.PlaceAtBottom(); }
     const char* LastError() const { return d3d_.LastError(); }
 
+    // ---- 播放回显（设置页显示"当前方式 + 实时帧率"）----
+    // 渲染线程每秒更新一次；读取侧不做同步也不会读到半个值
+    double MeasuredFps() const { return measuredFps_.load(); }
+    int LastFrameWidth() const { return lastFrameW_.load(); }
+    int LastFrameHeight() const { return lastFrameH_.load(); }
+    bool Playing() const { return playing_.load(); }
+    std::string BackendName() const;
+
 private:
     void thread_main(std::promise<bool> init);
     void pump_messages(bool& quit);
@@ -83,6 +92,14 @@ private:
     double lastSpeed_ = 1.0;
     ClockMaster lastMaster_ = ClockMaster::Qpc;
     std::vector<uint8_t> frameBuffer_;
+
+    // 播放回显：渲染线程每秒写一次，设置页随时读（原子量，读到的是完整值）
+    std::atomic<double> measuredFps_{0.0};
+    std::atomic<int> lastFrameW_{0};
+    std::atomic<int> lastFrameH_{0};
+    std::atomic<bool> playing_{false};
+    mutable std::mutex backendNameMutex_;
+    std::string backendName_{"-"};
 };
 
 } // namespace desktopsticker::wallpaper

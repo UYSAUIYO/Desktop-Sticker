@@ -17,7 +17,12 @@
 #pragma warning(disable : 4244) // 固定的 FFmpeg 头文件内联辅助函数有窄化转换
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
+#include <libavutil/hwcontext.h>   // CUDA/NVDEC 硬解设备与 av_hwframe_transfer_data
+#include <libavutil/pixdesc.h>     // av_get_pix_fmt_name（未被其它 av* 头间接包含）
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
@@ -36,6 +41,8 @@ public:
     // 幂等；失败返回 false，仅禁用兜底解码，不影响 MF 主路径
     bool Load(const std::wstring& ffmpegDir);
     bool Loaded() const { return loaded_; }
+    // 滤镜链是否可用（GPU 侧缩放/转换）。缺失只影响 NVDEC 那条加速链
+    bool FilterOk() const { return filter_ok_; }
 
 #ifdef DSTK_HAVE_FFMPEG_SDK
     // 只声明实际用到的符号；decltype 取自真实头文件声明，故需构建期 SDK
@@ -69,12 +76,34 @@ public:
     DSTK_AV_FN(swr_init);
     DSTK_AV_FN(swr_convert);
     DSTK_AV_FN(swr_free);
+    // 硬件解码（NVDEC）：建 CUDA 设备、把显存帧搬回内存
+    DSTK_AV_FN(av_hwdevice_ctx_create);
+    DSTK_AV_FN(av_hwframe_transfer_data);
+    DSTK_AV_FN(av_buffer_ref);
+    DSTK_AV_FN(av_buffer_unref);
+    // 滤镜图：让 GPU 做缩放与像素格式转换（buffer → scale_cuda → hwdownload → format）
+    DSTK_AV_FN(avfilter_get_by_name);
+    DSTK_AV_FN(avfilter_graph_alloc);
+    DSTK_AV_FN(avfilter_graph_alloc_filter);   // 8.x：buffer 源要先 alloc、补参数、再 init
+    DSTK_AV_FN(avfilter_init_dict);
+    DSTK_AV_FN(avfilter_graph_create_filter);
+    DSTK_AV_FN(avfilter_link);
+    DSTK_AV_FN(avfilter_graph_config);
+    DSTK_AV_FN(avfilter_graph_free);
+    DSTK_AV_FN(av_buffersrc_add_frame_flags);
+    DSTK_AV_FN(av_buffersrc_parameters_alloc);
+    DSTK_AV_FN(av_buffersrc_parameters_set);
+    DSTK_AV_FN(av_buffersink_get_frame);
+    DSTK_AV_FN(av_get_pix_fmt_name);
+    DSTK_AV_FN(av_strerror);
+    DSTK_AV_FN(av_free);
 #undef DSTK_AV_FN
 #endif
 
 private:
     FfmpegApi() = default;
     bool loaded_ = false;
+    bool filter_ok_ = false;
 };
 
 } // namespace desktopsticker::wallpaper

@@ -24,6 +24,8 @@ private:
     void SaveConfig();
     void SaveWallPaper();
     void RefreshWallPaperControls();
+    // 每秒刷一次"当前播放方式 + 实时帧率"（由 DispatcherTimer 驱动）
+    void RefreshPlaybackText();
     void ImportWallPaper();
     void ImportWallPaperFolder();
     void OpenWallPaperConfigDir();
@@ -58,6 +60,9 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperSpeedCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperDecodePathCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperPlaybackText_{ nullptr };
+    winrt::Microsoft::UI::Xaml::DispatcherTimer playbackTimer_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperAudioSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Slider wallPaperVolumeSlider_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperVolumeLabel_{ nullptr };

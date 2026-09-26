@@ -19,6 +19,7 @@
 #include <shobjidl.h>
 
 #include "desktopsticker/wallpaper/BackendKind.h"
+#include "desktopsticker/wallpaper/DecodePath.h"
 #include "desktopsticker/wallpaper/FfmpegCommand.h"
 #include "desktopsticker/wallpaper/PausePolicy.h"
 #include "desktopsticker/wallpaper/VariantPolicy.h"
@@ -90,6 +91,7 @@ public:
     void SetUserPaused(bool paused) override;
     bool IsUserPaused() override;
     bool Available() override;
+    WallPaperPlaybackStatus PlaybackStatus() override;
 
 private:
     bool ensure_library_root();
@@ -337,6 +339,7 @@ bool WallPaperModuleImpl::SetSettings(const WallPaperSettings& settings) {
     const double previousSpeed = state_.settings.speed;
     const bool previousAudio = state_.settings.audioEnabled;
     const float previousVolume = state_.settings.audioVolume;
+    const DecodePath previousDecodePath = state_.settings.decodePath;
 
     state_.settings = settings;
     store_.SaveState(state_);
@@ -357,8 +360,13 @@ bool WallPaperModuleImpl::SetSettings(const WallPaperSettings& settings) {
     (void)previousAudio;
     (void)previousVolume;
 
-    // 换壁纸或换档位才需要重开后端
-    if (!wasEnabled || previousActive != settings.activeId) {
+    // 换壁纸、换档位、或换了播放方式 → 重开后端（路径要"随时可切"）
+    const bool pathChanged = previousDecodePath != settings.decodePath;
+    if (!wasEnabled || previousActive != settings.activeId || pathChanged) {
+        if (pathChanged && settings.enabled) {
+            wp_log(std::string("decode path -> ") +
+                   desktopsticker::wallpaper::decode_path_to_string(settings.decodePath));
+        }
         request_play(settings.activeId);
     }
     notify_playback();
@@ -429,6 +437,18 @@ bool WallPaperModuleImpl::Available() {
     return available_;
 }
 
+WallPaperPlaybackStatus WallPaperModuleImpl::PlaybackStatus() {
+    WallPaperPlaybackStatus st;
+    // 请求的路径 = 用户在设置里选的；实际后端 = 渲染线程打开后端时记下的名字
+    st.requestedPath = desktopsticker::wallpaper::decode_path_name(state_.settings.decodePath);
+    st.backend = from_utf8(loop_.BackendName());
+    st.fps = loop_.MeasuredFps();
+    st.width = loop_.LastFrameWidth();
+    st.height = loop_.LastFrameHeight();
+    st.playing = available_ && loop_.Running() && !loop_.Paused();
+    return st;
+}
+
 bool WallPaperModuleImpl::request_play(const std::wstring& id) {
     if (!library_ || id.empty()) return false;
 
@@ -483,6 +503,7 @@ bool WallPaperModuleImpl::request_play(const std::wstring& id) {
     request.kind = kind;
     request.sourcePath = path;
     request.speed = state_.settings.speed;
+    request.decodePath = state_.settings.decodePath;
     loop_.SetBackendRequest(request);   // 在渲染线程上打开（解码器不跨线程）
     loop_.SetPaused(false);
 

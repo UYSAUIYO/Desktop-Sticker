@@ -24,6 +24,18 @@ struct WallPaperEvents {
     std::function<void()> playbackStateChanged;
 };
 
+// 播放状态回显：设置页要能回答"当前到底走的哪条路、跑到多少帧"。
+// 注意区分两件事：**请求的**路径（用户选的）与**实际生效的**后端 ——
+// 请求的路径可能因为环境不可用而回落，所以两个都要给出来。
+struct WallPaperPlaybackStatus {
+    bool playing = false;
+    std::wstring requestedPath;   // 用户选的解码/渲染路径（显示名）
+    std::wstring backend;         // 实际生效的解码/呈现后端
+    double fps = 0.0;             // 实测出帧率（渲染线程每秒更新）
+    int width = 0;                // 当前帧尺寸
+    int height = 0;
+};
+
 class IWallPaperModule {
 public:
     virtual ~IWallPaperModule() = default;
@@ -53,6 +65,8 @@ public:
     virtual bool IsUserPaused() = 0;
     // 模块是否可用（库根校验通过、DLL 依赖齐备等）。不可用时设置页应禁用控件
     virtual bool Available() = 0;
+    // 播放状态回显；不可用/未播放时 playing=false，其余字段尽力而为
+    virtual WallPaperPlaybackStatus PlaybackStatus() = 0;
 };
 
 } // namespace desktopsticker

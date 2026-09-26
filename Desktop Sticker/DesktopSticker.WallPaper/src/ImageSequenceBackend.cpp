@@ -113,8 +113,9 @@ double ImageSequenceBackend::TargetFps() const {
     return 1000.0 / static_cast<double>(kSequenceFrameMs);
 }
 
-bool ImageSequenceBackend::ProduceFrame(std::vector<uint8_t>& bgra, int& w, int& h) {
+bool ImageSequenceBackend::ProduceFrame(VideoFrame& out) {
     if (frames_.empty() || paused_) return false;
+    if (!out.pixels) return false;
 
     const int64_t now = qpc_us();
     const int64_t elapsedMs = (now - lastTickUs_) / 1000;
@@ -122,21 +123,15 @@ bool ImageSequenceBackend::ProduceFrame(std::vector<uint8_t>& bgra, int& w, int&
 
     const FrameAdvance adv = frame_advance_policy(advanceState_, speed_, elapsedMs,
                                                  kSequenceFrameMs);
-    if (adv.consume == 0) {
-        if (lastW_ <= 0 || lastH_ <= 0) return false;   // 还没出过帧
-        w = lastW_;
-        h = lastH_;
-        return true;                                     // 缓冲区里已是上一帧，零拷贝
-    }
+    // 不足一帧：报"无新帧"，调用方不重新呈现（DComp 保住上一帧）
+    if (adv.consume == 0) return false;
 
     // 单张图片时 consume 会一直推进，取模后仍是同一帧，等价于静态壁纸
     index_ = (index_ + static_cast<size_t>(adv.consume)) % frames_.size();
 
-    if (!decode_current(bgra, w, h)) return false;
-    lastW_ = w;
-    lastH_ = h;
+    if (!decode_current(*out.pixels, out.width, out.height)) return false;
     ++serial_;
-    return w > 0 && h > 0;
+    return out.width > 0 && out.height > 0;
 }
 
 bool ImageSequenceBackend::decode_current(std::vector<uint8_t>& bgra, int& w, int& h) {

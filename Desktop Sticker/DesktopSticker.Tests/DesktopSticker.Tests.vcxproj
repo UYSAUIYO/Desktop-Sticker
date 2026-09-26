@@ -108,6 +108,8 @@
     <ClCompile Include="TestWallPaperPcmConvert.cpp" />
     <ClCompile Include="TestWallPaperDecodeTarget.cpp" />
     <ClCompile Include="TestWallPaperPolyhedron.cpp" />
+    <ClCompile Include="TestWallPaperCoverRect.cpp" />
+    <ClCompile Include="TestWallPaperDecodePath.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopSticker.Features\DesktopSticker.Features.vcxproj">

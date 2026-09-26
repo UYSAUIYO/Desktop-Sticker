@@ -64,7 +64,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)bin\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d2d1.lib;dcomp.lib;dwmapi.lib;mfplat.lib;mfreadwrite.lib;mf.lib;mfuuid.lib;windowscodecs.lib;ole32.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;d3dcompiler.lib;dxgi.lib;d2d1.lib;dcomp.lib;dwmapi.lib;mfplat.lib;mfreadwrite.lib;mf.lib;mfuuid.lib;windowscodecs.lib;ole32.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -87,7 +87,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SolutionDir)bin\$(Platform)\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d2d1.lib;dcomp.lib;dwmapi.lib;mfplat.lib;mfreadwrite.lib;mf.lib;mfuuid.lib;windowscodecs.lib;ole32.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;d3dcompiler.lib;dxgi.lib;d2d1.lib;dcomp.lib;dwmapi.lib;mfplat.lib;mfreadwrite.lib;mf.lib;mfuuid.lib;windowscodecs.lib;ole32.lib;shlwapi.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
