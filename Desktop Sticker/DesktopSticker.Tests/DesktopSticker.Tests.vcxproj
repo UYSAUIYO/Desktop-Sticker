@@ -108,6 +108,7 @@
     <ClCompile Include="TestWallPaperPcmConvert.cpp" />
     <ClCompile Include="TestWallPaperDecodeTarget.cpp" />
     <ClCompile Include="TestWallPaperPolyhedron.cpp" />
+    <ClCompile Include="TestWallPaperBevel.cpp" />
     <ClCompile Include="TestWallPaperCoverRect.cpp" />
     <ClCompile Include="TestWallPaperDecodePath.cpp" />
   </ItemGroup>

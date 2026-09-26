@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <utility>
 #include <vector>
 
 #include "MatMath.h"
@@ -210,6 +212,168 @@ inline MeshData build_truncated_icosahedron(const std::vector<Vec3>& palette, do
         }
     }
     return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// 倒角版本："拼面板"表面 —— 每个面向自身质心内缩，相邻面板的内缩边之间补倒角条，
+// 原始顶点处补三角帽。结果是一张闭合（水密）的表面：面板着主题色，倒角条与顶帽着
+// 深缝色，缝隙的行波发光交给片元着色器（见 bevel.frag）。同时输出原始凸包的边
+// （按无向对去重，共 90 条）作为线段列表，供外层"线框笼"反向旋转绘制。
+
+struct BevelMesh {
+    MeshData solid;                  // 面板 + 倒角条 + 顶帽（闭合、不透明）
+    std::vector<MeshVertex> wire;    // 线段拓扑：每条边 2 个顶点
+    int panelCount = 0;
+    int stripCount = 0;
+    int capCount = 0;
+    int edgeCount = 0;
+};
+
+inline BevelMesh build_beveled_truncated_icosahedron(const std::vector<Vec3>& palette,
+                                                     double radius = 2.0,
+                                                     double inset = 0.16) {
+    const std::vector<Vec3> pts = truncated_icosahedron_points(radius);
+    const std::vector<std::vector<int>> faces = convex_hull_faces(pts);
+
+    BevelMesh out;
+    const Vec3 seamColor{ 0.012, 0.020, 0.038 };    // 深缝色：发光的强弱由着色器控制
+    const Vec3 wireColor{ 0.125, 0.827, 0.933 };    // #22d3ee
+    const Vec3 fallbackColor{ 0.6, 0.7, 0.9 };
+
+    // 每个面：质心、外向法线、内缩环（仍在原平面内）
+    struct FaceData {
+        std::vector<int> ring;
+        Vec3 centroid{};
+        Vec3 normal{};
+        std::vector<Vec3> inset;
+    };
+    std::vector<FaceData> fd(faces.size());
+    for (size_t f = 0; f < faces.size(); ++f) {
+        auto& d = fd[f];
+        d.ring = faces[f];
+        for (int idx : d.ring) d.centroid = d.centroid + pts[static_cast<size_t>(idx)];
+        d.centroid = d.centroid * (1.0 / static_cast<double>(d.ring.size()));
+        d.normal = normalize(cross(pts[static_cast<size_t>(d.ring[1])] - pts[static_cast<size_t>(d.ring[0])],
+                                   pts[static_cast<size_t>(d.ring[2])] - pts[static_cast<size_t>(d.ring[1])]));
+        for (int idx : d.ring) {
+            d.inset.push_back(pts[static_cast<size_t>(idx)] +
+                              (d.centroid - pts[static_cast<size_t>(idx)]) * inset);
+        }
+    }
+
+    auto push_tri = [&](const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& color,
+                        uint32_t faceId) {
+        const Vec3 n = normalize(cross(b - a, c - a));
+        for (const Vec3* p : { &a, &b, &c }) {
+            MeshVertex mv;
+            mv.position = *p;
+            mv.normal = n;
+            mv.color = color;
+            out.solid.vertices.push_back(mv);
+        }
+        out.solid.faceIds.push_back(faceId);
+    };
+    // 面内缩点查表：面 f 的环里顶点 v 的下标
+    auto inset_of = [&](size_t f, int v) -> const Vec3& {
+        const auto& ring = fd[f].ring;
+        const size_t i = static_cast<size_t>(
+            std::find(ring.begin(), ring.end(), v) - ring.begin());
+        return fd[f].inset[i];
+    };
+
+    // 面板：内缩环扇形三角化（环的朝向从外面看逆时针，几何法线即外向面法线）
+    for (size_t f = 0; f < fd.size(); ++f) {
+        const auto& d = fd[f];
+        const Vec3 color = palette.empty() ? fallbackColor : palette[f % palette.size()];
+        for (size_t t = 1; t + 1 < d.inset.size(); ++t) {
+            push_tri(d.inset[0], d.inset[t], d.inset[t + 1], color, static_cast<uint32_t>(f));
+        }
+        ++out.panelCount;
+    }
+    // faceIds 与 vertices 同步：面板记面编号；倒角条/顶帽不属于任何原面，记哨兵值
+    constexpr uint32_t kNoFace = 0xFFFFFFFFu;
+
+    // 倒角条：每条原始边恰好被两个面共享，条连接这两个面的内缩边。
+    // 水密性要求有向边严格配对：面板环的有向边是 i→i+1（从外看逆时针），
+    // 所以条在 F 侧必须是 i+1→i；帽侧的有向边记下来最后连成顶帽三角。
+    std::map<std::pair<int, int>, bool> seenEdge;
+    std::map<int, std::vector<std::pair<int, int>>> capEdgesAt;   // 原始顶点 -> (fromFace, toFace)
+    for (size_t f = 0; f < fd.size(); ++f) {
+        const auto& d = fd[f];
+        const size_t n = d.ring.size();
+        for (size_t i = 0; i < n; ++i) {
+            const size_t j = (i + 1) % n;
+            const int vi = d.ring[i], vj = d.ring[j];
+            const std::pair<int, int> key =
+                vi < vj ? std::make_pair(vi, vj) : std::make_pair(vj, vi);
+            if (seenEdge.count(key)) continue;
+            seenEdge[key] = true;
+
+            // 邻面 G：共享 (vi, vj) 的另一个面（n=32，线性扫的代价可忽略）
+            int g = -1;
+            for (size_t t = 0; t < fd.size() && g < 0; ++t) {
+                if (t == f) continue;
+                const auto& ring = fd[t].ring;
+                const bool hasVi = std::find(ring.begin(), ring.end(), vi) != ring.end();
+                const bool hasVj = std::find(ring.begin(), ring.end(), vj) != ring.end();
+                if (hasVi && hasVj) g = static_cast<int>(t);
+            }
+
+            // 条的两个三角，顶点顺序保证与两侧面板的有向边互补：
+            //   F 侧：qF_j → qF_i（与面板的 qF_i → qF_j 配对）
+            //   G 侧：qG_i → qG_j（与面板的 qG_j → qG_i 配对，G 环方向与本条相反）
+            const Vec3& qF_i = d.inset[i];
+            const Vec3& qF_j = d.inset[j];
+            const Vec3& qG_i = inset_of(static_cast<size_t>(g), vi);
+            const Vec3& qG_j = inset_of(static_cast<size_t>(g), vj);
+            push_tri(qF_j, qF_i, qG_i, seamColor, kNoFace);
+            push_tri(qF_j, qG_i, qG_j, seamColor, kNoFace);
+            ++out.stripCount;
+
+            // 帽侧有向边：vi 端 F→G，vj 端 G→F
+            capEdgesAt[vi].push_back({ static_cast<int>(f), g });
+            capEdgesAt[vj].push_back({ g, static_cast<int>(f) });
+        }
+    }
+
+    // 顶帽：每个原始顶点上恰好 3 条有向帽边（A→B / C→A / B→C 形式）。
+    // 帽三角必须沿环的**反向**走（B→A→C），否则它的有向边与倒角条同向、法线朝内，
+    // 水密性和外向性同时被破坏（第一版就是这里错的）。
+    for (auto& [v, edges] : capEdgesAt) {
+        if (edges.size() != 3) continue;   // 凸包拓扑异常时不产出帽（测试会把数量对出来）
+        const int f0 = edges[0].first;
+        const int f1 = edges[0].second;
+        int f2 = f0;
+        for (const auto& e : edges) {
+            if (e.first == f1 && e.second != f0) { f2 = e.second; break; }
+        }
+        push_tri(inset_of(static_cast<size_t>(f1), v),
+                 inset_of(static_cast<size_t>(f0), v),
+                 inset_of(static_cast<size_t>(f2), v), seamColor, kNoFace);
+        ++out.capCount;
+    }
+
+    // 外层线框：原始凸包的边按无向对去重
+    std::map<std::pair<int, int>, bool> seenWire;
+    for (size_t f = 0; f < fd.size(); ++f) {
+        const auto& d = fd[f];
+        for (size_t i = 0; i < d.ring.size(); ++i) {
+            const size_t j = (i + 1) % d.ring.size();
+            const int vi = d.ring[i], vj = d.ring[j];
+            const std::pair<int, int> key =
+                vi < vj ? std::make_pair(vi, vj) : std::make_pair(vj, vi);
+            if (seenWire.count(key)) continue;
+            seenWire[key] = true;
+            for (int v : { vi, vj }) {
+                MeshVertex mv;
+                mv.position = pts[static_cast<size_t>(v)];
+                mv.color = wireColor;
+                out.wire.push_back(mv);
+            }
+            ++out.edgeCount;
+        }
+    }
+    return out;
 }
 
 } // namespace desktopsticker::wallpaper

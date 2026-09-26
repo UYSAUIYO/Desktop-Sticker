@@ -137,6 +137,10 @@ struct VulkanBackend::Impl {
     bool build_fullscreen_pipeline();
     bool build_mesh_scene();
     bool build_mesh_pipeline();
+    bool build_glass_pipeline();
+    bool build_wire_pipeline();
+    bool build_reflect_pipeline();
+    bool build_stars_pipeline();
     bool build_sync_and_commands();
     bool rebuild_swapchain(int width, int height);
 
@@ -146,6 +150,7 @@ struct VulkanBackend::Impl {
 
     bool draw(float timeSeconds);
     void draw_fullscreen(vk::CommandBuffer cmd, const vk::Extent2D& extent);
+    void draw_stars(vk::CommandBuffer cmd, const vk::Extent2D& extent);
     void draw_model(vk::CommandBuffer cmd, const vk::Extent2D& extent, float timeSecondsValue);
     bool submit_and_present();
 
@@ -185,19 +190,29 @@ struct VulkanBackend::Impl {
     vk::raii::PipelineLayout fsLayout{ nullptr };
     vk::raii::Pipeline fsPipeline{ nullptr };
 
-    // 模型场景（uniform buffer + 顶点缓冲）
+    // 模型场景（uniform buffer + 顶点缓冲 + 多管线：实体/玻璃壳/倒影/线框笼/星空）
     SceneMode mode = SceneMode::Fullscreen;
     vk::raii::DescriptorSetLayout descLayout{ nullptr };
     vk::raii::PipelineLayout meshLayout{ nullptr };
     vk::raii::Pipeline meshPipeline{ nullptr };
+    vk::raii::Pipeline glassPipeline{ nullptr };
+    vk::raii::Pipeline wirePipeline{ nullptr };
+    vk::raii::Pipeline reflectPipeline{ nullptr };
+    vk::raii::Pipeline starsPipeline{ nullptr };
     vk::raii::DescriptorPool descPool{ nullptr };
     vk::raii::DescriptorSet descSet{ nullptr };
     vk::raii::Buffer vertexBuffer{ nullptr };
     vk::raii::DeviceMemory vertexMemory{ nullptr };
+    vk::raii::Buffer glassBuffer{ nullptr };
+    vk::raii::DeviceMemory glassMemory{ nullptr };
+    vk::raii::Buffer wireBuffer{ nullptr };
+    vk::raii::DeviceMemory wireMemory{ nullptr };
     vk::raii::Buffer uniformBuffer{ nullptr };
     vk::raii::DeviceMemory uniformMemory{ nullptr };
     void* uniformMapped = nullptr;
     uint32_t vertexCount = 0;
+    uint32_t glassVertexCount = 0;
+    uint32_t wireVertexCount = 0;
 
     HWND hwnd = nullptr;
     uint32_t imageIndex = 0;
@@ -266,7 +281,14 @@ bool VulkanBackend::Impl::init(HWND wnd, int width, int height, const std::wstri
     if (!create_device()) return false;
     if (!build_swapchain(width, height)) return false;
     if (!build_fullscreen_pipeline()) return false;
-    if (mode == SceneMode::Model && !build_mesh_scene()) return false;
+    if (mode == SceneMode::Model) {
+        if (!build_mesh_scene()) return false;
+        if (!build_mesh_pipeline()) return false;
+        if (!build_glass_pipeline()) return false;
+        if (!build_wire_pipeline()) return false;
+        if (!build_reflect_pipeline()) return false;
+        if (!build_stars_pipeline()) return false;
+    }
     if (!build_sync_and_commands()) return false;
 
     timeSeconds = 0.0;
@@ -559,19 +581,32 @@ bool VulkanBackend::Impl::build_fullscreen_pipeline() {
 }
 
 bool VulkanBackend::Impl::build_mesh_scene() {
-    // ---- 几何：32 面体（截角二十面体）。构造与凸包都在纯函数层，单测已覆盖 32 面/Euler/共面 ----
+    // ---- 几何：倒角 32 面体。面板/倒角条/顶帽在纯函数层生成（水密性有单测），
+    //      另出玻璃壳（原凸包放大）与外层线框笼（原始边去重）。
     const std::vector<Vec3> palette(std::begin(kPalette), std::end(kPalette));
-    const MeshData mesh = build_truncated_icosahedron(palette, 2.0);
-    vertexCount = static_cast<uint32_t>(mesh.vertices.size());
+    const BevelMesh bevel = build_beveled_truncated_icosahedron(palette, 2.0, 0.16);
+    vertexCount = static_cast<uint32_t>(bevel.solid.vertices.size());
     if (vertexCount == 0) {
         lastError = "内置模型没有生成任何三角形";
         return false;
     }
 
-    std::vector<GpuVertex> verts(vertexCount);
+    auto upload = [&](const std::vector<GpuVertex>& verts, vk::raii::Buffer& buffer,
+                      vk::raii::DeviceMemory& memory) -> bool {
+        const vk::DeviceSize bytes = sizeof(GpuVertex) * verts.size();
+        if (!create_buffer(bytes, vk::BufferUsageFlagBits::eVertexBuffer, buffer, memory)) {
+            return false;
+        }
+        void* mapped = memory.mapMemory(0, bytes);
+        std::memcpy(mapped, verts.data(), static_cast<size_t>(bytes));
+        memory.unmapMemory();
+        return true;
+    };
+
+    std::vector<GpuVertex> solidVerts(vertexCount);
     for (uint32_t i = 0; i < vertexCount; ++i) {
-        const MeshVertex& src = mesh.vertices[i];
-        GpuVertex& dst = verts[i];
+        const MeshVertex& src = bevel.solid.vertices[i];
+        GpuVertex& dst = solidVerts[i];
         dst.position[0] = static_cast<float>(src.position.x);
         dst.position[1] = static_cast<float>(src.position.y);
         dst.position[2] = static_cast<float>(src.position.z);
@@ -582,17 +617,38 @@ bool VulkanBackend::Impl::build_mesh_scene() {
         dst.color[1] = static_cast<float>(src.color.y);
         dst.color[2] = static_cast<float>(src.color.z);
     }
+    if (!upload(solidVerts, vertexBuffer, vertexMemory)) return false;
 
-    const vk::DeviceSize vbytes = sizeof(GpuVertex) * vertexCount;
-    if (!create_buffer(vbytes, vk::BufferUsageFlagBits::eVertexBuffer, vertexBuffer,
-                       vertexMemory)) {
-        return false;
+    // 玻璃壳：原凸包放大 7%，着色器按菲涅尔给半透明
+    const MeshData glass = build_truncated_icosahedron({}, 2.14);
+    glassVertexCount = static_cast<uint32_t>(glass.vertices.size());
+    std::vector<GpuVertex> glassVerts(glassVertexCount);
+    for (uint32_t i = 0; i < glassVertexCount; ++i) {
+        const MeshVertex& src = glass.vertices[i];
+        GpuVertex& dst = glassVerts[i];
+        dst.position[0] = static_cast<float>(src.position.x);
+        dst.position[1] = static_cast<float>(src.position.y);
+        dst.position[2] = static_cast<float>(src.position.z);
+        dst.normal[0] = static_cast<float>(src.normal.x);
+        dst.normal[1] = static_cast<float>(src.normal.y);
+        dst.normal[2] = static_cast<float>(src.normal.z);
     }
-    {
-        void* mapped = vertexMemory.mapMemory(0, vbytes);
-        std::memcpy(mapped, verts.data(), static_cast<size_t>(vbytes));
-        vertexMemory.unmapMemory();
+    if (!upload(glassVerts, glassBuffer, glassMemory)) return false;
+
+    // 线框笼：原始边的线段列表（线段拓扑绘制）
+    wireVertexCount = static_cast<uint32_t>(bevel.wire.size());
+    std::vector<GpuVertex> wireVerts(wireVertexCount);
+    for (uint32_t i = 0; i < wireVertexCount; ++i) {
+        const MeshVertex& src = bevel.wire[i];
+        GpuVertex& dst = wireVerts[i];
+        dst.position[0] = static_cast<float>(src.position.x);
+        dst.position[1] = static_cast<float>(src.position.y);
+        dst.position[2] = static_cast<float>(src.position.z);
+        dst.color[0] = static_cast<float>(src.color.x);
+        dst.color[1] = static_cast<float>(src.color.y);
+        dst.color[2] = static_cast<float>(src.color.z);
     }
+    if (!upload(wireVerts, wireBuffer, wireMemory)) return false;
 
     const vk::DeviceSize ubytes = sizeof(SceneUniforms);
     if (!create_buffer(ubytes, vk::BufferUsageFlagBits::eUniformBuffer, uniformBuffer,
@@ -623,8 +679,10 @@ bool VulkanBackend::Impl::build_mesh_scene() {
                                &bufferInfo),
         nullptr);
 
-    wp_log("vulkan: built-in model ready, " + std::to_string(vertexCount / 3) + " triangles, " +
-           std::to_string(mesh.faceCount) + " faces");
+    wp_log("vulkan: built-in model ready, panels=" + std::to_string(bevel.panelCount) +
+           " strips=" + std::to_string(bevel.stripCount) + " caps=" +
+           std::to_string(bevel.capCount) + " (" + std::to_string(vertexCount / 3) +
+           " triangles), wires=" + std::to_string(bevel.edgeCount));
     return true;
 }
 
@@ -632,15 +690,19 @@ bool VulkanBackend::Impl::build_mesh_pipeline() {
     const auto vert = device.createShaderModule(
         vk::ShaderModuleCreateInfo({}, sizeof(kMeshVertSpv), kMeshVertSpv));
     const auto frag = device.createShaderModule(
-        vk::ShaderModuleCreateInfo({}, sizeof(kMeshFragSpv), kMeshFragSpv));
+        vk::ShaderModuleCreateInfo({}, sizeof(kBevelFragSpv), kBevelFragSpv));
 
     const vk::PipelineShaderStageCreateInfo stages[] = {
         { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
         { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
     };
 
+    // 模型矩阵与参数走 push constant：一帧里四条通道各不相同
+    const vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex |
+                                              vk::ShaderStageFlagBits::eFragment,
+                                          0, sizeof(ModelPush));
     meshLayout = vk::raii::PipelineLayout(
-        device, vk::PipelineLayoutCreateInfo({}, 1, &*descLayout, 0, nullptr));
+        device, vk::PipelineLayoutCreateInfo({}, 1, &*descLayout, 1, &pushRange));
 
     const vk::VertexInputBindingDescription vb(0, sizeof(GpuVertex),
                                                vk::VertexInputRate::eVertex);
@@ -678,6 +740,213 @@ bool VulkanBackend::Impl::build_mesh_pipeline() {
                                        &raster, &multisample, &depthState, &blend, &dynamic,
                                        *meshLayout, *renderPass, 0));
     return *meshPipeline != VK_NULL_HANDLE;
+}
+
+// 玻璃壳/倒影：开混合、只测深度不写；线框笼：线段拓扑。
+// 三者共享实体管线的顶点输入与 push constant 布局。
+bool VulkanBackend::Impl::build_glass_pipeline() {
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kMeshVertSpv), kMeshVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kGlassFragSpv), kGlassFragSpv));
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    // 复用成员 meshLayout（descLayout + ModelPush push range，与本地临时布局等价）：
+    // 局部 raiii 布局在函数返回时销毁，而管线必须终身持有有效布局——否则首次 bind 闪退
+    const vk::PushConstantRange meshPushRange(vk::ShaderStageFlagBits::eVertex |
+                                                  vk::ShaderStageFlagBits::eFragment,
+                                              0, sizeof(ModelPush));
+    (void)meshPushRange;
+
+    const vk::VertexInputBindingDescription vb(0, sizeof(GpuVertex),
+                                               vk::VertexInputRate::eVertex);
+    const vk::VertexInputAttributeDescription attrs[] = {
+        { 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, position) },
+        { 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, normal) },
+        { 2, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, color) },
+    };
+    const vk::PipelineVertexInputStateCreateInfo vertexInput({}, vb, attrs);
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eBack,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    const vk::PipelineDepthStencilStateCreateInfo depthState({}, VK_TRUE, VK_FALSE,
+                                                            vk::CompareOp::eLessOrEqual);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_TRUE, vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha,
+        vk::BlendOp::eAdd, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    glassPipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, &depthState, &blend, &dynamic,
+                                       *meshLayout, *renderPass, 0));
+    return *glassPipeline != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_wire_pipeline() {
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kMeshVertSpv), kMeshVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kWireFragSpv), kWireFragSpv));
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    // 复用成员 meshLayout（descLayout + ModelPush push range，与本地临时布局等价）：
+    // 局部 raiii 布局在函数返回时销毁，而管线必须终身持有有效布局——否则首次 bind 闪退
+    const vk::PushConstantRange meshPushRange(vk::ShaderStageFlagBits::eVertex |
+                                                  vk::ShaderStageFlagBits::eFragment,
+                                              0, sizeof(ModelPush));
+    (void)meshPushRange;
+
+    const vk::VertexInputBindingDescription vb(0, sizeof(GpuVertex),
+                                               vk::VertexInputRate::eVertex);
+    const vk::VertexInputAttributeDescription attrs[] = {
+        { 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, position) },
+        { 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, normal) },
+        { 2, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, color) },
+    };
+    const vk::PipelineVertexInputStateCreateInfo vertexInput({}, vb, attrs);
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eLineList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    const vk::PipelineDepthStencilStateCreateInfo depthState({}, VK_TRUE, VK_FALSE,
+                                                            vk::CompareOp::eLessOrEqual);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_TRUE, vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha,
+        vk::BlendOp::eAdd, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    wirePipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, &depthState, &blend, &dynamic,
+                                       *meshLayout, *renderPass, 0));
+    return *wirePipeline != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_reflect_pipeline() {
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kMeshVertSpv), kMeshVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kBevelFragSpv), kBevelFragSpv));
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    // 复用成员 meshLayout（descLayout + ModelPush push range，与本地临时布局等价）：
+    // 局部 raiii 布局在函数返回时销毁，而管线必须终身持有有效布局——否则首次 bind 闪退
+    const vk::PushConstantRange meshPushRange(vk::ShaderStageFlagBits::eVertex |
+                                                  vk::ShaderStageFlagBits::eFragment,
+                                              0, sizeof(ModelPush));
+    (void)meshPushRange;
+
+    const vk::VertexInputBindingDescription vb(0, sizeof(GpuVertex),
+                                               vk::VertexInputRate::eVertex);
+    const vk::VertexInputAttributeDescription attrs[] = {
+        { 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, position) },
+        { 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, normal) },
+        { 2, 0, vk::Format::eR32G32B32Sfloat, offsetof(GpuVertex, color) },
+    };
+    const vk::PipelineVertexInputStateCreateInfo vertexInput({}, vb, attrs);
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    // 镜像矩阵翻转了环绕方向，索性不剔除
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    const vk::PipelineDepthStencilStateCreateInfo depthState({}, VK_TRUE, VK_FALSE,
+                                                            vk::CompareOp::eLessOrEqual);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_TRUE, vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha,
+        vk::BlendOp::eAdd, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    reflectPipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, &depthState, &blend, &dynamic,
+                                       *meshLayout, *renderPass, 0));
+    return *reflectPipeline != VK_NULL_HANDLE;
+}
+
+bool VulkanBackend::Impl::build_stars_pipeline() {
+    // 全屏星空打底：与全屏等离子共用 push constant 布局与顶点输入（无顶点缓冲）
+    const auto vert = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kFullscreenVertSpv), kFullscreenVertSpv));
+    const auto frag = device.createShaderModule(
+        vk::ShaderModuleCreateInfo({}, sizeof(kStarsFragSpv), kStarsFragSpv));
+
+    const vk::PipelineShaderStageCreateInfo stages[] = {
+        { {}, vk::ShaderStageFlagBits::eVertex, *vert, "main" },
+        { {}, vk::ShaderStageFlagBits::eFragment, *frag, "main" },
+    };
+
+    const vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex |
+                                              vk::ShaderStageFlagBits::eFragment,
+                                          0, sizeof(ShaderPushConstants));
+    vk::raii::PipelineLayout layout(
+        device, vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1, &pushRange));
+
+    const vk::PipelineVertexInputStateCreateInfo vertexInput;   // 不用顶点缓冲
+    const vk::PipelineInputAssemblyStateCreateInfo assembly(
+        {}, vk::PrimitiveTopology::eTriangleList, VK_FALSE);
+    const vk::PipelineViewportStateCreateInfo viewport({}, 1, nullptr, 1, nullptr);
+    const vk::PipelineRasterizationStateCreateInfo raster(
+        {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+        vk::FrontFace::eCounterClockwise, VK_FALSE, 0.0f, 0.0f, 0.0f, 1.0f);
+    const vk::PipelineMultisampleStateCreateInfo multisample({}, vk::SampleCountFlagBits::e1);
+    const vk::PipelineColorBlendAttachmentState blendAttachment(
+        VK_FALSE, vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne, vk::BlendFactor::eZero, vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+    const vk::PipelineColorBlendStateCreateInfo blend({}, VK_FALSE, vk::LogicOp::eCopy, 1,
+                                                     &blendAttachment);
+    const vk::DynamicState dynamicStates[] = { vk::DynamicState::eViewport,
+                                              vk::DynamicState::eScissor };
+    const vk::PipelineDynamicStateCreateInfo dynamic({}, 2, dynamicStates);
+
+    starsPipeline = vk::raii::Pipeline(
+        device, nullptr,
+        vk::GraphicsPipelineCreateInfo({}, 2, stages, &vertexInput, &assembly, nullptr, &viewport,
+                                       &raster, &multisample, nullptr, &blend, &dynamic,
+                                       *fsLayout, *renderPass, 0));
+    return *starsPipeline != VK_NULL_HANDLE;
 }
 
 bool VulkanBackend::Impl::build_sync_and_commands() {
@@ -721,6 +990,24 @@ void VulkanBackend::Impl::draw_fullscreen(vk::CommandBuffer cmd, const vk::Exten
     cmd.draw(3, 1, 0, 0);
 }
 
+void VulkanBackend::Impl::draw_stars(vk::CommandBuffer cmd, const vk::Extent2D& extent) {
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *starsPipeline);
+    const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(extent.width),
+                                static_cast<float>(extent.height), 0.0f, 1.0f);
+    cmd.setViewport(0, { viewport });
+    cmd.setScissor(0, { vk::Rect2D({ 0, 0 }, extent) });
+
+    ShaderPushConstants pc{};
+    pc.iTime[0] = static_cast<float>(timeSeconds);
+    pc.iResolution[0] = static_cast<float>(extent.width);
+    pc.iResolution[1] = static_cast<float>(extent.height);
+    cmd.pushConstants<ShaderPushConstants>(*fsLayout,
+                                           vk::ShaderStageFlagBits::eVertex |
+                                               vk::ShaderStageFlagBits::eFragment,
+                                           0, pc);
+    cmd.draw(3, 1, 0, 0);
+}
+
 void VulkanBackend::Impl::draw_model(vk::CommandBuffer cmd, const vk::Extent2D& extent,
                                      float timeSecondsValue) {
     // 内置环绕相机 + 模型自转：壁纸不吃输入（窗口是 HTTRANSPARENT），
@@ -729,8 +1016,8 @@ void VulkanBackend::Impl::draw_model(vk::CommandBuffer cmd, const vk::Extent2D& 
     const double yaw = t * 0.45;
     const double tilt = std::sin(t * 0.23) * 0.21;
     // 距离要够远才装得下：fovY=0.62 时，距离 d 处的可见半高是 d*tan(0.31)，
-    // 模型半径 2 → d 至少要到 ~9 才不"站在多面体里面"（第一版取 5.6 就是这个下场）
-    const float distance = 10.5f;
+    // 模型半径 2（玻璃壳 2.14、线框笼 2.6）→ d 至少要到 ~9
+    const float distance = 11.5f;
     const Vec3 eye{ 0.0, distance * 0.40, distance * 0.94 };
     const Vec3 target{ 0.0, 0.0, 0.0 };
 
@@ -740,11 +1027,10 @@ void VulkanBackend::Impl::draw_model(vk::CommandBuffer cmd, const vk::Extent2D& 
     const Mat4 view = look_at(eye, target, { 0.0, 1.0, 0.0 });
     const Mat4 proj = perspective_vulkan(0.62, aspect, 0.1, 100.0);
     const Mat4 viewProj = multiply(proj, view);
-    const Mat4 model = multiply(rotation_y(yaw), rotation_x(tilt));
+    const Mat4 rot = multiply(rotation_y(yaw), rotation_x(tilt));
 
     SceneUniforms u{};
     std::memcpy(u.viewProj, viewProj.m, sizeof(u.viewProj));
-    std::memcpy(u.model, model.m, sizeof(u.model));
     const Vec3 light = normalize({ 0.45, 0.80, 0.40 });
     u.lightDir[0] = static_cast<float>(light.x);
     u.lightDir[1] = static_cast<float>(light.y);
@@ -755,16 +1041,94 @@ void VulkanBackend::Impl::draw_model(vk::CommandBuffer cmd, const vk::Extent2D& 
     u.misc[0] = timeSecondsValue;
     if (uniformMapped) std::memcpy(uniformMapped, &u, sizeof(u));
 
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshPipeline);
-    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet, nullptr);
     const vk::Viewport viewport(0.0f, 0.0f, static_cast<float>(extent.width),
                                 static_cast<float>(extent.height), 0.0f, 1.0f);
     cmd.setViewport(0, { viewport });
     cmd.setScissor(0, { vk::Rect2D({ 0, 0 }, extent) });
 
+    // 场景序列：星空 → 倒影（镜像+渐隐）→ 线框笼（反向旋转）→ 倒角实体 → 玻璃壳。
+    // 透明通道统一"只测深度不写"，避免透明物互相剔除。
+
+    // 1) 星空打底
+    draw_stars(cmd, extent);
+
     const vk::DeviceSize offset = 0;
-    cmd.bindVertexBuffers(0, *vertexBuffer, offset);
-    cmd.draw(vertexCount, 1, 0, 0);
+
+    // 2) 倒影：绕 y=-2 的地面镜像，缝隙发光强度减半，随沉入深度渐隐（bevel.frag）
+    {
+        Mat4 mirror{};
+        mirror.m[0] = 1.0;
+        mirror.m[5] = -1.0;
+        mirror.m[10] = 1.0;
+        mirror.m[13] = -4.0;   // 列主序：第 3 列的平移分量
+        mirror.m[15] = 1.0;
+        ModelPush mp{};
+        const Mat4 refl = multiply(mirror, rot);
+        std::memcpy(mp.model, refl.m, sizeof(mp.model));
+        mp.params[0] = 0.30f;
+        mp.params[1] = 0.55f;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *reflectPipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet,
+                               nullptr);
+        cmd.bindVertexBuffers(0, *vertexBuffer, offset);
+        cmd.pushConstants<ModelPush>(*meshLayout,
+                                     vk::ShaderStageFlagBits::eVertex |
+                                         vk::ShaderStageFlagBits::eFragment,
+                                     0, mp);
+        cmd.draw(vertexCount, 1, 0, 0);
+    }
+
+    // 3) 线框笼：反向旋转、放大到 2.64，罩住整个实体
+    {
+        ModelPush mp{};
+        const Mat4 cage = multiply(scale_uniform(1.32),
+                                   multiply(rotation_y(-yaw * 1.6), rotation_x(-tilt * 1.5)));
+        std::memcpy(mp.model, cage.m, sizeof(mp.model));
+        mp.params[0] = 0.9f;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *wirePipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet,
+                               nullptr);
+        cmd.bindVertexBuffers(0, *wireBuffer, offset);
+        cmd.pushConstants<ModelPush>(*meshLayout,
+                                     vk::ShaderStageFlagBits::eVertex |
+                                         vk::ShaderStageFlagBits::eFragment,
+                                     0, mp);
+        cmd.draw(wireVertexCount, 1, 0, 0);
+    }
+
+    // 4) 倒角实体（不透明，写深度）
+    {
+        ModelPush mp{};
+        std::memcpy(mp.model, rot.m, sizeof(mp.model));
+        mp.params[0] = 1.0f;
+        mp.params[1] = 1.0f;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshPipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet,
+                               nullptr);
+        cmd.bindVertexBuffers(0, *vertexBuffer, offset);
+        cmd.pushConstants<ModelPush>(*meshLayout,
+                                     vk::ShaderStageFlagBits::eVertex |
+                                         vk::ShaderStageFlagBits::eFragment,
+                                     0, mp);
+        cmd.draw(vertexCount, 1, 0, 0);
+    }
+
+    // 5) 玻璃壳：原凸包放大 7%，菲涅尔半透明
+    {
+        ModelPush mp{};
+        const Mat4 shell = multiply(scale_uniform(1.07), rot);
+        std::memcpy(mp.model, shell.m, sizeof(mp.model));
+        mp.params[0] = 1.0f;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *glassPipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *meshLayout, 0, *descSet,
+                               nullptr);
+        cmd.bindVertexBuffers(0, *glassBuffer, offset);
+        cmd.pushConstants<ModelPush>(*meshLayout,
+                                     vk::ShaderStageFlagBits::eVertex |
+                                         vk::ShaderStageFlagBits::eFragment,
+                                     0, mp);
+        cmd.draw(glassVertexCount, 1, 0, 0);
+    }
 }
 
 bool VulkanBackend::Impl::draw(float timeSecondsValue) {
@@ -842,11 +1206,18 @@ void VulkanBackend::Impl::destroy() {
     descPool = nullptr;
     descLayout = nullptr;
     meshPipeline = nullptr;
+    glassPipeline = nullptr;
+    wirePipeline = nullptr;
+    reflectPipeline = nullptr;
+    starsPipeline = nullptr;
     meshLayout = nullptr;
-    uniformBuffer = nullptr;
-    uniformMemory = nullptr;
+    glassBuffer = nullptr;
+    glassMemory = nullptr;
+    wireBuffer = nullptr;
+    wireMemory = nullptr;
     vertexBuffer = nullptr;
     vertexMemory = nullptr;
+    glassVertexCount = wireVertexCount = 0;
 
     swap.reset();
     fsPipeline = nullptr;
