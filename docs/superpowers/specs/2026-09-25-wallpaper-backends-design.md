@@ -27,7 +27,7 @@
 |---|---|
 | 交付范围 | 四类一次全做，一个 spec |
 | ④ 底层 | **真上 Vulkan + GLSL**，用 **Vulkan-Hpp**（许可 `Apache-2.0 OR MIT`） |
-| ④ 内容边界 | 三类都做：全屏 fragment 着色器 / 模型（glTF·glb·obj + 内置相机与光照）/ 内置 GPU 粒子预设；参数走 uniforms + JSON，**不做可视化编辑器** |
+| ④ 内容边界 | 三类都做：全屏 fragment 着色器 / 模型（glTF·glb·obj + 内置相机与光照）/ 内置 GPU 粒子预设；参数走 uniforms + JSON，**不做可视化编辑器**（2026-09-27 变更：可视化编辑器已另行立项，见 §8 顶部注记） |
 | GLSL→SPIR-V | **子进程编译器 + `.spv` 缓存** |
 | Vulkan 依赖策略 | 脚本按固定 commit 拉头文件 → gitignore；`__has_include` 门控；运行时动态加载系统 `vulkan-1.dll` |
 | 后端归属 | 四个后端**都在现有 WallPaper DLL 内**（不新开 DLL） |
@@ -186,6 +186,11 @@ class AudioEngine {                        // 模块持有，后端无关
 
 ## 8. ④ 3D / 着色器后端（Vulkan + Vulkan-Hpp）
 
+> **后续变更（2026-09-27）**：本节与 §2 表中「不做可视化编辑器 / 参数只走 JSON」的内容边界已被
+> **场景壁纸（Godot 编辑器 fork + 内嵌运行时）**方案取代，实施计划见
+> `.zcode/plans/plan-sess_7d1d32b9-d591-40bf-86f9-2885a1f0b2c8.md`。
+> Vulkan 后端本身（全屏着色器 / 内置模型 / 内置场景）保持不变。
+
 > **阶段 0 结果（2026-09-25 已实机验证，通过）**：一个内置全屏着色器已铺满桌面，位于桌面图标/
 > 分区卡片/时钟之下，稳定 60.5fps（`vulkan diag: ticks=60.5/s acquire≈20us present≈52us`）。
 > 两个原计划里的风险点都有结论：
@@ -225,7 +230,7 @@ class AudioEngine {                        // 模块持有，后端无关
 | 粒子 | compute shader 写 storage buffer，实例化 billboard 绘制；参数（数量、寿命、重力、发射形状、配色）来自 JSON 预设 | 与模型/物体碰撞、自定义发射器脚本 |
 
 - 内容目录约定：`media/<id>/shader/`（着色器、模型、粒子配置与可选的 `*.json` 参数文件）。
-- 参数**只走 JSON**，不做可视化编辑器。
+- 参数**只走 JSON**，不做可视化编辑器（此边界已被 2026-09-27 的场景壁纸方案取代，见 §8 顶部注记）。
 
 ## 9. GLSL → SPIR-V 与 Vulkan 工具链
 
@@ -328,7 +333,7 @@ media/<id>/
 - Vulkan 与 DComp 的 external memory 互操作
 - 骨骼动画/蒙皮、PBR 材质、阴影、多模型场景
 - 音频驱动着色器（FFT → uniforms）
-- 壁纸可视化编辑器
+- 壁纸可视化编辑器（2026-09-27 变更：已另行立项为「Godot 编辑器 fork + 内嵌运行时」，见 §8 顶部注记；不再属排除项）
 - 多显示器各自播放（沿用基座：主显示器）
 - 桌面图标层之上的交互式壁纸（壁纸不可交互）
 

@@ -30,6 +30,13 @@ Desktop Sticker 只以两种方式使用 FFmpeg：以子进程方式运行未经
 - 项目主页：https://github.com/1114656/MotionWallpaper
 - 仓库内许可证副本：`third_party/MotionWallpaper-MIT.txt`
 
+## Godot Engine
+
+场景壁纸的编辑器与运行时库基于 Godot Engine 4.7.2 的源码分支（vendored 于 `tools/godot-src/`），采用 MIT License。编辑器供用户创作壁纸场景；运行时库由壁纸模块以动态加载方式在进程内使用，负载位于应用目录 `godot\` 并随包保留本声明。
+
+- 项目主页：https://godotengine.org/
+- 仓库内许可证副本：`third_party/GODOT-LICENSE.txt`
+
 ## 图标与素材
 
 - `Desktop Sticker/assets/weather/S2/` 天气图标来自 [qwd/WeatherIcon](https://github.com/qwd/WeatherIcon)（和风天气），遵循 CC BY 4.0，许可文本见同目录 `LICENSE-CC-BY-4.0.txt`。
