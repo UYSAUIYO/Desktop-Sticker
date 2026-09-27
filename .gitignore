@@ -1,4 +1,4 @@
-# Visual companion / brainstorming session files
+﻿# Visual companion / brainstorming session files
 .superpowers/
 
 # Visual Studio / build output
@@ -64,6 +64,10 @@ Desktop.ini
 # FFmpeg payload + build-time SDK (fetched by tools/prepare_ffmpeg.ps1, never committed)
 tools/ffmpeg/
 tools/ffmpeg-sdk/
+# Godot runtime (fetched by tools/prepare_godot.ps1, never committed)
+tools/godot/
+# Godot source fork is vendored in tools/godot-src/ (tracked);
+# its build output is ignored by the source tree's own .gitignore.
 
 # Vulkan compile-time headers + shader compiler (fetched/built by
 # tools/prepare_vulkan.ps1 and tools/prepare_shaderc.ps1, never committed)
