@@ -60,6 +60,12 @@ inline bool classify_file(const std::wstring& path, BackendKind& out) {
         out = BackendKind::Shader3D;
         return true;
     }
+    if (ext == L".dswall") {
+        // 桌面贴纸场景壁纸包（ZIP：project.pck + manifest.json + poster.png，
+        // 由改造版 Godot 编辑器导出，运行时由内嵌 Godot 运行库渲染）。
+        out = BackendKind::Shader3D;
+        return true;
+    }
     if (ext == L".gltf" || ext == L".glb" || ext == L".obj") {
         out = BackendKind::Shader3D;
         return true;
@@ -81,7 +87,8 @@ inline bool classify_directory(const std::vector<std::wstring>& entries, Backend
         if (name == L"index.html" || name == L"index.htm") hasIndexHtml = true;
         if (ext == L".frag" || ext == L".glsl" || ext == L".vert" || ext == L".comp" ||
             ext == L".gltf" || ext == L".glb" || ext == L".obj" ||
-            name == L"scene.json") {   // 着色器/模型场景的参数文件
+            name == L"scene.json" || name == L"project.godot") {
+            // scene.json：Vulkan 场景参数；project.godot：Godot 场景项目
             hasShader = true;
         }
         if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp" ||

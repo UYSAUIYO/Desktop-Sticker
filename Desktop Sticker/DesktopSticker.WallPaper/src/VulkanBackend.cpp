@@ -108,7 +108,7 @@ SceneMode pick_scene(const std::wstring& dir) {
 // ---------------------------------------------------------------------------
 
 struct VulkanBackend::Impl {
-    ~Impl() { destroy(); }
+    ~Impl() { (void)destroy_seh(this); }
 
     // 访问违例兜底。Vulkan 有一类失败是 try/catch 抓不到的：动态分发器里的空指针、
     // 驱动的越界访问 —— 第一版就撞上了（进程无声退出，事件日志只剩 "unknown 模块 偏移 0"）。
@@ -123,8 +123,40 @@ struct VulkanBackend::Impl {
         }
     }
 
+    // 销毁路径同样要 SEH：切换壁纸时 vkDestroy* 在 NVIDIA 驱动里出过一次 AV
+    // （nvoglv64，进程闪退）。宁可泄漏设备也不能带崩宿主 —— 与 init_seh 同一纪律。
+    // 返回 false = 吞掉了一次异常（调用方负责记日志，SEH 块里不能有可析构对象）。
+    static bool destroy_seh(Impl* self) {
+        __try {
+            self->destroy();
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    }
+
+    // 本机 NVIDIA 驱动在销毁路径上不稳定（nvoglv64 间歇性 AV/挂起，切换壁纸时闪退，
+    // 早于内嵌 Godot 功能存在；两次崩溃偏移一致）。已成功创建的设备不再销毁；
+    // 但也不能每次新建（同一个窗口上第二个交换链会导致画面出不来），所以：
+    // 关闭时寄存，下次打开优先取回复用，只重建"场景资源"（见 reinit_scene）。
+    static std::vector<Impl*>& parked_lot() {
+        static std::vector<Impl*> lot;   // 故意不析构：进程退出前不碰驱动销毁路径
+        return lot;
+    }
+    static void park(Impl* raw) {
+        parked_lot().push_back(raw);
+    }
+    static Impl* take_parked() {
+        auto& lot = parked_lot();
+        if (lot.empty()) return nullptr;
+        Impl* impl = lot.back();
+        lot.pop_back();
+        return impl;
+    }
+
     // ---- 生命周期 ----
     bool init(HWND hwnd, int width, int height, const std::wstring& sourceDir);
+    bool reinit_scene(const std::wstring& sourceDir);
     void destroy();
     void wait_idle();
 
@@ -291,6 +323,47 @@ bool VulkanBackend::Impl::init(HWND wnd, int width, int height, const std::wstri
     }
     if (!build_sync_and_commands()) return false;
 
+    timeSeconds = 0.0;
+    lastTickUs = qpc_us();
+    return true;
+}
+
+// 复用已有 instance/device/交换链，只重建"场景内容"（管线 + 网格/描述符缓冲）。
+// 交换链尺寸变化由调用方先调 rebuild_swapchain。
+bool VulkanBackend::Impl::reinit_scene(const std::wstring& sourceDir) {
+    if (*device != VK_NULL_HANDLE) {
+        device.waitIdle();
+    }
+    descSet = nullptr;
+    descPool = nullptr;
+    descLayout = nullptr;
+    meshPipeline = nullptr;
+    glassPipeline = nullptr;
+    wirePipeline = nullptr;
+    reflectPipeline = nullptr;
+    starsPipeline = nullptr;
+    meshLayout = nullptr;
+    glassBuffer = nullptr;
+    glassMemory = nullptr;
+    wireBuffer = nullptr;
+    wireMemory = nullptr;
+    vertexBuffer = nullptr;
+    vertexMemory = nullptr;
+    fsPipeline = nullptr;
+    fsLayout = nullptr;
+    glassVertexCount = wireVertexCount = 0;
+    vertexCount = 0;
+
+    mode = pick_scene(sourceDir);
+    if (!build_fullscreen_pipeline()) return false;
+    if (mode == SceneMode::Model) {
+        if (!build_mesh_scene()) return false;
+        if (!build_mesh_pipeline()) return false;
+        if (!build_glass_pipeline()) return false;
+        if (!build_wire_pipeline()) return false;
+        if (!build_reflect_pipeline()) return false;
+        if (!build_stars_pipeline()) return false;
+    }
     timeSeconds = 0.0;
     lastTickUs = qpc_us();
     return true;
@@ -1198,6 +1271,7 @@ void VulkanBackend::Impl::wait_idle() {
 void VulkanBackend::Impl::destroy() {
     // 先等 GPU 停下再拆缓冲，否则可能拆到还在被引用的资源
     wait_idle();
+    wp_log("vulkan teardown: wait_idle done");
     if (uniformMapped && *uniformMemory != VK_NULL_HANDLE) {
         uniformMemory.unmapMemory();
         uniformMapped = nullptr;
@@ -1218,20 +1292,26 @@ void VulkanBackend::Impl::destroy() {
     vertexBuffer = nullptr;
     vertexMemory = nullptr;
     glassVertexCount = wireVertexCount = 0;
+    wp_log("vulkan teardown: resources done");
 
     swap.reset();
+    wp_log("vulkan teardown: swapchain done");
     fsPipeline = nullptr;
     fsLayout = nullptr;
     cmdPool = nullptr;
     renderPass = nullptr;
+    wp_log("vulkan teardown: renderpass/pool done");
     queue = nullptr;
     device = nullptr;
+    wp_log("vulkan teardown: device done");
     physical = nullptr;
     surface = nullptr;
+    wp_log("vulkan teardown: surface done");
     instance = nullptr;
     hwnd = nullptr;
     swapWidth = swapHeight = 0;
     vertexCount = 0;
+    wp_log("vulkan teardown: instance done");
 }
 
 // ---------------------------------------------------------------------------
@@ -1241,7 +1321,6 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {}
 VulkanBackend::~VulkanBackend() { Close(); }
 
 bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ctx) {
-    Close();
     if (!ctx.window) {
         lastError_ = "no host window";
         return false;
@@ -1253,18 +1332,46 @@ bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ct
         return false;
     }
 
+    // 优先复用寄存的设备实例：同一窗口上创建第二个交换链会导致画面出不来。
+    if (Impl* parked = Impl::take_parked()) {
+        impl_.reset(parked);   // 旧的 impl_（刚构造、无设备）可安全析构
+    }
+    if (impl_ && *impl_->device != VK_NULL_HANDLE) {
+        bool reuseOk = false;
+        try {
+            if (impl_->hwnd != ctx.window) {
+                wp_log("vulkan backend: parked device belongs to another window; creating a new one");
+            } else {
+                if (impl_->swapWidth != ctx.width || impl_->swapHeight != ctx.height) {
+                    impl_->rebuild_swapchain(ctx.width, ctx.height);
+                }
+                reuseOk = impl_->reinit_scene(request.sourcePath);
+            }
+        } catch (const std::exception& e) {
+            wp_log(std::string("vulkan backend: reuse exception: ") + e.what());
+        }
+        if (reuseOk) {
+            impl_->speed = clamp_speed(request.speed);
+            wp_log(std::string("vulkan backend opened (reused device): scene=") +
+                   (impl_->mode == SceneMode::Model ? "built-in model" : "fullscreen shader"));
+            return true;
+        }
+        Impl::park(impl_.release());   // 复用失败：寄回去（不能析构，驱动销毁路径会崩）
+    }
+    if (!impl_) impl_ = std::make_unique<Impl>();
+
     try {
         if (!Impl::init_seh(impl_.get(), ctx.window, ctx.width, ctx.height,
                             request.sourcePath)) {
             lastError_ = impl_->lastError.empty() ? "Vulkan init failed" : impl_->lastError;
             wp_log("vulkan backend: " + lastError_);
-            impl_->destroy();
+            Impl::park(impl_.release());   // 失败清理同样不碰驱动销毁路径
             return false;
         }
     } catch (const std::exception& e) {
         lastError_ = e.what();
         wp_log(std::string("vulkan backend: exception: ") + e.what());
-        impl_->destroy();
+        Impl::park(impl_.release());
         return false;
     }
 
@@ -1277,7 +1384,14 @@ bool VulkanBackend::Open(const BackendRequest& request, const BackendContext& ct
 void VulkanBackend::Close() {
     if (!impl_) return;
     try {
-        impl_->destroy();
+        if (*impl_->device != VK_NULL_HANDLE) {
+            Impl::park(impl_.release());   // 见 Impl::park 注释：寄存待复用，不做驱动销毁
+            wp_log("vulkan backend: device parked (teardown unstable; reused on next open)");
+            return;
+        }
+        if (!Impl::destroy_seh(impl_.get())) {   // 内部吞掉驱动 AV：销毁失败只泄漏，不闪退
+            wp_log("vulkan backend: teardown fault swallowed (driver AV); device leaked");
+        }
     } catch (...) {
         // 析构路径不允许抛出去
     }

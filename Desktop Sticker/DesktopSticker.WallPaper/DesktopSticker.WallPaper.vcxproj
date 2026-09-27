@@ -111,6 +111,8 @@
     <ClInclude Include="src\DriveInventory.h" />
     <ClInclude Include="src\AudioSource.h" />
     <ClInclude Include="src\WallpaperBackend.h" />
+    <ClInclude Include="src\GodotEmbeddedBackend.h" />
+    <ClInclude Include="src\GodotEngineHost.h" />
     <ClInclude Include="src\VideoBackend.h" />
     <ClInclude Include="src\WebBackend.h" />
     <ClInclude Include="src\VulkanBackend.h" />
@@ -141,6 +143,8 @@
     <ClCompile Include="src\FfmpegTranscoder.cpp" />
     <ClCompile Include="src\BackendRegistry.cpp" />
     <ClCompile Include="src\WebBackend.cpp" />
+    <ClCompile Include="src\GodotEmbeddedBackend.cpp" />
+    <ClCompile Include="src\GodotEngineHost.cpp" />
     <ClCompile Include="src\VulkanBackend.cpp" />
     <ClCompile Include="src\ImageSequenceBackend.cpp" />
     <ClCompile Include="src\VideoBackend.cpp" />

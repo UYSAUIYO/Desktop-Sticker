@@ -30,9 +30,14 @@
 
 #include "os_windows.h"
 
+#include "core/config/project_settings.h"
 #include "core/extension/godot_instance.h"
 #include "core/extension/libgodot.h"
+#include "core/object/object.h"
+#include "core/os/main_loop.h"
+#include "core/os/os.h"
 #include "main/main.h"
+#include "scene/main/scene_tree.h"
 
 static OS_Windows *os = nullptr;
 
@@ -86,6 +91,8 @@ static GDExtensionBool dstk_host_extension_init(GDExtensionInterfaceGetProcAddre
 	return true;
 }
 
+extern "C" {
+
 LIBGODOT_API void *dstk_godot_create(int p_argc, char *p_argv[]) {
 	return (void *)libgodot_create_godot_instance(p_argc, p_argv, dstk_host_extension_init);
 }
@@ -117,3 +124,21 @@ LIBGODOT_API void dstk_godot_focus_out(void *p_instance) {
 LIBGODOT_API void dstk_godot_destroy(void *p_instance) {
 	libgodot_destroy_godot_instance((GDExtensionObjectPtr)p_instance);
 }
+
+// 运行中切换壁纸包：挂载新 PCK（同名文件覆盖旧包）并切换主场景。
+// 进程内只允许一个 Godot 实例（引擎不支持重建），所以壁纸包切换必须走这里。
+LIBGODOT_API bool dstk_godot_load_pack(void *p_instance, const char *p_pack_path, const char *p_main_scene) {
+	if (p_instance == nullptr || p_pack_path == nullptr || p_main_scene == nullptr) {
+		return false;
+	}
+	if (!ProjectSettings::get_singleton()->dstk_load_resource_pack(String::utf8(p_pack_path), true)) {
+		return false;
+	}
+	SceneTree *tree = Object::cast_to<SceneTree>(OS::get_singleton()->get_main_loop());
+	if (tree == nullptr) {
+		return false;
+	}
+	return tree->change_scene_to_file(String::utf8(p_main_scene)) == OK;
+}
+
+} // extern "C"

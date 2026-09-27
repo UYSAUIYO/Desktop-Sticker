@@ -160,6 +160,12 @@ protected:
 public:
 	static const int CONFIG_VERSION = 5;
 
+	// Desktop Sticker fork：运行期挂载壁纸包（嵌入宿主切换场景壁纸用）。
+	// 等价于脚本方法 load_resource_pack；C++ 侧原方法是 protected。
+	bool dstk_load_resource_pack(const String &p_pack, bool p_replace_files = true) {
+		return load_resource_pack(p_pack, p_replace_files, 0);
+	}
+
 #ifdef TOOLS_ENABLED
 	HashMap<String, PropertyInfo> editor_settings_info;
 #endif

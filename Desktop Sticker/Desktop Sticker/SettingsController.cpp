@@ -1018,12 +1018,13 @@ void SettingsController::ImportWallPaper() {
     }
 
     const COMDLG_FILTERSPEC filters[] = {
+        { L"场景壁纸包 (*.dswall)", L"*.dswall" },
         { L"视频 / 动图 / 图片", L"*.mp4;*.mkv;*.mov;*.avi;*.webm;*.wmv;*.m4v;*.mpg;*.mpeg;*.ts"
                                  L";*.gif;*.webp;*.apng;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff" },
         { L"所有文件", L"*.*" },
     };
-    dialog->SetFileTypes(2, filters);
-    dialog->SetTitle(L"选择壁纸文件（类型自动识别）");
+    dialog->SetFileTypes(3, filters);
+    dialog->SetTitle(L"选择壁纸文件（类型自动识别；场景壁纸包从编辑器导出）");
     dialog->SetOptions(FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
     if (FAILED(dialog->Show(nullptr))) return; // 用户取消
 

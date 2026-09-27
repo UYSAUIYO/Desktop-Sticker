@@ -95,6 +95,7 @@
     <ClCompile Include="TestWallPaperFfmpegCommand.cpp" />
     <ClCompile Include="TestWallPaperStore.cpp" />
     <ClCompile Include="TestWallPaperMediaLibrary.cpp" />
+    <ClCompile Include="TestWallPaperPackage.cpp" />
     <ClCompile Include="TestWallPaperDriveIdentity.cpp" />
     <ClCompile Include="TestResMonFormat.cpp" />
     <ClCompile Include="TestResMonClassify.cpp" />

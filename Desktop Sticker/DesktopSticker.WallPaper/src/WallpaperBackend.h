@@ -79,10 +79,12 @@ public:
     virtual uint32_t FrameSerial() const { return 0; }
 };
 
-// 按类型创建后端；不支持的类型返回 nullptr（模块据此降级）
-std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind);
+// 按类型创建后端；不支持的类型返回 nullptr（模块据此降级）。
+// Shader3D 依目录内容分派：project.godot → Godot 外部进程后端，否则 Vulkan 内置场景。
+std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind,
+                                                  const std::wstring& sourcePath);
 
-// 该后端类型在当前构建中是否可用（例如缺 WebView2 运行时）
+// 该后端类型在当前构建中是否可用（例如缺 WebView2 运行时；Shader3D = Vulkan 或 Godot 运行时）
 bool backend_available(BackendKind kind);
 
 } // namespace desktopsticker::wallpaper

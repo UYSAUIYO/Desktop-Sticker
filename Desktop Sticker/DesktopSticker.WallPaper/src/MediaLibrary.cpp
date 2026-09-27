@@ -5,9 +5,12 @@
 #include "Utf8.h"
 #include "desktopsticker/wallpaper/BackendKind.h"
 #include "desktopsticker/wallpaper/FfmpegCommand.h"
+#include "desktopsticker/wallpaper/WallPaperPackage.h"
 
 #include <cwctype>
+#include <fstream>
 #include <objbase.h>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -35,6 +38,86 @@ bool is_under(const fs::path& child, const fs::path& parent) {
     const auto c = fs::weakly_canonical(child).wstring();
     const auto p = fs::weakly_canonical(parent).wstring();
     return c.size() > p.size() && c.compare(0, p.size(), p) == 0;
+}
+
+// 用系统自带 tar.exe 解包（Windows 10 1803+）。显式参数数组、无 shell、带超时，
+// 与 ffmpeg 子进程同一套纪律。
+bool run_tar_extract(const fs::path& zipPath, const fs::path& outDir) {
+    wchar_t sysDir[MAX_PATH]{};
+    if (GetSystemDirectoryW(sysDir, MAX_PATH) == 0) return false;
+    const fs::path tar = fs::path(sysDir) / L"tar.exe";
+    std::error_code ec;
+    if (!fs::is_regular_file(tar, ec)) {
+        wp_log("import: tar.exe not found in System32");
+        return false;
+    }
+
+    std::wstring cmd = L"\"" + tar.wstring() + L"\" -xf \"" + zipPath.wstring() +
+                       L"\" -C \"" + outDir.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        wp_log("import: CreateProcess(tar) failed: " + std::to_string(GetLastError()));
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(pi.hProcess, 30000);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (wait != WAIT_OBJECT_0 || code != 0) {
+        wp_log("import: tar failed (wait=" + std::to_string(wait) + " code=" + std::to_string(code) + ")");
+        return false;
+    }
+    return true;
+}
+
+// 解包 .dswall：project.pck + manifest.json 落在 shader/，海报提到条目根（现有缩略图逻辑读它）。
+bool unpack_wallpaper_pack(const fs::path& packFile, const fs::path& itemDir, WallPaperItem& item) {
+    std::error_code ec;
+    const fs::path contentDir = itemDir / backend_kind_content_subdir(item.kind);
+    fs::create_directories(contentDir, ec);
+    if (ec) {
+        wp_log("import: create shader dir failed: " + ec.message());
+        return false;
+    }
+    if (!run_tar_extract(packFile, contentDir)) return false;
+
+    const fs::path pckPath = contentDir / kPackEntryPack;
+    if (!fs::is_regular_file(pckPath, ec)) {
+        wp_log("import: project.pck missing in package");
+        return false;
+    }
+
+    std::ifstream in(contentDir / kPackEntryManifest, std::ios::binary);
+    if (!in) {
+        wp_log("import: manifest.json missing in package");
+        return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+
+    WallPaperManifest manifest;
+    std::string error;
+    if (!parse_wallpaper_manifest(ss.str(), manifest, error)) {
+        wp_log("import: " + error);
+        return false;
+    }
+    if (!manifest.title.empty()) item.name = from_utf8(manifest.title);
+
+    const fs::path poster = contentDir / kPackEntryPoster;
+    if (fs::is_regular_file(poster, ec)) {
+        const fs::path posterDest = itemDir / kPackEntryPoster;
+        fs::rename(poster, posterDest, ec);
+        if (ec) {
+            fs::copy_file(poster, posterDest, fs::copy_options::overwrite_existing, ec);
+            fs::remove(poster, ec);
+        }
+        item.hasPoster = fs::is_regular_file(posterDest, ec);
+    }
+    return true;
 }
 
 } // namespace
@@ -185,6 +268,15 @@ bool MediaLibrary::Import(const std::wstring& srcPath, std::wstring& outId) {
     item.sourceFile = sourceFileName;
     item.kind = kind;
     item.sourceBytes = fs::file_size(dest, ec);
+
+    // .dswall 场景壁纸包：解包到 shader/（pck + manifest），海报提到条目根。
+    if (kind == BackendKind::Shader3D && _wcsicmp(ext.c_str(), kWallPaperPackExt) == 0) {
+        if (!unpack_wallpaper_pack(dest, dir, item)) {
+            wp_log("import: unpack wallpaper package failed: " + to_utf8(srcPath));
+            fs::remove_all(dir, ec);
+            return false;
+        }
+    }
 
     auto items = store_.LoadLibrary(root_);
     items.push_back(std::move(item));

@@ -8,6 +8,7 @@
 #include "FfmpegTranscoder.h"
 #include "FrameSchedulerLoop.h"
 #include "FullscreenDetector.h"
+#include "GodotEngineHost.h"
 #include "Log.h"
 #include "MediaLibrary.h"
 #include "Utf8.h"
@@ -245,6 +246,8 @@ void WallPaperModuleImpl::Stop() {
 void WallPaperModuleImpl::Shutdown() {
     if (!initialized_) return;
     Stop();
+    // 内嵌 Godot 引擎与呈现窗口是进程级资源，进程退出前显式收掉并恢复桌面壁纸。
+    GodotEngineHost::instance().shutdown();
     store_.SaveState(state_);
     initialized_ = false;
 }

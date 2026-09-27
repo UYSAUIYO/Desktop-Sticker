@@ -61,10 +61,16 @@ Desktop.ini
 # User config
 *.local
 
+# Scene-wallpaper package exports (user data from the editor plugin / tests)
+*.dswall
+
+# Godot editor import cache (regenerated on first open)
+.godot/
+
 # FFmpeg payload + build-time SDK (fetched by tools/prepare_ffmpeg.ps1, never committed)
 tools/ffmpeg/
 tools/ffmpeg-sdk/
-# Godot runtime (fetched by tools/prepare_godot.ps1, never committed)
+# Godot runtime payload for the scene-wallpaper backend (collected by tools/build_godot.ps1, never committed)
 tools/godot/
 # Godot source fork is vendored in tools/godot-src/ (tracked);
 # its build output is ignored by the source tree's own .gitignore.

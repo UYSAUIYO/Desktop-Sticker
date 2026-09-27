@@ -59,7 +59,9 @@ if ($Clean) {
 $common = @('platform=windows', 'arch=x86_64', "-j$Jobs")
 $variants = @()
 if ($Target -in @('RuntimeLib', 'Both')) {
-    $variants += , @('target=template_release', 'library_type=shared_library')
+    # disable_path_overrides=no：壁纸运行库需要接受宿主传入的 --path/--main-pack
+    # （template 构建默认禁止路径覆盖，会直接 Abort）。
+    $variants += , @('target=template_release', 'library_type=shared_library', 'disable_path_overrides=no')
 }
 if ($Target -in @('Editor', 'Both')) {
     $variants += , @('target=editor')
@@ -83,3 +85,23 @@ Write-Host "[done] artifacts in $binDir :"
 Get-ChildItem -Path $binDir -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -like 'godot*' } |
     ForEach-Object { Write-Host ("  {0}  ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
+
+# 运行库目标：把 DLL 收集到 tools\godot\（应用构建的 PostBuildEvent 会拷到 OutDir\godot\）。
+# 同时清掉过时的外部进程运行时（Godot_v*.exe），避免被打进应用输出目录。
+if ($Target -in @('RuntimeLib', 'Both')) {
+    $payloadDir = Join-Path $ToolsDir 'godot'
+    New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+    Get-ChildItem -Path $payloadDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'Godot_v*.exe' -or $_.Name -like 'godot.windows.template_release*.exe' } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
+    $dll = Join-Path $binDir 'godot.windows.template_release.x86_64.dll'
+    if (Test-Path $dll) {
+        Copy-Item $dll $payloadDir -Force
+        $license = Join-Path (Split-Path -Parent $ToolsDir) 'third_party\GODOT-LICENSE.txt'
+        if (Test-Path $license) { Copy-Item $license $payloadDir -Force }
+        Write-Host "[payload] runtime collected into $payloadDir"
+    } else {
+        Write-Host "[warn] runtime dll not found: $dll"
+    }
+}

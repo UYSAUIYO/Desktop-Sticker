@@ -113,8 +113,10 @@ void FrameSchedulerLoop::apply_pending_backend() {
     // 先撤掉当前后端；若它曾是自呈现型，记下需要复位 DComp
     const bool wasSelfPresenting = backend_ && backend_->SelfPresenting();
     if (backend_) {
+        wp_log(std::string("scheduler: closing backend ") + backend_->Name());
         backend_->Close();
         backend_.reset();
+        wp_log("scheduler: backend closed");
     }
     if (wasSelfPresenting) {
         const auto d = arbiter_.OnBackendClosed();
@@ -144,7 +146,8 @@ void FrameSchedulerLoop::apply_pending_backend() {
     ctx.setRootVisual = [this](IDCompositionVisual* v) { return d3d_.SetRootVisual(v); };
     ctx.restoreRootVisual = [this] { d3d_.RestoreRootVisual(); };
 
-    auto candidate = create_backend(request.kind);
+    auto candidate = create_backend(request.kind, request.sourcePath);
+    wp_log("scheduler: creating backend (kind=" + std::to_string(static_cast<int>(request.kind)) + ")");
     const bool opened = candidate && candidate->Open(request, ctx);
 
     // 关键：失败的 Open 不得改变呈现方式（否则会把正在工作的画面搞黑）
@@ -332,8 +335,10 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         }
 
         if (paused_.load() || !backend_) {
-            // 自呈现型接管时不能去动 DComp，否则会把它盖住
-            if (!d3d_.Suspended()) d3d_.Clear(0.05f, 0.05f, 0.06f);
+            // 暂停时保持最后一帧（DComp 会保住上次呈现的内容，等价于"冻结"）；
+            // 只有完全没有后端时才回空闲底色。此前暂停时也 Clear，导致视频壁纸
+            // 手动暂停后整屏变黑（用户实测报告），规格 §7.1 只要求"停止解码与帧调度"。
+            if (!backend_ && !d3d_.Suspended()) d3d_.Clear(0.05f, 0.05f, 0.06f);
             wait_ticks(1000000);   // 100ms = 1,000,000 × 100ns
             deadline = qpc_100ns();
             lastMaster_ = ClockMaster::Qpc;

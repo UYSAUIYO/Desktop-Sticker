@@ -108,7 +108,9 @@ xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\DesktopSticker.ResMo
 if exist "$(SolutionDir)bin\$(Platform)\$(Configuration)\WebView2Loader.dll" xcopy /Y /D "$(SolutionDir)bin\$(Platform)\$(Configuration)\WebView2Loader.dll" "$(OutDir)"
 xcopy /Y /E /I "$(ProjectDir)assets\weather" "$(OutDir)assets\weather\"
 xcopy /Y /E /I "$(ProjectDir)resmon" "$(OutDir)resmon\"
-if exist "$(SolutionDir)..\tools\ffmpeg\" xcopy /Y /D "$(SolutionDir)..\tools\ffmpeg\*" "$(OutDir)ffmpeg\"</Command>
+if exist "$(SolutionDir)..\tools\ffmpeg\" xcopy /Y /D "$(SolutionDir)..\tools\ffmpeg\*" "$(OutDir)ffmpeg\"
+if exist "$(OutDir)godot\Godot_v*.exe" del /Q "$(OutDir)godot\Godot_v*.exe"
+if exist "$(SolutionDir)..\tools\godot\" xcopy /Y /D /E "$(SolutionDir)..\tools\godot\*" "$(OutDir)godot\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">

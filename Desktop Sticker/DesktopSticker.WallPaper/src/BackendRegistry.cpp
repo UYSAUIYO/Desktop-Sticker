@@ -1,11 +1,16 @@
 #include "pch.h"
 #include "WallpaperBackend.h"
 
+#include "GodotEmbeddedBackend.h"
+#include "GodotEngineHost.h"
 #include "ImageSequenceBackend.h"
 #include "Log.h"
+#include "Utf8.h"
 #include "VideoBackend.h"
 #include "VulkanBackend.h"
 #include "WebBackend.h"
+
+#include <filesystem>
 
 namespace desktopsticker::wallpaper {
 
@@ -20,10 +25,18 @@ bool web_runtime_available() {
     return SUCCEEDED(hr);
 }
 
+// 已解包的 .dswall 壁纸包目录（media/<id>/shader 里有 project.pck）。
+bool is_embedded_pack_dir(const std::wstring& dir) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(std::filesystem::path(dir) / L"project.pck", ec);
+}
+
 } // namespace
 
-// 后端工厂。④ 3D/着色器尚未接入（Vulkan 负载未落地），返回 nullptr 让调用方按"该类型不可用"降级。
-std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind) {
+// 后端工厂。Shader3D 按目录内容分派：project.pck 在 → 内嵌 Godot 场景后端，
+// 否则 Vulkan 内置场景（两种 3D 内容形态共存，互为降级）。
+std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind,
+                                                  const std::wstring& sourcePath) {
     switch (kind) {
         case BackendKind::Video:
         case BackendKind::AnimatedImage:
@@ -37,6 +50,13 @@ std::unique_ptr<IWallpaperBackend> create_backend(BackendKind kind) {
             }
             return std::make_unique<WebBackend>();
         case BackendKind::Shader3D:
+            if (is_embedded_pack_dir(sourcePath)) {
+                if (!GodotEngineHost::instance().runtime_available()) {
+                    wp_log("godot scene requested but the embedded runtime is missing (exeDir\\godot)");
+                    return nullptr;
+                }
+                return std::make_unique<GodotEmbeddedBackend>();
+            }
             if (!vulkan_available()) {
                 wp_log("shader backend requested but no usable Vulkan device was found");
                 return nullptr;
@@ -55,7 +75,8 @@ bool backend_available(BackendKind kind) {
         case BackendKind::Web:
             return web_runtime_available();
         case BackendKind::Shader3D:
-            return vulkan_available();
+            // 内嵌 Godot 场景与 Vulkan 内置场景共用一个 kind：任一可用即可。
+            return vulkan_available() || GodotEngineHost::instance().runtime_available();
     }
     return false;
 }

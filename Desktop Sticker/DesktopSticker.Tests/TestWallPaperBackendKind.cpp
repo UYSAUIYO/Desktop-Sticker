@@ -37,6 +37,13 @@ TEST(BackendKind_WebAndShaderFiles) {
     ASSERT_TRUE(classify_file(L"C:\\a\\model.OBJ", k) && k == BackendKind::Shader3D);
 }
 
+TEST(BackendKind_DsWallIsSceneWallpaper) {
+    // .dswall = 场景壁纸包（内嵌 Godot 渲染），复用 Shader3D 以免动 ABI/持久化
+    BackendKind k{};
+    ASSERT_TRUE(classify_file(L"C:\\a\\My Scene.dswall", k) && k == BackendKind::Shader3D);
+    ASSERT_TRUE(classify_file(L"C:\\a\\My Scene.DSWALL", k) && k == BackendKind::Shader3D);
+}
+
 TEST(BackendKind_UnknownExtensionRejected) {
     BackendKind k{};
     ASSERT_FALSE(classify_file(L"C:\\a\\b.txt", k));
