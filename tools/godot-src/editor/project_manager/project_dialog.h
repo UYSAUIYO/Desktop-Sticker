@@ -89,6 +89,11 @@ private:
 	bool rendering_device_checked = false;
 	Label *rd_not_supported = nullptr;
 
+	// Desktop Sticker fork: choose to seed a new project with a 2D or 3D wallpaper starter scene.
+	VBoxContainer *wallpaper_container = nullptr;
+	OptionButton *wallpaper_type = nullptr;
+	void _write_wallpaper_starter(const String &p_path, bool p_is_3d);
+
 	Label *msg = nullptr;
 	LineEdit *project_name = nullptr;
 	LineEdit *project_path = nullptr;

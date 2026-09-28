@@ -15,7 +15,7 @@ general/accessibility_support=2
 [application]
 
 config/name="DesktopSticker Wallpaper Scene"
-run/main_scene="res://main.tscn"
+run/main_scene="res://wallpaper_3d.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 
 [display]
@@ -26,7 +26,8 @@ window/size/borderless=true
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/dstk_wallpaper/plugin.cfg")
+; 导出已改为编辑器内置 C++ 插件（项目>工具 菜单），不再启用工程内的 dstk_wallpaper addon。
+enabled=PackedStringArray()
 
 [rendering]
 

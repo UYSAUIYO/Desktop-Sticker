@@ -72,6 +72,24 @@ winrt::Windows::Foundation::IInspectable MakePosterSource(const std::filesystem:
     }
 }
 
+// 能力 id → 中文名（与编辑器面板声明的 id 一致）。未知 id 原样显示。
+std::wstring PermissionDisplayName(const std::wstring& id) {
+    if (id == L"network") return L"网络访问";
+    if (id == L"file_outside") return L"包外文件读写";
+    if (id == L"exec") return L"执行外部程序";
+    if (id == L"system") return L"系统访问";
+    return id;
+}
+
+std::wstring JoinWide(const std::vector<std::wstring>& v, const wchar_t* sep) {
+    std::wstring out;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out += sep;
+        out += v[i];
+    }
+    return out;
+}
+
 } // namespace
 
 SettingsController::SettingsController(Host* host) : host_(host) {}
@@ -1251,6 +1269,18 @@ void SettingsController::UpdateWallPaperDetails() {
                                                           : L"（省电）");
     }
     if (!settings.activeId.empty() && found->id == settings.activeId) meta += L" · 正在播放";
+
+    // 场景壁纸包携带的作者元数据（其它来源这些字段为空，不额外占行）。
+    if (!found->author.empty()) meta += L"\n作者：" + found->author;
+    if (!found->tags.empty()) meta += L"\n标签：" + JoinWide(found->tags, L"、");
+    if (!found->categories.empty()) meta += L"\n分类：" + JoinWide(found->categories, L"、");
+    if (!found->requestedPermissions.empty()) {
+        std::vector<std::wstring> names;
+        names.reserve(found->requestedPermissions.size());
+        for (const auto& p : found->requestedPermissions) names.push_back(PermissionDisplayName(p));
+        meta += L"\n请求权限：" + JoinWide(names, L"、") + L"（仅声明，未强制）";
+    }
+    if (!found->description.empty()) meta += L"\n" + found->description;
     wallPaperDetailMeta_.Text(meta);
 }
 

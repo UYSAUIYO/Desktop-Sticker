@@ -1,0 +1,77 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://wallpaper_3d.gd" id="1_script"]
+
+[sub_resource type="Environment" id="env"]
+background_mode = 1
+background_color = Color(0.027, 0.043, 0.071, 1)
+ambient_light_source = 1
+ambient_light_color = Color(0.5, 0.62, 0.8, 1)
+ambient_light_energy = 0.6
+glow_enabled = true
+glow_intensity = 0.5
+
+[sub_resource type="SphereMesh" id="core_mesh"]
+radius = 1.2
+height = 2.4
+radial_segments = 48
+rings = 24
+
+[sub_resource type="StandardMaterial3D" id="core_mat"]
+albedo_color = Color(0.1, 0.9, 0.78, 1)
+metallic = 0.2
+roughness = 0.35
+emission_enabled = true
+emission = Color(0.06, 0.95, 0.82, 1)
+emission_energy_multiplier = 1.2
+
+[sub_resource type="SphereMesh" id="orb_mesh"]
+radius = 0.42
+height = 0.84
+radial_segments = 32
+rings = 16
+
+[sub_resource type="StandardMaterial3D" id="orb_mat"]
+albedo_color = Color(0.55, 0.62, 0.72, 1)
+metallic = 0.9
+roughness = 0.22
+
+[node name="Wallpaper3D" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.86, 0.35, -0.37, 0, 0.73, 0.68, 0.51, -0.59, 0.63, 0, 4, 0)
+light_energy = 1.1
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.965, 0.26, 0, -0.26, 0.965, 0, 0.8, 7.6)
+fov = 55.0
+
+[node name="Core" type="MeshInstance3D" parent="."]
+mesh = SubResource("core_mesh")
+surface_material_override/0 = SubResource("core_mat")
+
+[node name="Orbiter1" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, 0)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Orbiter2" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 0, 2.6)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Orbiter3" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 0, -2.6)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.8, 0)
+text = "00:00:00"
+font_size = 128
+outline_size = 16
+billboard = 1

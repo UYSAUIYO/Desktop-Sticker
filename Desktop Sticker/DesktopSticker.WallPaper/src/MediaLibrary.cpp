@@ -106,6 +106,13 @@ bool unpack_wallpaper_pack(const fs::path& packFile, const fs::path& itemDir, Wa
         return false;
     }
     if (!manifest.title.empty()) item.name = from_utf8(manifest.title);
+    // 作者元数据与稳定标识（供设置页展示、热应用去重）
+    item.author = from_utf8(manifest.author);
+    item.description = from_utf8(manifest.description);
+    item.packId = from_utf8(manifest.packId);
+    for (const auto& t : manifest.tags) item.tags.push_back(from_utf8(t));
+    for (const auto& c : manifest.categories) item.categories.push_back(from_utf8(c));
+    for (const auto& p : manifest.requestedPermissions) item.requestedPermissions.push_back(from_utf8(p));
 
     const fs::path poster = contentDir / kPackEntryPoster;
     if (fs::is_regular_file(poster, ec)) {
@@ -219,6 +226,26 @@ bool MediaLibrary::Remove(const std::wstring& id) {
 
     items.erase(it);
     return store_.SaveLibrary(root_, items);
+}
+
+int MediaLibrary::PruneByPackId(const std::wstring& packId, const std::wstring& keepId) {
+    if (packId.empty()) return 0;
+
+    auto items = store_.LoadLibrary(root_);
+    const fs::path mediaRoot = fs::path(root_) / L"media";
+    std::vector<WallPaperItem> kept;
+    kept.reserve(items.size());
+    int removed = 0;
+    for (auto& it : items) {
+        const bool dup = (it.packId == packId) && (it.id != keepId);
+        if (!dup) { kept.push_back(std::move(it)); continue; }
+        const fs::path dir(ItemDir(it.id));
+        std::error_code ec;
+        if (is_under(dir, mediaRoot)) fs::remove_all(dir, ec); // 删失败不阻断，条目已从库中移除
+        ++removed;
+    }
+    if (removed > 0) store_.SaveLibrary(root_, kept);
+    return removed;
 }
 
 bool MediaLibrary::Import(const std::wstring& srcPath, std::wstring& outId) {

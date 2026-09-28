@@ -102,6 +102,13 @@ private:
     void start_monitor();
     void stop_monitor();
     void monitor_main();
+    // 热应用：监听 %APPDATA%\DesktopSticker\wallpaper_inbox\ 里的 .dswall，导入并立即应用。
+    std::wstring inbox_dir() const;
+    void start_inbox();
+    void stop_inbox();
+    void inbox_main();
+    void inbox_scan_once();
+    bool apply_pack_file(const std::wstring& filePath);
     void queue_prepare_artifacts(const std::wstring& id, VariantKind kind = VariantKind::Balanced);
     std::wstring ffmpeg_dir() const;
     void notify_playback();
@@ -129,6 +136,10 @@ private:
     std::atomic<bool> monitorQuit_{false};
     std::thread workerThread_;
     std::atomic<bool> workerQuit_{false};
+
+    std::thread inboxThread_;
+    std::atomic<bool> inboxQuit_{false};
+    HANDLE inboxQuitEvent_ = nullptr; // 供 inbox 线程等待，可被 stop_inbox 唤醒
 };
 
 WallPaperModuleImpl::WallPaperModuleImpl()
@@ -218,6 +229,13 @@ bool WallPaperModuleImpl::Start() {
     available_ = true;
     start_monitor();
 
+    // 热应用收件箱：确保目录存在，启动轮询线程（启动时会先补处理一批积压的包）。
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(inbox_dir(), ec);
+    }
+    start_inbox();
+
     if (state_.settings.enabled && !state_.settings.activeId.empty()) {
         request_play(state_.settings.activeId);
     }
@@ -226,6 +244,7 @@ bool WallPaperModuleImpl::Start() {
 }
 
 void WallPaperModuleImpl::Stop() {
+    stop_inbox();
     stop_monitor();
     stop_playback();
     workerQuit_.store(true);
@@ -637,6 +656,91 @@ void WallPaperModuleImpl::monitor_main() {
             notify_playback();
         }
     }
+}
+
+// ---- 热应用收件箱 ----
+
+std::wstring WallPaperModuleImpl::inbox_dir() const {
+    return (std::filesystem::path(configDir_) / L"wallpaper_inbox").wstring();
+}
+
+void WallPaperModuleImpl::start_inbox() {
+    if (inboxThread_.joinable()) return;
+    inboxQuit_.store(false);
+    if (!inboxQuitEvent_) inboxQuitEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    inboxThread_ = std::thread([this]() {
+        SetThreadDescription(GetCurrentThread(), L"壁纸热应用收件箱");
+        inbox_main();
+    });
+}
+
+void WallPaperModuleImpl::stop_inbox() {
+    if (!inboxThread_.joinable()) return;
+    inboxQuit_.store(true);
+    if (inboxQuitEvent_) SetEvent(inboxQuitEvent_);
+    inboxThread_.join();
+}
+
+void WallPaperModuleImpl::inbox_main() {
+    inbox_scan_once(); // 启动补处理：应用未运行时落入的包
+    while (!inboxQuit_.load()) {
+        const DWORD r = WaitForSingleObject(inboxQuitEvent_, 700); // 约 0.7s 轮询一次
+        if (inboxQuit_.load()) break;
+        if (r == WAIT_OBJECT_0) break; // 退出事件已置位
+        inbox_scan_once();
+    }
+}
+
+void WallPaperModuleImpl::inbox_scan_once() {
+    if (!available_ || !library_) return;
+    std::error_code ec;
+    const std::filesystem::path inbox(inbox_dir());
+    if (!std::filesystem::is_directory(inbox, ec)) return;
+
+    // 收集 *.dswall，按名字排序，逐个应用（多个时最后一个为当前）。
+    std::vector<std::filesystem::path> packs;
+    for (const auto& e : std::filesystem::directory_iterator(inbox, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec)) continue;
+        if (_wcsicmp(e.path().extension().c_str(), L".dswall") == 0) packs.push_back(e.path());
+    }
+    std::sort(packs.begin(), packs.end());
+    for (const auto& p : packs) {
+        const std::wstring fp = p.wstring();
+        // 先拿掉文件再导入：避免导入失败时下一轮反复重试同一坏包（失败只记日志）。
+        std::error_code rec;
+        const std::wstring record = (inbox / (p.filename().wstring() + L".failed")).wstring();
+        if (!apply_pack_file(fp)) {
+            wp_log("inbox: apply failed, parked as .failed: " + to_utf8(fp));
+            std::filesystem::rename(p, record, rec); // 留证据，不循环重试
+        } else {
+            std::filesystem::remove(p, rec);
+        }
+    }
+}
+
+bool WallPaperModuleImpl::apply_pack_file(const std::wstring& filePath) {
+    std::wstring id;
+    if (!Import(filePath, id)) return false; // Import 会锁库、排缩略图/副本后台、发事件
+
+    // 先应用新导入的条目（先切过去，再删旧的，避免删掉正在渲染的包）。
+    state_.settings.enabled = true;
+    state_.settings.activeId = id;
+    store_.SaveState(state_);
+    request_play(id);
+
+    // 再按 packId 剪掉同一作者包的历史副本，库不会随反复热导出膨胀。
+    {
+        std::lock_guard<std::mutex> lock(libraryMutex_);
+        std::wstring packId;
+        for (const auto& it : library_->List()) {
+            if (it.id == id) { packId = it.packId; break; }
+        }
+        if (!packId.empty()) library_->PruneByPackId(packId, id);
+    }
+    if (events_.libraryChanged) events_.libraryChanged();
+    wp_log("inbox: applied " + to_utf8(filePath));
+    return true;
 }
 
 } // namespace

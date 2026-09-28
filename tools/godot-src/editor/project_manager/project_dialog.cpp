@@ -601,6 +601,15 @@ void ProjectDialog::ok_pressed() {
 			initial_settings[extra_setting.key] = extra_setting.value;
 		}
 
+		// Desktop Sticker fork: when a wallpaper starter is picked, point the main scene at it.
+		const int wallpaper_choice = wallpaper_type->get_selected_id();
+		if (wallpaper_choice == 1 || wallpaper_choice == 2) {
+			const bool wp2d = (wallpaper_choice == 1);
+			initial_settings["application/run/main_scene"] = wp2d ? "res://wallpaper_2d.tscn" : "res://wallpaper_3d.tscn";
+			// Read by the built-in wallpaper export plugin for the manifest.
+			initial_settings["desktop_sticker/wallpaper/dimension"] = wp2d ? "2d" : "3d";
+		}
+
 		Error err = ProjectSettings::get_singleton()->save_custom(path.path_join("project.godot"), initial_settings, Vector<String>(), false);
 		if (err != OK) {
 			_set_message(TTRC("Couldn't create project.godot in project path."), MESSAGE_ERROR);
@@ -614,6 +623,11 @@ void ProjectDialog::ok_pressed() {
 			return;
 		}
 		fa_icon->store_string(get_default_project_icon());
+
+		// Desktop Sticker fork: drop the chosen 2D/3D starter scene + script into the new project.
+		if (wallpaper_choice == 1 || wallpaper_choice == 2) {
+			_write_wallpaper_starter(path, wallpaper_choice == 2);
+		}
 
 		EditorVCSInterface::create_vcs_metadata_files(EditorVCSInterface::VCSMetadata(vcs_metadata_selection->get_selected()), path);
 
@@ -872,6 +886,7 @@ void ProjectDialog::show_dialog(bool p_reset_name, bool p_is_confirmed) {
 		install_path_container->hide();
 		renderer_container->hide();
 		default_files_container->hide();
+		wallpaper_container->hide();
 
 		callable_mp((Control *)project_name, &Control::grab_focus).call_deferred(false);
 		callable_mp(project_name, &LineEdit::select_all).call_deferred();
@@ -914,6 +929,7 @@ void ProjectDialog::show_dialog(bool p_reset_name, bool p_is_confirmed) {
 			install_path_container->hide();
 			renderer_container->hide();
 			default_files_container->hide();
+			wallpaper_container->hide();
 
 			// Project path dialog is also opened; no need to change focus.
 		} else if (mode == MODE_NEW) {
@@ -941,6 +957,12 @@ void ProjectDialog::show_dialog(bool p_reset_name, bool p_is_confirmed) {
 			install_path_container->hide();
 			renderer_container->show();
 			default_files_container->show();
+			wallpaper_container->show();
+			// Only reset to "Empty" on a fresh open; a re-show after browsing the folder
+			// (show_dialog(false)) must preserve the user's wallpaper-type choice.
+			if (p_reset_name) {
+				wallpaper_type->select(0);
+			}
 
 			callable_mp((Control *)project_name, &Control::grab_focus).call_deferred(false);
 			callable_mp(project_name, &LineEdit::select_all).call_deferred();
@@ -954,6 +976,7 @@ void ProjectDialog::show_dialog(bool p_reset_name, bool p_is_confirmed) {
 			install_path_container->hide();
 			renderer_container->hide();
 			default_files_container->hide();
+			wallpaper_container->hide();
 
 			callable_mp((Control *)project_path, &Control::grab_focus).call_deferred(false);
 		} else if (mode == MODE_DUPLICATE) {
@@ -964,6 +987,7 @@ void ProjectDialog::show_dialog(bool p_reset_name, bool p_is_confirmed) {
 			install_path_container->hide();
 			renderer_container->hide();
 			default_files_container->hide();
+			wallpaper_container->hide();
 			if (!duplicate_can_edit) {
 				edit_check_box->hide();
 			}
@@ -1016,6 +1040,217 @@ void ProjectDialog::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("projects_updated"));
 }
 
+// Desktop Sticker fork: write the chosen 2D/3D wallpaper starter scene + script into a
+// freshly created project directory. Content mirrors tools/godot-wallpaper-template.
+void ProjectDialog::_write_wallpaper_starter(const String &p_path, bool p_is_3d) {
+	const char *base;
+	const char *gd_src;
+	const char *tscn_src;
+
+	if (p_is_3d) {
+		base = "wallpaper_3d";
+		gd_src = R"GDSC(extends Node3D
+## 3D 壁纸起始模板：中心发光球 + 三颗卫星球环绕 + 一块始终朝向相机的文字（显示当前时间）。
+## 桌面贴纸以内嵌方式运行时整窗鼠标穿透；编辑器 F5 预览时保持可交互。
+
+@export var orbit_radius := 3.0        # 卫星环绕半径
+@export var orbit_speed := 0.6         # 环绕角速度（弧度/秒）
+@export var show_time := true          # 中心文字是否显示当前时间，否则显示 title_text
+@export var title_text := "Desktop Sticker"
+
+@onready var _title: Label3D = $Title
+@onready var _core: MeshInstance3D = $Core
+@onready var _orbiters := [$Orbiter1, $Orbiter2, $Orbiter3]
+
+func _ready() -> void:
+	if "--dstk-embedded" in OS.get_cmdline_user_args():
+		get_window().mouse_passthrough = true
+
+func _process(delta: float) -> void:
+	var t := Time.get_ticks_msec() / 1000.0
+	_core.rotate_y(0.3 * delta)
+	var n := maxi(1, _orbiters.size())
+	for i in _orbiters.size():
+		var angle := t * orbit_speed + i * (TAU / n)
+		(_orbiters[i] as MeshInstance3D).position = Vector3(
+			cos(angle) * orbit_radius, sin(angle * 0.8) * 0.7, sin(angle) * orbit_radius)
+		(_orbiters[i] as MeshInstance3D).rotate_y(1.5 * delta)
+	if _title:
+		_title.text = Time.get_time_string_from_system() if show_time else title_text
+)GDSC";
+		tscn_src = R"TSCN([gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://wallpaper_3d.gd" id="1_script"]
+
+[sub_resource type="Environment" id="env"]
+background_mode = 1
+background_color = Color(0.027, 0.043, 0.071, 1)
+ambient_light_source = 1
+ambient_light_color = Color(0.5, 0.62, 0.8, 1)
+ambient_light_energy = 0.6
+glow_enabled = true
+glow_intensity = 0.5
+
+[sub_resource type="SphereMesh" id="core_mesh"]
+radius = 1.2
+height = 2.4
+radial_segments = 48
+rings = 24
+
+[sub_resource type="StandardMaterial3D" id="core_mat"]
+albedo_color = Color(0.1, 0.9, 0.78, 1)
+metallic = 0.2
+roughness = 0.35
+emission_enabled = true
+emission = Color(0.06, 0.95, 0.82, 1)
+emission_energy_multiplier = 1.2
+
+[sub_resource type="SphereMesh" id="orb_mesh"]
+radius = 0.42
+height = 0.84
+radial_segments = 32
+rings = 16
+
+[sub_resource type="StandardMaterial3D" id="orb_mat"]
+albedo_color = Color(0.55, 0.62, 0.72, 1)
+metallic = 0.9
+roughness = 0.22
+
+[node name="Wallpaper3D" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.86, 0.35, -0.37, 0, 0.73, 0.68, 0.51, -0.59, 0.63, 0, 4, 0)
+light_energy = 1.1
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.965, 0.26, 0, -0.26, 0.965, 0, 0.8, 7.6)
+fov = 55.0
+
+[node name="Core" type="MeshInstance3D" parent="."]
+mesh = SubResource("core_mesh")
+surface_material_override/0 = SubResource("core_mat")
+
+[node name="Orbiter1" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0, 0)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Orbiter2" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 0, 2.6)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Orbiter3" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 0, -2.6)
+mesh = SubResource("orb_mesh")
+surface_material_override/0 = SubResource("orb_mat")
+
+[node name="Title" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.8, 0)
+text = "00:00:00"
+font_size = 128
+outline_size = 16
+billboard = 1
+)TSCN";
+	} else {
+		base = "wallpaper_2d";
+		gd_src = R"GDSC(extends Control
+## 2D 壁纸起始模板：全屏深色底 + 居中大时钟（时:分:秒，每帧刷新）+ 下方日期。
+## 桌面贴纸以内嵌方式运行时整窗鼠标穿透；编辑器 F5 预览时保持可交互。
+
+@onready var _clock: Label = $Clock
+@onready var _date: Label = $Date
+
+func _ready() -> void:
+	if "--dstk-embedded" in OS.get_cmdline_user_args():
+		get_window().mouse_passthrough = true
+	_refresh()
+
+func _process(_delta: float) -> void:
+	_refresh()
+
+func _refresh() -> void:
+	var now := Time.get_datetime_dict_from_system()
+	_clock.text = "%02d:%02d:%02d" % [now.hour, now.minute, now.second]
+	_date.text = "%d年%d月%d日" % [now.year, now.month, now.day]
+)GDSC";
+		tscn_src = R"TSCN([gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://wallpaper_2d.gd" id="1_script"]
+
+[node name="Wallpaper2D" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.027, 0.043, 0.071, 1)
+
+[node name="Clock" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -400.0
+offset_top = -90.0
+offset_right = 400.0
+offset_bottom = 90.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
+theme_override_font_sizes/font_size = 128
+text = "00:00:00"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Date" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -300.0
+offset_top = 90.0
+offset_right = 300.0
+offset_bottom = 130.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_colors/font_color = Color(0.6, 0.7, 0.85, 1)
+theme_override_font_sizes/font_size = 36
+text = "----年--月--日"
+horizontal_alignment = 1
+vertical_alignment = 1
+)TSCN";
+	}
+
+	const String stem = String::utf8(base);
+	Ref<FileAccess> gd = FileAccess::open(p_path.path_join(stem + ".gd"), FileAccess::WRITE);
+	if (gd.is_valid()) {
+		gd->store_string(String::utf8(gd_src));
+	}
+	Ref<FileAccess> sc = FileAccess::open(p_path.path_join(stem + ".tscn"), FileAccess::WRITE);
+	if (sc.is_valid()) {
+		sc->store_string(String::utf8(tscn_src));
+	}
+}
+
 ProjectDialog::ProjectDialog() {
 	VBoxContainer *vb = memnew(VBoxContainer);
 	add_child(vb);
@@ -1032,6 +1267,22 @@ ProjectDialog::ProjectDialog() {
 	project_name->set_h_size_flags(Control::SIZE_EXPAND_FILL);
 	project_name->set_accessibility_name(TTRC("Project Name:"));
 	name_container->add_child(project_name);
+
+	// Desktop Sticker fork: seed the new project with a 2D or 3D wallpaper starter scene.
+	// Defaults to "Empty" so the stock Godot new-project behavior is unchanged.
+	wallpaper_container = memnew(VBoxContainer);
+	vb->add_child(wallpaper_container);
+	l = memnew(Label);
+	l->set_text(String::utf8("壁纸类型："));
+	wallpaper_container->add_child(l);
+	wallpaper_type = memnew(OptionButton);
+	wallpaper_type->set_custom_minimum_size(Size2(100, 20));
+	wallpaper_type->add_item(String::utf8("普通项目 (Empty)"), 0);
+	wallpaper_type->add_item(String::utf8("2D 壁纸（时钟模板）"), 1);
+	wallpaper_type->add_item(String::utf8("3D 壁纸（文字+球体环绕）"), 2);
+	wallpaper_type->select(0);
+	wallpaper_container->add_child(wallpaper_type);
+	wallpaper_container->set_visible(false);
 
 	project_path_container = memnew(VBoxContainer);
 	vb->add_child(project_path_container);

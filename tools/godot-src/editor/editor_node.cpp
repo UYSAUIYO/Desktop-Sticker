@@ -51,6 +51,7 @@
 #include "core/version.h"
 #include "editor/animation/animation_player_editor_plugin.h"
 #include "editor/asset_library/asset_library_editor_plugin.h"
+#include "editor/editor_wallpaper_plugin.h"
 #include "editor/audio/audio_stream_preview.h"
 #include "editor/audio/editor_audio_buses.h"
 #include "editor/debugger/debugger_editor_plugin.h"
@@ -9407,6 +9408,10 @@ EditorNode::EditorNode() {
 	} else {
 		print_verbose("Asset Store not available (due to using Web editor, or SSL support disabled).");
 	}
+
+	// Desktop Sticker fork: built-in wallpaper (.dswall) export, available in every project
+	// via Project > Tools, so no per-project addon import is needed.
+	add_editor_plugin(memnew(EditorWallpaperPlugin));
 
 	// More visually meaningful to have this later.
 	add_editor_plugin(memnew(AnimationPlayerEditorPlugin));

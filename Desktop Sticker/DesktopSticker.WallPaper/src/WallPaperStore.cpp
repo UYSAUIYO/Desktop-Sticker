@@ -52,6 +52,23 @@ std::string read_all(const std::wstring& path, bool& ok) {
     return s;
 }
 
+// 字符串数组（UTF-8 ↔ wstring）：缺字段/非数组一律返回空。
+std::vector<std::wstring> wstr_array(const json& e, const char* key) {
+    std::vector<std::wstring> out;
+    if (e.contains(key) && e[key].is_array()) {
+        for (const auto& x : e[key]) {
+            if (x.is_string()) out.push_back(from_utf8(x.get<std::string>()));
+        }
+    }
+    return out;
+}
+
+json str_array(const std::vector<std::wstring>& v) {
+    json a = json::array();
+    for (const auto& s : v) a.push_back(to_utf8(s));
+    return a;
+}
+
 } // namespace
 
 bool WriteFileAtomic(const std::wstring& path, const std::string& content) {
@@ -161,6 +178,13 @@ std::vector<WallPaperItem> WallPaperStore::LoadLibrary(const std::wstring& libra
             it.hasBalanced = e.value("hasBalanced", false);
             it.hasPowerSaver = e.value("hasPowerSaver", false);
             it.sourceBytes = e.value("sourceBytes", 0ull);
+            // 作者元数据（v2 起新增；旧库缺字段时取空，不判失败）
+            it.author = from_utf8(e.value("author", std::string{}));
+            it.description = from_utf8(e.value("description", std::string{}));
+            it.packId = from_utf8(e.value("packId", std::string{}));
+            it.tags = wstr_array(e, "tags");
+            it.categories = wstr_array(e, "categories");
+            it.requestedPermissions = wstr_array(e, "requestedPermissions");
             if (!it.id.empty()) items.push_back(std::move(it));
         }
     } catch (const std::exception& e) {
@@ -184,6 +208,12 @@ bool WallPaperStore::SaveLibrary(const std::wstring& libraryRoot,
             {"hasBalanced", it.hasBalanced},
             {"hasPowerSaver", it.hasPowerSaver},
             {"sourceBytes", it.sourceBytes},
+            {"author", to_utf8(it.author)},
+            {"description", to_utf8(it.description)},
+            {"packId", to_utf8(it.packId)},
+            {"tags", str_array(it.tags)},
+            {"categories", str_array(it.categories)},
+            {"requestedPermissions", str_array(it.requestedPermissions)},
         });
     }
     json j;

@@ -28,7 +28,24 @@ struct WallPaperManifest {
     std::string mainScene;    // 例如 res://main.tscn
     std::string engineVersion; // 例如 4.7.2
     std::string engineBuild;   // 例如 4.7.2.stable (custom_build)
+
+    // 以下为可选字段（format_version 仍为 1：新字段缺失时取空，旧包照旧能导入）。
+    std::string author;
+    std::string description;
+    std::string packId;                 // 稳定作者标识，热应用去重用
+    std::vector<std::string> tags;
+    std::vector<std::string> categories;
+    std::vector<std::string> requestedPermissions; // 能力 id：network/file_outside/exec/system
 };
+
+// 读一个字符串数组字段；缺省/非数组/元素非字符串时跳过，不报错。
+inline void read_string_array(const nlohmann::json& j, const char* key,
+                              std::vector<std::string>& out) {
+    if (!j.contains(key) || !j[key].is_array()) return;
+    for (const auto& e : j[key]) {
+        if (e.is_string()) out.push_back(e.get<std::string>());
+    }
+}
 
 // 解析 manifest.json 文本。失败返回 false 并填 error（中文，供日志/UI 用）。
 inline bool parse_wallpaper_manifest(const std::string& text, WallPaperManifest& out, std::string& error) {
@@ -52,6 +69,13 @@ inline bool parse_wallpaper_manifest(const std::string& text, WallPaperManifest&
         out.engineVersion = j["engine"].value("version", std::string{});
         out.engineBuild = j["engine"].value("build", std::string{});
     }
+    // 可选作者元数据：缺失即空，绝不因缺字段判失败。
+    out.author = j.value("author", std::string{});
+    out.description = j.value("description", std::string{});
+    out.packId = j.value("pack_id", std::string{});
+    read_string_array(j, "tags", out.tags);
+    read_string_array(j, "categories", out.categories);
+    read_string_array(j, "requested_permissions", out.requestedPermissions);
     return true;
 }
 

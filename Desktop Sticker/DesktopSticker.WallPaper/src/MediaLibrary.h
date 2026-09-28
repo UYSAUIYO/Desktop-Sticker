@@ -25,6 +25,8 @@ public:
     bool Rename(const std::wstring& id, const std::wstring& name);
     bool Remove(const std::wstring& id);
     bool Update(const std::wstring& id, const std::function<void(WallPaperItem&)>& mutate);
+    // 热应用去重：删除与 packId 相同但 id != keepId 的条目（packId 为空时不处理）。返回删除数。
+    int PruneByPackId(const std::wstring& packId, const std::wstring& keepId);
 
     std::wstring ItemDir(const std::wstring& id) const;
     std::wstring SourcePath(const WallPaperItem& item) const;

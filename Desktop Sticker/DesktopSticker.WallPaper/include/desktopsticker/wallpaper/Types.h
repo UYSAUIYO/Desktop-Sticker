@@ -40,6 +40,16 @@ struct WallPaperItem {
     bool hasBalanced = false;
     bool hasPowerSaver = false;
     uint64_t sourceBytes = 0;
+
+    // ---- 场景壁纸包（.dswall）携带的作者元数据；其它来源留空 ----
+    // 注意：这些字段是 EXE↔DLL 的 ABI 一部分（随 library.json 往返），
+    // 增删字段两端必须同步重编，旧 library.json 缺字段时按空值读入。
+    std::wstring author;
+    std::wstring description;
+    std::vector<std::wstring> tags;
+    std::vector<std::wstring> categories;
+    std::vector<std::wstring> requestedPermissions; // 能力 id（ascii），M3b 仅声明+展示
+    std::wstring packId;                             // 稳定作者标识，热应用去重用；非 .dswall 为空
 };
 
 struct WallPaperSettings {
