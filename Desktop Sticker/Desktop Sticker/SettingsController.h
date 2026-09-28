@@ -34,6 +34,10 @@ private:
     void ChangeWallPaperRoot();
     // 取壁纸网格当前选中项的 id；未选中返回空
     std::wstring SelectedWallPaperId() const;
+    // 按缓存条目 + 搜索关键字重建壁纸网格；keepSelection=false 时滚到顶部
+    void PopulateWallPaperGrid(bool keepSelection);
+    // 刷新右侧预览大图与条目元信息（名称/类型/大小/副本）
+    void UpdateWallPaperDetails();
 
     Host* host_ = nullptr;
     bool visible_ = false;
@@ -60,7 +64,8 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseLockSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
-    winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperSpeedCombo_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Slider wallPaperSpeedSlider_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperSpeedLabel_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperDecodePathCombo_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperPlaybackText_{ nullptr };
     winrt::Microsoft::UI::Xaml::DispatcherTimer playbackTimer_{ nullptr };
@@ -69,6 +74,12 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperVolumeLabel_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::GridView wallPaperGrid_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperStatus_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBox wallPaperSearchBox_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::Border wallPaperPreview_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperDetailName_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::TextBlock wallPaperDetailMeta_{ nullptr };
+    // 列表条目缓存：搜索过滤与右侧详情都从这里取，避免每次敲字都跨 DLL 拉一遍库
+    std::vector<desktopsticker::WallPaperItem> wpItems_;
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperImportFolderButton_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Button wallPaperRemoveButton_{ nullptr };
