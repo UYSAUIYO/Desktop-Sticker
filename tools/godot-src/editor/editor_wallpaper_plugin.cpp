@@ -47,6 +47,7 @@ String json_escape(const String &p_in) {
 	return out;
 }
 
+// 将字符串数组序列化为 JSON 数组格式（如 ["a", "b"]），内部元素会进行 JSON 转义。
 String quoted_array(const PackedStringArray &p_arr) {
 	String s = "[";
 	for (int i = 0; i < p_arr.size(); i++) {
