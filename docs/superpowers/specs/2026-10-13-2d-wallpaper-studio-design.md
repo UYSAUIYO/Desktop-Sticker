@@ -92,6 +92,25 @@
 所以：**Studio 以目录形式随应用分发**（`<exeDir>\studio\`），和 `assets/weather/`、`tools/godot/` 的做法一致。
 桌面贴纸本身也是非打包（unpackaged）交付，这一点不引入新的约束。
 
+
+### 5. **被 `preload` 的脚本里绝对不能有 `static var`**
+
+实测：`pg.gd`（主脚本）+ `pf_lib.gd`（preload 的库，含 `static var`）→ 进程退出码
+`0xC0000374`（STATUS_HEAP_CORRUPTION）。把同样的代码内联进主脚本（`pf.gd`）→ 退出码 0。
+
+症状具有欺骗性：**测试全部通过、日志全对，只有退出码是崩溃码**。所以：
+
+- `tests/test_framework.gd` 的状态必须是**实例成员**，由 `run_tests.gd` 持有唯一实例
+  并传给每个测试文件的 `register(collector)`；
+- 同理，`src/` 下的库脚本一律只用 `static func`，不要用 `static var`；
+- 引用环由 `collector.dispose()` 显式断开，否则退出时会报 `ObjectDB instances were leaked`。
+
+### 6. 工程要带一个空的 `.godot/global_script_class_cache.cfg`
+
+内容就是 `list=[]`。不带它时引擎每次启动都会打印
+`ERROR: Could not load global script cache.`（`project_settings.cpp` 在非编辑器构建里
+把"缓存文件不存在"当错误报）。因为 Studio 本来就不用 `class_name`，空列表是**正确**的内容，
+不是权宜之计。
 ### 2.3 两条硬约束（实测得出，不是预防性设计）
 
 1. **Studio 工程不使用 `class_name`。** 全局类名依赖 `.godot/global_script_class_cache.cfg`，

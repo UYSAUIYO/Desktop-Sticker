@@ -3,6 +3,12 @@
 
 config_version=5
 
+[accessibility]
+
+; 关掉无障碍：Studio 自己创建主窗口，而 fork 里 AccessKit 的 Windows 子类化适配器
+; 要求"窗口首次显示前"注册，窗口自建的路径不满足这个前提。
+general/accessibility_support=0
+
 [application]
 
 config/name="桌面贴纸 · 壁纸编辑器"
