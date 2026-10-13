@@ -185,6 +185,7 @@ std::vector<WallPaperItem> WallPaperStore::LoadLibrary(const std::wstring& libra
             it.tags = wstr_array(e, "tags");
             it.categories = wstr_array(e, "categories");
             it.requestedPermissions = wstr_array(e, "requestedPermissions");
+            it.hasScripts = e.value("hasScripts", false);
             if (!it.id.empty()) items.push_back(std::move(it));
         }
     } catch (const std::exception& e) {
@@ -214,6 +215,7 @@ bool WallPaperStore::SaveLibrary(const std::wstring& libraryRoot,
             {"tags", str_array(it.tags)},
             {"categories", str_array(it.categories)},
             {"requestedPermissions", str_array(it.requestedPermissions)},
+            {"hasScripts", it.hasScripts},
         });
     }
     json j;

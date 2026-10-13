@@ -113,6 +113,8 @@ bool unpack_wallpaper_pack(const fs::path& packFile, const fs::path& itemDir, Wa
     for (const auto& t : manifest.tags) item.tags.push_back(from_utf8(t));
     for (const auto& c : manifest.categories) item.categories.push_back(from_utf8(c));
     for (const auto& p : manifest.requestedPermissions) item.requestedPermissions.push_back(from_utf8(p));
+    // 含用户脚本的包要在设置页醒目提示（脚本在桌面贴纸进程内运行，当前不拦截）
+    item.hasScripts = has_scripts(manifest);
 
     const fs::path poster = contentDir / kPackEntryPoster;
     if (fs::is_regular_file(poster, ec)) {

@@ -1,4 +1,4 @@
-# 2D 壁纸编辑器（Wallpaper Studio）阶段 0 + 阶段 1 实施计划
+﻿# 2D 壁纸编辑器（Wallpaper Studio）阶段 0 + 阶段 1 实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -528,7 +528,7 @@ inline bool has_scripts(const WallPaperManifest& m) {
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1 -Filter wallpaper_manifest
 ```
 
-Expected: 两个用例通过，总数从 230 变为 232。
+Expected: 两个用例通过，总数从 255 变为 257。
 
 - [ ] **Step 5: 设置页展示**
 
@@ -2519,7 +2519,7 @@ if (-not $NoStudio) {
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1
 ```
 
-Expected: dtest `232 passed, 0 failed`，随后 `[studio] … tests: 23/24 cases run, 0 failures`
+Expected: dtest `259 passed, 0 failed`，随后 `[studio] … tests: 23/24 cases run, 0 failures`
 与 `tests: 1/24 cases run, 0 failures`。
 
 - [ ] **Step 3: 更新 AGENTS.md**

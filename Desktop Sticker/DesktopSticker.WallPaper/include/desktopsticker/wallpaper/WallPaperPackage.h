@@ -36,6 +36,7 @@ struct WallPaperManifest {
     std::vector<std::string> tags;
     std::vector<std::string> categories;
     std::vector<std::string> requestedPermissions; // 能力 id：network/file_outside/exec/system
+    std::vector<std::string> contentFlags;         // 内容标记，当前只定义 "scripts"
 };
 
 // 读一个字符串数组字段；缺省/非数组/元素非字符串时跳过，不报错。
@@ -76,7 +77,17 @@ inline bool parse_wallpaper_manifest(const std::string& text, WallPaperManifest&
     read_string_array(j, "tags", out.tags);
     read_string_array(j, "categories", out.categories);
     read_string_array(j, "requested_permissions", out.requestedPermissions);
+    read_string_array(j, "content_flags", out.contentFlags);
     return true;
+}
+
+// 包里是否含用户脚本。用于设置页的醒目提示：脚本会在桌面贴纸进程内运行。
+// 缺失 content_flags 时返回 false —— 旧包按"不含脚本"处理，不因缺字段报警。
+inline bool has_scripts(const WallPaperManifest& m) {
+    for (const auto& f : m.contentFlags) {
+        if (f == "scripts") return true;
+    }
+    return false;
 }
 
 // 目录清单里有没有 project.pck（大小写不敏感）。纯判断，用于识别"已解包的壁纸包目录"。

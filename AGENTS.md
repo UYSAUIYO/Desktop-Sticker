@@ -1,4 +1,4 @@
-# AGENTS.md
+﻿# AGENTS.md
 
 Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus a double-space search launcher and a desktop clock widget (analog dial / sunrise-sunset orbit / live weather). WinUI 3 (C++/WinRT) tray app + Win32/Direct2D feature DLL. README, code comments, and UI strings are in Chinese.
 
@@ -43,7 +43,7 @@ Run tests:
 cd "D:/project/Desktop Sticker/Desktop Sticker/bin/x64/Release"
 cp DesktopSticker.Features.dll Tests/   # only if PostBuildEvent didn't already
 cp DesktopSticker.WallPaper.dll Tests/  # ditto
-./Tests/DesktopSticker.Tests.exe        # expect: 230 passed, 0 failed
+./Tests/DesktopSticker.Tests.exe        # expect: 259 passed, 0 failed
 ```
 
 Vulkan headers + shader compiler (only needed to build/test ④, not to build the app):

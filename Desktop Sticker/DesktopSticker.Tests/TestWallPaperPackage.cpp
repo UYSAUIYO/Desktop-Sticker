@@ -103,3 +103,36 @@ TEST(WallPaperPackage_AuthorMetadataOptional) {
         R"({"format_version":1,"main_scene":"r","tags":["a",5,null,"b"]})", m2, error));
     ASSERT_EQ(static_cast<size_t>(2), m2.tags.size());
 }
+
+TEST(WallPaperPackage_ParsesContentFlags) {
+    const std::string text = R"json({
+      "format_version": 1,
+      "title": "带脚本的壁纸",
+      "main_scene": "res://build/x/main.tscn",
+      "content_flags": ["scripts"],
+      "requested_permissions": ["network", "exec"]
+    })json";
+    WallPaperManifest m;
+    std::string error;
+    ASSERT_TRUE(parse_wallpaper_manifest(text, m, error));
+    ASSERT_EQ(static_cast<size_t>(1), m.contentFlags.size());
+    ASSERT_TRUE(m.contentFlags[0] == "scripts");
+    ASSERT_TRUE(has_scripts(m));
+    ASSERT_EQ(static_cast<size_t>(2), m.requestedPermissions.size());
+}
+
+TEST(WallPaperPackage_MissingContentFlagsMeansNoScripts) {
+    WallPaperManifest m;
+    std::string error;
+    // 旧包没有 content_flags：不报错，且不能被当成"含脚本"。
+    ASSERT_TRUE(parse_wallpaper_manifest(
+        R"({"format_version": 1, "main_scene": "res://m.tscn"})", m, error));
+    ASSERT_TRUE(m.contentFlags.empty());
+    ASSERT_FALSE(has_scripts(m));
+    // 有其它标记但没有 scripts，也不算含脚本。
+    WallPaperManifest m2;
+    ASSERT_TRUE(parse_wallpaper_manifest(
+        R"({"format_version":1,"main_scene":"r","content_flags":["future"]})", m2, error));
+    ASSERT_EQ(static_cast<size_t>(1), m2.contentFlags.size());
+    ASSERT_FALSE(has_scripts(m2));
+}

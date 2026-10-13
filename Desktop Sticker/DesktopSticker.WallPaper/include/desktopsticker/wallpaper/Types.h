@@ -49,6 +49,9 @@ struct WallPaperItem {
     std::vector<std::wstring> tags;
     std::vector<std::wstring> categories;
     std::vector<std::wstring> requestedPermissions; // 能力 id（ascii），M3b 仅声明+展示
+    // 包内含用户脚本（manifest 的 content_flags 含 "scripts"）。
+    // 设置页据此打醒目徒标 —— 脚本会在桌面贴纸进程内运行，当前不拦截。
+    bool hasScripts = false;
     std::wstring packId;                             // 稳定作者标识，热应用去重用；非 .dswall 为空
 };
 

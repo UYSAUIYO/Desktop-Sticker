@@ -1187,6 +1187,24 @@ void SettingsController::PopulateWallPaperGrid(bool keepSelection) {
         nameStrip.Child(label);
         tile.Children().Append(nameStrip);
 
+        // 含脚本的包在缩略图上打一个醒目徒标：脚本会在桌面贴纸进程内运行，
+        // 当前不做任何限制 —— 这里只是让用户看到，不是安全提示。
+        if (item.hasScripts) {
+            auto strip = Border();
+            strip.Background(Solid(0xFF, 0xC4, 0x2B, 0x1C));
+            strip.CornerRadius(CornerRadiusHelper::FromUniformRadius(4));
+            strip.Padding(ThicknessHelper::FromLengths(5, 1, 5, 2));
+            strip.HorizontalAlignment(HorizontalAlignment::Left);
+            strip.VerticalAlignment(VerticalAlignment::Top);
+            strip.Margin(ThicknessHelper::FromLengths(6, 6, 0, 0));
+            auto tag = TextBlock();
+            tag.Text(L"脚本");
+            tag.FontSize(10);
+            tag.Foreground(Solid(0xFF, 0xFF, 0xFF, 0xFF));
+            strip.Child(tag);
+            tile.Children().Append(strip);
+        }
+
         if (item.id == settings.activeId) { // "正在播放"绿点
             auto dot = Border();
             dot.Width(10);
@@ -1281,6 +1299,10 @@ void SettingsController::UpdateWallPaperDetails() {
         meta += L"\n请求权限：" + JoinWide(names, L"、") + L"（仅声明，未强制）";
     }
     if (!found->description.empty()) meta += L"\n" + found->description;
+    if (found->hasScripts) {
+        // 措辞不能暗示已经做了限制：现在确实什么都没限制。
+        meta = L"【此壁纸包含脚本，会在桌面贴纸进程内运行。桌面贴纸当前不会限制它的能力。】\n" + meta;
+    }
     wallPaperDetailMeta_.Text(meta);
 }
 

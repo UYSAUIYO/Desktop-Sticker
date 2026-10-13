@@ -173,6 +173,43 @@ TEST(WallPaperStore_LibraryVersionIsTwo) {
     ASSERT_TRUE(raw.find("\"version\": 2") != std::string::npos);
 }
 
+TEST(WallPaperStore_HasScriptsRoundTrips) {
+    TempDir tmp;
+    WallPaperStore store(tmp.path.wstring());
+
+    std::vector<WallPaperItem> items;
+    WallPaperItem scripted;
+    scripted.id = L"scripted";
+    scripted.hasScripts = true;
+    scripted.requestedPermissions = { L"exec", L"network" };
+    items.push_back(scripted);
+    WallPaperItem plain;
+    plain.id = L"plain";           // hasScripts 默认 false
+    items.push_back(plain);
+
+    ASSERT_TRUE(store.SaveLibrary(tmp.path.wstring(), items));
+    const auto got = store.LoadLibrary(tmp.path.wstring());
+    ASSERT_EQ(static_cast<size_t>(2), got.size());
+    ASSERT_TRUE(got[0].hasScripts);
+    ASSERT_FALSE(got[1].hasScripts);
+    ASSERT_EQ(static_cast<size_t>(2), got[0].requestedPermissions.size());
+}
+
+TEST(WallPaperStore_OldLibraryWithoutHasScriptsDefaultsFalse) {
+    TempDir tmp;
+    // v2 库里还没有 hasScripts 字段：不能判失败，也不能当成"含脚本"。
+    const std::string raw = R"({"version":2,"items":[
+      {"id":"a","name":"a","kind":"video","requestedPermissions":["network"]}
+    ]})";
+    write_raw(tmp.path / L"library.json", raw);
+
+    WallPaperStore store(tmp.path.wstring());
+    const auto got = store.LoadLibrary(tmp.path.wstring());
+    ASSERT_EQ(static_cast<size_t>(1), got.size());
+    ASSERT_FALSE(got[0].hasScripts);
+    ASSERT_EQ(static_cast<size_t>(1), got[0].requestedPermissions.size());
+}
+
 TEST(WallPaperStore_KindRoundTrips) {
     TempDir tmp;
     WallPaperStore store(tmp.path.wstring());
