@@ -1,0 +1,22 @@
+; Studio 的 Godot 工程配置。
+; 跑它的是 fork 出来的 template_release 运行库，所以这里不能出现任何依赖编辑器构建的设置。
+
+config_version=5
+
+[application]
+
+config/name="桌面贴纸 · 壁纸编辑器"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7")
+
+[display]
+
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/resizable=true
+window/size/min_width=1024
+window/size/min_height=640
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

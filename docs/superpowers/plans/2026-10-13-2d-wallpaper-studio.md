@@ -12,6 +12,53 @@
 
 ---
 
+## 实施中发现的环境约束（照做，别照抄下面的示例代码）
+
+实际写代码时踩到了四件计划里没写对的事。它们不是可选项，后面每个任务都受它们约束：
+
+### 1. `dstk_godot_iteration()` 返回 `true` = **引擎请求退出**
+
+不是"还在跑"。`GodotInstance::iteration()` 直接返回 `Main::iteration()` 的 `exit` 标志。
+写成 `while (iteration(instance))` 会一帧都不跑就退出（实测：窗口一闪而过、自检 0 帧）。
+
+```cpp
+while (!iteration(instance)) { }          // 正确
+while (frames < N && !iteration(instance)) { ++frames; }   // 自检里的写法
+```
+
+`tools/godot-host-test/main.cpp` 里有这条注释，写宿主前先看一眼。
+
+### 2. Studio 工程里**不要用 `class_name`**
+
+`.godot/global_script_class_cache.cfg` 是 **编辑器**生成的。Studio 以源码目录形式直接跑在
+template_release 运行库上，没有这个缓存，于是：
+
+```
+ERROR: Could not load global script cache.
+SCRIPT ERROR: Parse Error: Identifier "ProbeThing" not declared in the current scope.
+```
+
+**规则**：每个文件用 `const Foo = preload("res://src/.../foo.gd")` 显式引入依赖，
+下面任务里的 `class_name Foo` 一律改写成对应的 `preload` 常量。
+好处是依赖图变成显式的，而且没有"构建期生成的文件和源码不同步"这类故障。
+
+### 3. 宿主必须把参数转发给引擎
+
+无头测试靠 `--script` 驱动，所以 `main.cpp` 要把自己除 `--self-test` 之外的参数原样转发
+（放在 `--path` 之后）。这样测试就是：
+
+```
+dstk-studio.exe --headless --script res://tests/run_tests.gd
+```
+
+### 4. 无头测试必须走 `dstk-studio.exe`，不能走模板 console exe
+
+`godot.windows.template_release.x86_64.console.exe` 那次构建**没有** `disable_path_overrides=no`，
+喂 `--path` 会直接报 "compiled without support for path overrides"。
+只有 `godot.windows.template_release.x86_64.dll`（`build_godot.ps1` 的 RuntimeLib 变体）
+有这个能力。所以一切无头验证都以 `dstk-studio.exe` 为准。
+---
+
 ## 文件结构
 
 先定结构，再拆任务。每个文件一个职责。

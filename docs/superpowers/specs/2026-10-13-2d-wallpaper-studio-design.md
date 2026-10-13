@@ -92,6 +92,17 @@
 所以：**Studio 以目录形式随应用分发**（`<exeDir>\studio\`），和 `assets/weather/`、`tools/godot/` 的做法一致。
 桌面贴纸本身也是非打包（unpackaged）交付，这一点不引入新的约束。
 
+### 2.3 两条硬约束（实测得出，不是预防性设计）
+
+1. **Studio 工程不使用 `class_name`。** 全局类名依赖 `.godot/global_script_class_cache.cfg`，
+   而那是**编辑器**生成的产物。Studio 以源码目录形式直接跑在 template_release 运行库上，
+   没有这个缓存，`class_name` 引用会以
+   `Parse Error: Identifier "X" not declared in the current scope` 直接失败。
+   一律改用 `const X = preload("res://…/x.gd")`：依赖图显式、零构建期生成物。
+
+2. **`dstk_godot_iteration()` 返回 `true` 表示引擎请求退出**，与"还在运行"相反
+   （它直接返回 `Main::iteration()` 的 exit 标志）。宿主循环写成 `while (!iteration(...))`。
+
 ### 2.3 组件职责与接口
 
 | 单元 | 职责 | 依赖 | 不做什么 |
