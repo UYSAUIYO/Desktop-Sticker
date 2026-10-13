@@ -251,28 +251,38 @@ Main (Control, 锚点铺满)
 
 ### 5.2 时钟/日期
 
-`dynamic != "none"` 的文本图层需要运行时刷新，做法是导出时把一个**固定的脚本常量**写进构建目录：
+`dynamic != "none"` 的文本图层需要运行时刷新。做法是让 `layer_nodes.gd` 持有一段**固定源码常量**，
+预览和导出都从这同一份常量在内存里编译出 `GDScript` 挂到 `Label` 上：
 
 ```gdscript
-# res://build/<id>/assets/dstk_clock.gd
-# 内容来自 layer_nodes.gd 的 DSTK_CLOCK_SCRIPT 常量字符串（不读外部文件）
+# 常量 DSTK_CLOCK_SCRIPT 的内容（不读任何外部文件）
 extends Label
 
 @export var mode: String = "clock"
-@export var fmt: String = "%02d:%02d:%02d"
+@export var date_format: String = "%04d-%02d-%02d"
+
+func _ready() -> void:
+	_refresh()
 
 func _process(_delta: float) -> void:
-    var now := Time.get_datetime_dict_from_system()
-    if mode == "date":
-        text = fmt % [now.year, now.month, now.day]
-    else:
-        text = fmt % [now.hour, now.minute, now.second]
+	_refresh()
+
+func _refresh() -> void:
+	var now := Time.get_datetime_dict_from_system()
+	if mode == "date":
+		text = date_format % [now.year, now.month, now.day]
+	else:
+		text = "%02d:%02d:%02d" % [now.hour, now.minute, now.second]
 ```
 
-责任划分：`layer_nodes.gd` 提供常量与 `mode`/`fmt` 的赋值，`scene_builder.gd` 把脚本挂到 `Label`
-上（内存中，不落盘），`exporter.gd` 负责把常量写进构建目录。
+责任划分：`layer_nodes.gd` 提供常量并在内存里编译、赋值 `mode`/`date_format`；
+`scene_builder.gd` 构造节点树；`exporter.gd` 只管 `ResourceSaver` —— 因为它拿到的是一个
+**没有磁盘路径的 `GDScript`**，`PackedScene.pack` 会把它作为 `sub_resource` 内联进 `.tscn`。
 
-这是**唯一**由 Studio 生成的脚本；不写入 `content_flags`（不含任何 IO/网络，是纯展示逻辑）。
+选内联而不是写成 `assets/dstk_clock.gd` 的原因：内联后不存在"预览用的那份"和"导出用的那份"两个文件，
+"同一份源码"这条不变式更强；JSON 里也不用多一个字段去记录生成文件。
+
+这是**唯一**由 Studio 生成的脚本，它不含任何 IO/网络，是纯展示逻辑，**不计入** `content_flags`。
 
 ### 5.3 效果栈（挂在一个图层上的 SubViewport 链）
 
@@ -345,11 +355,13 @@ packer.flush()
 ```
 <studio>/build/<pack_id>/          ← 每次导出前整目录删除重建
 ├─ main.tscn                       ← ResourceSaver.save(PackedScene)
-├─ assets/
-│   ├─ dstk_clock.gd               ← 仅当时钟类图层存在
-│   └─ <用户资源拷贝>
-└─ poster.png                      ← 960×540 离屏渲染一帧
+│                                    时钟脚本作为 sub_resource 内联在内
+└─ assets/<用户资源拷贝>           ← 贴图按文件名平铺
 ```
+
+海报与 PCK 是中间产物，写在 `user://scratch/<pack_id>/` —— **不能**放进上面这个目录，
+否则 `packer` 把构建目录整目录扫描时会把中间产物也打进包里。
+（`StudioPaths.scratch_dir()` 是这条路径的唯一计算处。）
 
 `pack_id`：工程首次保存时生成的 16 字节随机十六进制串，存在 `wallpaper.json` 同级。
 
