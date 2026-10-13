@@ -23,7 +23,7 @@
 | `tools/wallpaper-studio/signing_key.txt` | 64 位十六进制 AES-256 密钥，**全仓库唯一定义处** |
 | `tools/wallpaper-studio/pack_encrypted.gd` | 用编辑器 headless 执行：把任意目录打包成加密 PCK（阶段 0 的验证工具） |
 | `tools/wallpaper-studio/pack_encrypted.ps1` | 上面那个的调用壳 |
-| `tools/wallpaper-studio/README.md` | Studio 的构建、运行、测试说明 |
+| `tools/wallpaper-studio/README.md` | 密钥、加密链路、构建与验证说明 |
 | `Desktop Sticker/DesktopSticker.WallpaperStudio/DesktopSticker.WallpaperStudio.vcxproj` | 宿主 EXE 工程（进 .sln） |
 | `Desktop Sticker/DesktopSticker.WallpaperStudio/DesktopSticker.WallpaperStudio.vcxproj.filters` | 同上 |
 | `Desktop Sticker/DesktopSticker.WallpaperStudio/main.cpp` | 宿主全部代码：加载 DLL、驱动迭代、单实例、`--self-test` |
@@ -57,7 +57,7 @@
 | 路径 | 改什么 |
 |---|---|
 | `tools/build_godot.ps1` | 构建前读 `signing_key.txt` 生成 `core/script_encryption_key.gen.cpp` |
-| `tools/godot-src/core/script_encryption_key.gen.cpp` | 由脚本生成（不再是全 0 占位） |
+| `tools/godot-src/core/script_encryption_key.gen.cpp` | 由 `build_godot.ps1` 每次构建前生成。**它被 `tools/godot-src/.gitignore` 的 `*.gen.*` 排除，本来就没入库** —— 这顺手补掉了一个既有隐患：此前全新克隆下来的仓库里根本没有这个文件，scons 会因为 `core/SCsub` 引用了它而直接失败 |
 | `Desktop Sticker/Desktop Sticker.sln` | 加入 WallpaperStudio 工程 |
 | `Desktop Sticker/DesktopSticker.WallPaper/include/desktopsticker/wallpaper/WallPaperPackage.h` | 解析新增可选字段 `content_flags` |
 | Desktop Sticker 的壁纸设置页（`SettingsController` 的壁纸页 + `WallPaperStore`） | 展示 `requested_permissions` 与脚本徽标 |
@@ -162,19 +162,48 @@ Set-Content -Path $genPath -Value $genBody -Encoding ascii -NoNewline
 Write-Host "[key] script_encryption_key.gen.cpp written from wallpaper-studio/signing_key.txt"
 ```
 
-- [ ] **Step 6: 只验证生成逻辑，不做全量构建**
+- [ ] **Step 6: 单独验证生成逻辑，不做全量构建**
+
+把 Step 5 插入的那一段抽出来单独跑（避免为了验证几行 PowerShell 先等十分钟的 scons）：
 
 ```bash
-powershell -NoProfile -Command "& { $s = Get-Content -Raw tools/wallpaper-studio/signing_key.txt; Write-Host \"key length: $($s.Trim().Length)\" }"
-grep -c "0," tools/godot-src/core/script_encryption_key.gen.cpp
+python - <<'EOF'
+import io
+text = io.open('tools/build_godot.ps1', encoding='utf-8-sig').read()
+block = text[text.index('# 把壁纸包的签名密钥烧进引擎'):text.index('# 解析可用的 Python')]
+harness = ("$ErrorActionPreference = 'Stop'
+"
+           "$ToolsDir = Join-Path (Get-Location) 'tools'
+"
+           "$SrcDir   = Join-Path $ToolsDir 'godot-src'
+") + block
+io.open('tools/wallpaper-studio/_probe.ps1','w',encoding='utf-8-sig',newline='
+').write(harness)
+EOF
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/wallpaper-studio/_probe.ps1
+rm -f tools/wallpaper-studio/_probe.ps1
 ```
 
-Expected: `key length: 64`，且 `grep` 计数不再是旧的全 0 内容（此时文件尚未被重写，计数为 30 —— 这是**预期**的，真正的写入发生在下次 `build_godot.ps1` 运行）。
+再用一段 Python 确认写出来的字节与密钥文件一致：
+
+```bash
+python -c "
+import re
+key = open('tools/wallpaper-studio/signing_key.txt').read().strip()
+cpp = open('tools/godot-src/core/script_encryption_key.gen.cpp').read()
+nums = [int(x) for x in re.findall(r'\d+', cpp.split('script_encryption_key[32] = {')[1])]
+want = [int(key[i:i+2], 16) for i in range(0, 64, 2)]
+print('bytes match key:', nums == want)
+"
+```
+
+Expected: `[key] script_encryption_key.gen.cpp written from wallpaper-studio/signing_key.txt`，
+然后 `bytes match key: True`。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add tools/wallpaper-studio/signing_key.txt tools/wallpaper-studio/verify_key.ps1 tools/build_godot.ps1
+git add tools/wallpaper-studio/signing_key.txt tools/wallpaper-studio/verify_key.ps1         tools/wallpaper-studio/pack_encrypted.gd tools/wallpaper-studio/pack_encrypted.ps1         tools/wallpaper-studio/README.md tools/build_godot.ps1
 git commit -m "feat(wallpaper): bake the wallpaper pack signing key into the godot fork"
 ```
 
@@ -378,8 +407,11 @@ Expected: 打出 `[host] instance started`，8 秒后 `[host] auto-exit after 8.
 
 - [ ] **Step 2: 反证——全 0 密钥下必须失败**
 
-把 `tools/godot-src/core/script_encryption_key.gen.cpp` 临时改回全 0、只重编 runtime，
-再跑一次 Step 1，**必须**报错。这一步确认"我们看到的成功是真的解密了"，不是"根本没加密"。
+用**另一把密钥**把同一个目录再打一个包，用运行库加载它，**必须**报错
+（`The MD5 sum of the decrypted file does not match the expected value`）。
+这一步确认"我们看到的成功是真的解密了"，不是"根本没加密"。
+
+> 比"改回全 0 再重编 runtime"便宜十几分钟，证据等价，所以实际做法是前者。
 
 ```bash
 # 用 git 恢复全 0 版本，重编 runtime（仅这一次，为反证）
