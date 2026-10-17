@@ -175,6 +175,16 @@ int wmain(int argc, wchar_t **argv) {
     // （关窗 / 调用了 quit()）。语义见 godot_instance.h 与 tools/godot-host-test。
     while (!iteration(instance)) {
     }
-    destroy(instance);
-    return 0;
+
+    // 关窗 = 直接结束进程，**不**调用 dstk_godot_destroy。
+    //
+    // dstk_godot_destroy -> Main::cleanup() 会递归销毁整棵场景树（编辑器几百个控件
+    // 加上内嵌的文件对话框），实测窗口在这段时间里持续 5 秒以上"未响应"，用户看到
+    // 的就是"关不掉/卡死"；而且拆到 WinRT/合成层时偶发 fast-fail
+    // （RaiseFailFastException，异常码 e0464645，WER 里表现为 CoreMessaging.dll 崩溃）。
+    //
+    // Studio 是专用宿主进程，退出即结束：窗口由系统关闭，文件都是同步写完的，
+    // 没有任何需要在进程内收尾的状态。让系统回收比在进程里慢慢拆更快也更稳。
+    // （--self-test 那条路仍然走完整 destroy，那里要的是干净退出。）
+    ::ExitProcess(0);
 }
