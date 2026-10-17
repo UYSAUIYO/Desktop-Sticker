@@ -20,6 +20,10 @@ static func default_project_root() -> String:
 static func scratch_dir(pack_id: String) -> String:
 	return "user://scratch/" + pack_id
 
+## 导出的 .dswall 默认落这里：与工程目录分开，避免把成品当成工程资源。
+static func exports_dir() -> String:
+	return "user://exports"
+
 ## 16 字节随机十六进制。工程首次保存时生成一次，之后固定不变（热应用去重靠它）。
 static func new_pack_id() -> String:
 	var bytes := Crypto.new().generate_random_bytes(16)
@@ -28,8 +32,9 @@ static func new_pack_id() -> String:
 		s += "%02x" % b
 	return s
 
-## Windows 文件名非法字符 -> "_"。空/全非法时回落 "wallpaper"。
-static func dswall_file_name(title: String) -> String:
+## Windows 文件名/目录名非法字符 -> "_"。空/全非法时回落 "wallpaper"。
+## 工程目录名与 .dswall 文件名共用这一条规则，避免两处各写一份、慢慢漂移。
+static func safe_name(title: String) -> String:
 	var out := ""
 	for i in title.length():
 		var ch := title[i]
@@ -42,7 +47,10 @@ static func dswall_file_name(title: String) -> String:
 	out = out.strip_edges()
 	if out.is_empty():
 		out = "wallpaper"
-	return out + ".dswall"
+	return out
+
+static func dswall_file_name(title: String) -> String:
+	return safe_name(title) + ".dswall"
 
 ## 收件箱：桌面贴纸的热应用入口（先写 .tmp 再改名，模块只认 .dswall）。
 static func inbox_dir() -> String:

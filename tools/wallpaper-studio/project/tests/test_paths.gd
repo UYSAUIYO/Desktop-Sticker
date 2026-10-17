@@ -26,3 +26,7 @@ func register(t) -> void:
 		t.eq(StudioPaths.dswall_file_name("   "), "wallpaper.dswall", "blank falls back")
 		t.eq(StudioPaths.dswall_file_name("rain"), "rain.dswall", "plain name kept")
 	)
+	t.case("paths_exports_dir_under_user", func() -> void:
+		t.ok(StudioPaths.exports_dir().begins_with("user://"), "exports under user://")
+		t.ok(StudioPaths.exports_dir() != StudioPaths.default_project_root(), "exports split from projects")
+	)

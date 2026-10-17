@@ -26,3 +26,5 @@ window/size/min_height=640
 [rendering]
 
 renderer/rendering_method="forward_plus"
+; 窗口底色。不设的话没挂面板的区域会露出引擎默认的灰色，跟这套深色界面完全不搭。
+environment/defaults/default_clear_color=Color(0.078, 0.082, 0.094, 1)
