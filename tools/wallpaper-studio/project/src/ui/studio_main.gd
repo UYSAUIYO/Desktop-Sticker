@@ -260,7 +260,9 @@ func _update_window_title() -> void:
 		return
 	var title := "桌面贴纸 · 壁纸编辑器"
 	if doc != null:
-		title = "%s%s — %s" % [String(doc.name), " *" if dirty else "", title]
+		# 还没保存过的工程（没有目录）也要打星号：否则标题看着像"已存盘"。
+		var mark := " *" if (dirty or project_dir.is_empty()) else ""
+		title = "%s%s — %s" % [String(doc.name), mark, title]
 	w.title = title
 
 

@@ -114,8 +114,10 @@ func update_status() -> void:
 	_info.text = "%s    ·    %d × %d" % [
 		String(main.doc.name), main.doc.canvas.x, main.doc.canvas.y,
 	]
-	_status.text = "未保存" if main.dirty else "已保存"
-	_status.modulate = Color(1.0, 0.78, 0.35) if main.dirty else Color(0.52, 0.72, 0.54)
+	# 新建但一次都没保存过的工程没有目录，不能显示成「已保存」。
+	var saved: bool = not main.dirty and not String(main.project_dir).is_empty()
+	_status.text = "已保存" if saved else "未保存"
+	_status.modulate = Color(0.52, 0.72, 0.54) if saved else Color(1.0, 0.78, 0.35)
 
 
 # ---------------------------------------------------------------- 新建
