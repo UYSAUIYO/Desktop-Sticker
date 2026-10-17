@@ -12,7 +12,40 @@
 | `verify_key.ps1` | 校验密钥文件合法且非全 0 |
 | `pack_encrypted.gd` | 把一个目录打包成加密 PCK（headless 编辑器执行） |
 | `pack_encrypted.ps1` | 上面那个的调用壳 |
-| `project/` | Studio 的 Godot 工程（阶段 1 起） |
+| `run_tests.ps1` | 无头测试（先同步工程到 `<exeDir>\studio\`，再跑 GDScript 用例） |
+| `project/` | Studio 的 Godot 工程：`src/doc`（文档模型）、`src/build`（文档→场景）、`src/export`（海报/加密包/.dswall）、`src/ui`（三栏界面）、`src/cli`（无头导出）、`tests/` |
+
+## 用编辑器做一个壁纸（阶段 1 能力）
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File build.bat
+"D:/project/Desktop Sticker/Desktop Sticker/x64/Release/Desktop Sticker/dstk-studio.exe"
+```
+
+1. 左上「＋ 添加」加图层：**纯色 / 图片 / 文字 / 粒子**。列表顶部是最上层，底部按钮可删除、上移、下移、隐藏。
+2. 中间画布就是导出后桌面上的样子（预览和导出走同一条 `SceneBuilder` 路径）：
+   文字图层的「内容」选**时钟 / 日期**会真的走时；粒子不选贴图时用内置圆点。
+3. 右侧属性面板按图层类型给控件；图片会**拷进工程 `assets/`**，文档里只存相对路径。
+4. 「保存」写 `wallpaper.json`；工程默认在
+   `%APPDATA%\Godot\app_userdata\桌面贴纸 · 壁纸编辑器\projects\<名称>\`（新建后第一次保存才创建目录）。
+5. 「导出」写 `.dswall`；「**导出并应用到桌面**」导出到 `user://exports/` 并投递到
+   桌面贴纸收件箱（`%APPDATA%\DesktopSticker\wallpaper_inbox\`），桌面贴纸会在几秒内自动导入并应用。
+
+快捷键：`Ctrl+N` 新建、`Ctrl+O` 打开、`Ctrl+S` 保存、`Ctrl+E` 导出。有未保存改动时关窗会先确认。
+
+无头导出（CI/批处理，不弹窗；无头模式没有海报，`.dswall` 里就没有 `poster.png`）：
+
+```bash
+dstk-studio.exe --headless --script res://src/cli/export_cli.gd -- \
+    --project <工程目录> --out <输出.dswall> [--inbox]
+```
+
+## 已知边界（阶段 1）
+
+- 图层类型只有 `color` / `image` / `text` / `particles`，**没有时间轴**（阶段 2）与**效果栈**
+  （阶段 3，`effects` 字段已在文档里保留）；自定义脚本只做导入，不提供代码编辑器。
+- 画布只做等比缩放预览，没有缩放/平移工具与图层框选；改叠放顺序用「上移 / 下移」。
+- 没有撤销/重做。
 
 ## `signing_key.txt` 为什么入库
 
