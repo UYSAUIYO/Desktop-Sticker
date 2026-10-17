@@ -12,11 +12,13 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1 -Filter WallPaper
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1 -NoTest
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools/dev_build.ps1 -NoStudio
 [CmdletBinding()]
 param(
     [string]$Filter = '',   # 只跑名字含该子串的用例
     [switch]$List,          # 只列用例名
     [switch]$NoTest,        # 只编译 + 同步 DLL，不跑测试
+    [switch]$NoStudio,      # 跳过壁纸编辑器的无头测试
     [switch]$SkipClose      # 不关正在运行的实例
 )
 
@@ -33,6 +35,7 @@ if (-not (Test-Path $full)) {
 $forward = @{ Incremental = $true; SkipClose = $SkipClose }
 if ($List)      { $forward['List'] = $true }
 if ($NoTest)    { $forward['NoTest'] = $true }
+if ($NoStudio)  { $forward['NoStudio'] = $true }
 if ($Filter -ne '') { $forward['Filter'] = $Filter }
 
 & $full @forward

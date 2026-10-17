@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.37531.7 d17.14
@@ -105,7 +105,6 @@ Global
 		{44444444-5555-6666-7777-888888888888}.Release|x64.Build.0 = Release|x64
 		{44444444-5555-6666-7777-888888888888}.Release|x86.ActiveCfg = Release|x64
 		{44444444-5555-6666-7777-888888888888}.Release|x86.Build.0 = Release|x64
-	EndGlobalSection
 		{55555555-6666-7777-8888-999999999999}.Debug|ARM64.ActiveCfg = Debug|x64
 		{55555555-6666-7777-8888-999999999999}.Debug|ARM64.Build.0 = Debug|x64
 		{55555555-6666-7777-8888-999999999999}.Debug|x64.ActiveCfg = Debug|x64
@@ -118,6 +117,7 @@ Global
 		{55555555-6666-7777-8888-999999999999}.Release|x64.Build.0 = Release|x64
 		{55555555-6666-7777-8888-999999999999}.Release|x86.ActiveCfg = Release|x64
 		{55555555-6666-7777-8888-999999999999}.Release|x86.Build.0 = Release|x64
+	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection

@@ -18,11 +18,20 @@ $StudioExe = Join-Path $OutDir 'dstk-studio.exe'
 $Project   = Join-Path $OutDir 'studio'
 
 if (-not (Test-Path $StudioExe)) { throw "missing $StudioExe - run build.bat first" }
+
+# 先把仓库里的工程同步到 <exeDir>\studio：改 .gd 不会触发 MSBuild 重编，不重新同步的话
+# 测试跑的是上一次的副本 —— 全绿，但测的不是刚改的代码。
+$Source = Join-Path $RepoRoot 'tools/wallpaper-studio/project'
+if (Test-Path (Join-Path $Source 'project.godot')) {
+    robocopy $Source $Project /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "failed to sync studio project to $Project" }
+    Copy-Item (Join-Path $RepoRoot 'tools/wallpaper-studio/signing_key.txt') (Join-Path $Project 'signing_key.txt') -Force
+}
 if (-not (Test-Path (Join-Path $Project 'project.godot'))) { throw "missing studio project at $Project" }
 
 function Invoke-StudioTests([string]$only) {
     $engineArgs = @('--headless', '--script', 'res://tests/run_tests.gd')
-    if ($only -ne '') { $engineArgs += @('--', '--only=' + $only) }
+    if ($only -ne '') { $engineArgs += @('--', '--only', $only) }
     & $StudioExe @engineArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[studio] tests FAILED (exit $LASTEXITCODE)" -ForegroundColor Red

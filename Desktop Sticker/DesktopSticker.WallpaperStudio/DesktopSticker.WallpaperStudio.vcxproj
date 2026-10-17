@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
@@ -85,6 +85,23 @@ copy /Y "$(SolutionDir)..\tools\wallpaper-studio\signing_key.txt" "$(OutDir)stud
   <ItemGroup>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
+  <!--
+    编辑器工程的 GDScript 不参与编译：如果 STUDIO 工程本身是 up-to-date，MSBuild 根本不会
+    链接，也就不会跑 PostBuildEvent —— <OutDir>\studio\ 会一直停在上次的副本上。症状是
+    "改了界面没变化"，以及更糟的：无头测试跑的是旧代码，全绿但实际没测到。
+    所以同步单独做成一个每次 Build 都执行的目标（不声明 Inputs/Outputs = 永远跑）。
+  -->
+  <ItemGroup>
+    <StudioProjectFiles Include="$(SolutionDir)..\tools\wallpaper-studio\project\**\*.*" />
+  </ItemGroup>
+  <Target Name="SyncStudioProject" BeforeTargets="Build">
+    <Copy SourceFiles="@(StudioProjectFiles)"
+          DestinationFiles="@(StudioProjectFiles->'$(OutDir)studio\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(SolutionDir)..\tools\wallpaper-studio\signing_key.txt"
+          DestinationFolder="$(OutDir)studio"
+          SkipUnchangedFiles="true" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>
 </Project>

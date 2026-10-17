@@ -1,4 +1,4 @@
-﻿# AGENTS.md
+# AGENTS.md
 
 Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus a double-space search launcher and a desktop clock widget (analog dial / sunrise-sunset orbit / live weather). WinUI 3 (C++/WinRT) tray app + Win32/Direct2D feature DLL. README, code comments, and UI strings are in Chinese.
 
@@ -11,6 +11,8 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 - `Desktop Sticker/DesktopSticker.WallPaper/` — dynamic wallpaper DLL: D3D11 + DXGI + DirectComposition presentation, MF-primary decode with an FFmpeg shared-library fallback, media library, storage placement. Five backends behind `IWallpaperBackend` (`src/WallpaperBackend.h`): video/animated-image (`VideoBackend`), image sequence (`ImageSequenceBackend`, WIC), web (`WebBackend`, WebView2 **visual hosting**), 3D/shader (`VulkanBackend`, dynamic Vulkan loader) with two built-in scenes — a full-screen plasma shader and a procedurally built 32-face solid with an auto-orbiting camera and one-light Blinn-Phong — and the **scene wallpaper** (`GodotEmbeddedBackend` + `GodotEngineHost`: an embedded Godot runtime, `.dswall` packages only). No glTF/OBJ loading, particles or runtime GLSL compilation yet. `DecodeTarget.h` decides the decode output size (never bigger than the window). Strategy and geometry logic lives in **header-only pure functions** under `include/desktopsticker/wallpaper/` (`DecodeTarget`, `FrameAdvance`, `BackendKind`, `WallPaperPackage` — manifest parse/validate, `Polyhedron` — 60-vertex truncated icosahedron + a generic convex hull, `MatMath` — column-major matrices) so `dtest` can unit-test it without D3D/MF/Vulkan; OS adapters (drive enumeration, fullscreen detection, subprocess) live in `src/`.
 - `Desktop Sticker/DesktopSticker.ResMon/` — read-only resource manager DLL (WebView2 hosted in a plain Win32 window): per-thread CPU, per-module memory, ordered storage classification. Formatting/classification/cpu-math/JSON assembly are **header-only pure functions** under `include/desktopsticker/resmon/`.
 - `Desktop Sticker/Desktop Sticker/resmon/` — the resource manager frontend: plain `index.html` / `style.css` / `app.js`, **no framework and no build step**; xcopied next to the EXE and served via the WebView2 virtual host `resmon.local`.
+- `Desktop Sticker/DesktopSticker.WallpaperStudio/` — `dstk-studio.exe`, the 2D wallpaper editor host: a thin libgodot driver (`LoadLibraryExW` the scene-wallpaper runtime, pass `--path <exeDir>\studio`, pump `dstk_godot_iteration`). It contains **no editing logic** — the editor is a Godot project. `--self-test` loads the engine and runs a few frames for smoke builds.
+- `tools/wallpaper-studio/` — the editor's Godot project (`project/src/{doc,build,export,ui,cli}` + `tests/`), the AES pack signing key (`signing_key.txt`, the single source of truth — never regenerate it), the key/pack helper scripts, and `run_tests.ps1` (headless test runner). The studio vcxproj's `PostBuildEvent` xcopies `project/` to `<exeDir>\studio\` and the key inside it.
 - `Desktop Sticker/Desktop Sticker (Package)/` — MSIX packaging project; the app actually runs unpackaged/self-contained, don't rely on package identity.
 - `third_party/nlohmann/json.hpp` — only third-party dependency (include root is `third_party/`). `third_party/` also holds the FFmpeg/OpenH264/MotionWallpaper notices and the Godot engine's MIT license (`GODOT-LICENSE.txt`).
 - `tools/*.ps1` — PowerShell UI harness for manual verification (see below). Payload scripts: `tools/prepare_ffmpeg.ps1` (FFmpeg), `tools/prepare_vulkan.ps1` (Vulkan-Headers + Vulkan-Hpp), `tools/prepare_shaderc.ps1` (builds `glslangValidator.exe` into `tools/shaderc/`). All three write to gitignored dirs.
@@ -84,6 +86,17 @@ unavailable.
 Output paths are split (both gitignored):
 - EXE → `Desktop Sticker/x64/Release/Desktop Sticker/Desktop_Sticker.exe`
 - Features DLL + tests → `Desktop Sticker/bin/x64/Release/` (and `.../Release/Tests/`)
+
+Wallpaper editor (`dstk-studio.exe`) — its UI/document/export logic is GDScript, so MSBuild only builds the host EXE and copies the project:
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File build.bat                     # EXE + xcopy project -> <exeDir>\studio\
+"D:/project/Desktop Sticker/Desktop Sticker/x64/Release/Desktop Sticker/dstk-studio.exe"   # run the editor
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/wallpaper-studio/run_tests.ps1   # headless GDScript tests (needs the build)
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/wallpaper-studio/run_tests.ps1 -Only <case>   # one case
+```
+
+`tools/dev_build.ps1` / `tools/rebuild_and_test.ps1` run those tests as step `[5/5]`; `-NoStudio` skips them. Edit `tools/wallpaper-studio/project/**` (the tracked source), never `<exeDir>\studio\**` — a rebuild overwrites it.
 
 Gotchas:
 - The Debug test exe crashes on this machine (Debug CRT environment issue) — always test in Release.
@@ -160,6 +173,10 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - **ResMon uses a plain Win32 window on purpose** (not WinUI), to avoid the XAML sub-window lifecycle traps documented above. `WebView2Loader.dll` must sit next to the EXE — the NuGet targets only copy it into the ResMon project's OutDir, so the EXE's `PostBuildEvent` copies it again.
 - **Thread names are load-bearing for the CPU tab**: `SetThreadDescription` is called at each thread's entry point (UI thread in `App.xaml.cpp`; the six worker threads in Features/WallPaper). If you add a thread, name it, or it shows as `线程 <tid>`.
 - **`layout.json` is versioned** (currently 7 — quad-column mirroring, per-column card count, dynamic card heights). Any change to the persisted shape needs a bumped version plus an auto-migration path; loaders must keep accepting old layouts without crashing.
+- **Wallpaper Studio must ship as a directory, never as a PCK**: exporting writes `main.scn` into `res://build/<pack_id>/` so `ResourceSaver` localizes the texture paths to `res://…`; inside a packed PCK `res://` is read-only and every export fails. The studio project also uses **no `class_name`** (a runtime-only build has no `.godot/global_script_class_cache.cfg`) — dependencies are `preload` consts — and **no `static var` in any preloaded script** (it corrupts the heap on shutdown while every test still passes).
+- **The scene-package signing key is baked into libgodot**: `tools/build_godot.ps1` regenerates `core/script_encryption_key.gen.cpp` from `tools/wallpaper-studio/signing_key.txt`, so changing that file silently breaks every already-shipped runtime and every old `.dswall`. Encryption only stops casual unzip/inspection (the key is recoverable from the DLL, and a `.dswall` may carry GDScript with the full Godot API) — it is **not** a security boundary.
+- **Studio scene nodes must use `set_anchors_and_offsets_preset`, not `set_anchors_preset`**: `set_anchors_preset` keeps a control's current on-screen position, so a never-in-tree 1920×1080 root keeps `offset_right/bottom = 1920/1080` and, once added, layout computes `size = parent + offset` = double canvas — every text/image silently flies off the visible area (symptom: only a corner of one colour layer shows). Guarded by `builder_layers_fill_parent_without_doubling`.
+- **`GPUParticles2D.visibility_rect` defaults to 200×200 around the origin** — particles outside it are culled, so a layer can look completely empty; `LayerNodes` sets a 4096×4096 rect and places the emitter at the canvas bottom centre (direction defaults upward). Particle textures are inlined into the baked scene, so a huge texture bloats the pack.
 
 ## Conventions
 
@@ -167,4 +184,5 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - Commit messages: lowercase English `feat:`/`fix:` one-liners summarizing behavior (match existing style).
 - Comments/UI strings in Chinese are fine; keep identifiers in English.
 - In the WallPaper project, put strategy/decision logic in **header-only pure functions** under `include/desktopsticker/wallpaper/` (no OS, no D3D) and keep OS/subprocess/GPU work in `src/`. That is what makes the logic unit-testable with `dtest` and is why the test count can grow without a GPU.
+- In `tools/wallpaper-studio/project`, keep the same split: document/scene/export logic in `src/doc`, `src/build`, `src/export` (pure GDScript, headless-testable — add a `tests/test_*.gd` case when you change it) and UI in `src/ui`. UI files must not touch the built node tree directly; they go through `StudioDoc` + `main.apply_change()`.
 - New `.ps1` files containing non-ASCII must be saved **with a UTF-8 BOM**; PowerShell reads BOM-less scripts as GBK and fails to parse Chinese comments.

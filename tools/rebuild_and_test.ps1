@@ -1,9 +1,10 @@
 ﻿# 全量重编（Release x64）+ 同步 DLL + 跑单测。以后这个操作固定用它。
 #
-#   [1/4] 关闭正在运行的实例
-#   [2/4] 全量编译（-t:Rebuild，输出实时滚动）
-#   [3/4] 把新 DLL 同步到 EXE 目录与测试目录
-#   [4/4] 跑单元测试
+#   [1/5] 关闭正在运行的实例
+#   [2/5] 全量编译（-t:Rebuild，输出实时滚动）
+#   [3/5] 把新 DLL 同步到 EXE 目录与测试目录
+#   [4/5] 跑单元测试（dtest）
+#   [5/5] 跑壁纸编辑器的无头测试（Godot 工程里的 .gd 用例，不需要重编）
 #
 # 为什么不逐个工程编：单个工程构建时 DLL/.lib 落在该工程自己的 OutDir，而测试是从
 # 解决方案 bin 目录链接并加载的 —— 于是"代码是新的、测试用的是旧的"，轻则断言错乱，
@@ -17,12 +18,14 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/rebuild_and_test.ps1 -Filter WallPaperStore_
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/rebuild_and_test.ps1 -List
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/rebuild_and_test.ps1 -Incremental
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools/rebuild_and_test.ps1 -NoStudio
 [CmdletBinding()]
 param(
     [switch]$Incremental,   # 增量编译（不做 Rebuild）
     [string]$Filter = '',   # 只跑名字含该子串的用例
     [switch]$List,          # 只列用例名（按注册顺序）
     [switch]$NoTest,        # 只编译 + 同步 DLL，不跑测试
+    [switch]$NoStudio,      # 跳过壁纸编辑器的无头测试
     [switch]$SkipClose      # 不关正在运行的实例
 )
 
@@ -43,9 +46,9 @@ function Stamp { return (Get-Date).ToString('HH:mm:ss') }
 if (-not (Test-Path $MSBuild)) { Say "[ERROR] 找不到 MSBuild: $MSBuild" 'Red'; exit 2 }
 if (-not (Test-Path $Sln))     { Say "[ERROR] 找不到解决方案: $Sln" 'Red'; exit 2 }
 
-# ---- [1/4] 关掉正在运行的实例，否则 EXE/DLL 被占用会链接失败 ----
+# ---- [1/5] 关掉正在运行的实例，否则 EXE/DLL 被占用会链接失败 ----
 if (-not $SkipClose) {
-    Say "[$(Stamp)] [1/4] 关闭正在运行的实例 ..."
+    Say "[$(Stamp)] [1/5] 关闭正在运行的实例 ..."
     $closer = Join-Path $PSScriptRoot 'close_app.ps1'
     if (Test-Path $closer) { & powershell -NoProfile -ExecutionPolicy Bypass -File $closer | Out-Null }
     Start-Sleep -Milliseconds 800
@@ -57,17 +60,17 @@ if (-not $SkipClose) {
         Start-Sleep -Milliseconds 500
     }
 } else {
-    Say "[$(Stamp)] [1/4] 跳过关闭实例"
+    Say "[$(Stamp)] [1/5] 跳过关闭实例"
 }
 
-# ---- [2/4] 全量编译 ----
+# ---- [2/5] 全量编译 ----
 $mode = if ($Incremental) { '增量' } else { '全量' }
 # 开关一律写成字面量，**不要用数组 splat**：PowerShell 会把 splat 进来的
 # "-t:Rebuild" 拆成 "- t : R e b u i l d" 交给 MSBuild，报 "MSB1001 未知开关"。
 $commonArgs = "-p:Configuration=Release -p:Platform=x64 -m:1 -v:m -nologo"
 if ($Incremental) { $buildArgs = "$commonArgs" } else { $buildArgs = "-t:Rebuild $commonArgs" }
 
-Say "[$(Stamp)] [2/4] $mode 编译 Release x64 ..."
+Say "[$(Stamp)] [2/5] $mode 编译 Release x64 ..."
 Say "           完整日志：$Log"
 # 输出走 Tee-Object：既实时打印（卡住时能看出卡在哪个工程），又留一份日志
 if ($Incremental) {
@@ -90,10 +93,10 @@ if ($buildCode -ne 0) {
     Say "         `"$MSBuild`" `"$Sln`" $buildArgs" 'Yellow'
     exit 1
 }
-Say "[$(Stamp)] [2/4] [OK] 编译通过" 'Green'
+Say "[$(Stamp)] [2/5] [OK] 编译通过" 'Green'
 
-# ---- [3/4] 同步 DLL 到 EXE 目录与测试目录 ----
-Say "[$(Stamp)] [3/4] 同步 DLL ..."
+# ---- [3/5] 同步 DLL 到 EXE 目录与测试目录 ----
+Say "[$(Stamp)] [3/5] 同步 DLL ..."
 $dlls = @('DesktopSticker.Features.dll', 'DesktopSticker.WallPaper.dll',
           'DesktopSticker.ResMon.dll', 'WebView2Loader.dll')
 $copied = 0
@@ -106,13 +109,13 @@ foreach ($dir in @($ExeDir, $TestsDir)) {
 }
 Say "           [OK] 复制了 $copied 个文件" 'Green'
 
-# ---- [4/4] 跑单测 ----
+# ---- [4/5] 跑单测 ----
 if ($NoTest) {
-    Say "[$(Stamp)] [4/4] 跳过单测（-NoTest）"
+    Say "[$(Stamp)] [4/5] 跳过单测（-NoTest）"
     exit 0
 }
 if (-not (Test-Path $TestExe)) { Say "[ERROR] 找不到测试 exe: $TestExe" 'Red'; exit 2 }
-Say "[$(Stamp)] [4/4] 运行单元测试 ..."
+Say "[$(Stamp)] [4/5] 运行单元测试 ..."
 # 测试输出无缓冲，所以即使某个用例崩溃也能看到跑到了哪一条。
 # 同样不用 splat（理由见上面编译那段），分支写全。
 if ($List) {
@@ -131,5 +134,27 @@ if ($code -eq 0) {
     Say "[$(Stamp)] [DONE] 全部通过" 'Green'
 } else {
     Say "[$(Stamp)] [FAILED] 退出码 $code（139 = 段错误，看最后一个 [PASS] 的下一条）" 'Red'
+    exit $code
 }
-exit $code
+
+# ---- [5/5] 壁纸编辑器（Wallpaper Studio）的无头测试 ----
+# Studio 是 <exeDir>\studio\ 下的一个 Godot 工程，逻辑全在 .gd 里，构建不会编译它。
+# 跑测试只要 dstk-studio.exe + 已同步的工程目录（[2/5] 的 PostBuildEvent 会同步）。
+if ($NoStudio) {
+    Say "[$(Stamp)] [5/5] 跳过 Studio 测试（-NoStudio）"
+    exit 0
+}
+$studioTests = Join-Path $PSScriptRoot 'wallpaper-studio\run_tests.ps1'
+if (-not (Test-Path $studioTests)) {
+    Say "[$(Stamp)] [5/5] 没有找到 $studioTests，跳过"
+    exit 0
+}
+Say "[$(Stamp)] [5/5] 运行壁纸编辑器无头测试 ..."
+& powershell -NoProfile -ExecutionPolicy Bypass -File $studioTests
+$studioCode = $LASTEXITCODE
+if ($studioCode -ne 0) {
+    Say "[$(Stamp)] [FAILED] Studio 测试退出码 $studioCode" 'Red'
+    exit $studioCode
+}
+Say "[$(Stamp)] [DONE] Studio 测试通过" 'Green'
+exit 0

@@ -43,10 +43,19 @@ func _initialize() -> void:
 		quit(2)
 		return
 
+	# Godot 会把 `--key=value` 拆成两个 user arg（"--key" 和 "value"），所以这里按
+	# "键 值"成对解析，不要写 begins_with("--only=") 那种形式 —— 那个永远匹配不上。
+	var user_args := OS.get_cmdline_user_args()
 	var only := ""
-	for a in OS.get_cmdline_user_args():
-		if a.begins_with("--only="):
-			only = a.trim_prefix("--only=")
+	var i := 0
+	while i < user_args.size():
+		if user_args[i] == "--only" and i + 1 < user_args.size():
+			only = user_args[i + 1]
+			break
+		elif String(user_args[i]).begins_with("--only="):
+			only = String(user_args[i]).trim_prefix("--only=")
+			break
+		i += 1
 
 	print("collected %d test files, %d cases" % [loaded, collector.case_names().size()])
 	var code := collector.run_all(only)
