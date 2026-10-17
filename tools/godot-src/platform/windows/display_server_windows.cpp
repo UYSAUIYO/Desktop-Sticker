@@ -3319,7 +3319,13 @@ void DisplayServerWindows::cursor_set_shape(DisplayServerEnums::CursorShape p_sh
 	if (cursors_cache.has(p_shape)) {
 		SetCursor(cursors[p_shape]);
 	} else {
-		SetCursor(LoadCursor(hInstance, win_cursors[p_shape]));
+		// Desktop Sticker fork：系统光标 ID 必须用 NULL 实例去取。
+		// 用模块句柄（hInstance）调 LoadCursor 时，Windows 只在该模块的资源表里找，
+		// 而 IDC_ARROW/IDC_IBEAM 这些系统 ID 不在宿主 EXE 里 —— 直接返回 NULL，
+		// 于是 SetCursor(NULL) 把光标藏掉。症状是「鼠标一进窗口就不见，移出窗口又好了，
+		// 标题栏正常」（非客户区由 DefWindowProc 画）。libgodot 宿主每次设置光标形状
+		// （悬停输入框变 I 形、切回箭头）都会走到这里，所以光标一旦消失就再也回不来。
+		SetCursor(LoadCursor(nullptr, win_cursors[p_shape]));
 	}
 
 	cursor_shape = p_shape;
