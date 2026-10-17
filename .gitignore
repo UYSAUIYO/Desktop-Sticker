@@ -1,4 +1,4 @@
-﻿# Visual companion / brainstorming session files
+# Visual companion / brainstorming session files
 .superpowers/
 
 # Visual Studio / build output
@@ -66,6 +66,14 @@ Desktop.ini
 
 # Godot editor import cache (regenerated on first open)
 .godot/
+# 例外：Wallpaper Studio 的工程**必须**随仓库带一个空的全类缓存（实施计划 §2.3 #6）。
+# 不带它时引擎每次启动都会打印 "ERROR: Could not load global script class cache."。
+!tools/wallpaper-studio/project/.godot/
+!tools/wallpaper-studio/project/.godot/global_script_class_cache.cfg
+# 例外：Studio 的 src/build 是源码目录（场景构造），不是构建产物 —— 上面的 build/ 会误伤。
+# 真正的运行期构建目录是 tools/wallpaper-studio/project/build/，仍然忽略。
+!tools/wallpaper-studio/project/src/build/
+!tools/wallpaper-studio/project/src/build/**
 
 # FFmpeg payload + build-time SDK (fetched by tools/prepare_ffmpeg.ps1, never committed)
 tools/ffmpeg/

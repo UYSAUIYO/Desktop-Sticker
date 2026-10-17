@@ -18,7 +18,10 @@ func register(t) -> void:
 		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
 		var root = _build(doc)
 		t.ok(root is Control, "root is a Control")
-		t.eq(root.size, Vector2(1280, 720), "root sized to canvas")
+		# 根节点靠"铺满父级"的锚点自适应，而不是固定像素尺寸（见入树用例）。
+		t.approx(root.anchor_right, 1.0, 0.0001, "root anchored to the right edge")
+		t.approx(root.anchor_bottom, 1.0, 0.0001, "root anchored to the bottom edge")
+		t.eq(root.offset_right, 0.0, "root offsets zeroed")
 		t.eq(root.get_child_count(), 1, "background only")
 		t.ok(root.get_child(0) is ColorRect, "background is a ColorRect")
 		root.free()
@@ -128,5 +131,33 @@ func register(t) -> void:
 		var root = _build(doc)
 		var tr: TextureRect = root.get_child(1)
 		t.eq(tr.texture, null, "no texture for a missing file")
+		root.free()
+	)
+
+	t.case("builder_particles_fall_back_to_builtin_dot", func() -> void:
+		# 没选贴图的新粒子图层必须有内置圆点，否则画布上完全看不见，
+		# 用户会以为"添加粒子失败"。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_particles("雪", ""))
+		var root = _build(doc)
+		var particles: GPUParticles2D = root.get_child(1).get_child(0)
+		t.ok(particles.texture != null, "default particle texture generated")
+		root.free()
+	)
+
+	t.case("builder_layers_fill_parent_without_doubling", func() -> void:
+		# 回归用例：用 set_anchors_preset 时 offset_right/bottom 会被留成画布尺寸，
+		# 进树后 size = anchor*parent + offset = 1920+1920 —— 整张画布放大一倍，
+		# 文字和图片全跑出可视区（实测只剩右下角半个色块）。
+		# 无头测试里拿不到"入树后的一帧"（布局在下一帧才跑），所以直接钉住不变量：
+		# 全屏锚点 + 偏移归零。
+		var doc = StudioDoc.create_empty("t", Vector2i(1920, 1080))
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		var root = _build(doc)
+		for node in [root, root.get_child(0), root.get_child(1)]:
+			t.approx(node.anchor_right, 1.0, 0.0001, "anchored to right edge")
+			t.approx(node.anchor_bottom, 1.0, 0.0001, "anchored to bottom edge")
+			t.eq(node.offset_right, 0.0, "offset_right zeroed")
+			t.eq(node.offset_bottom, 0.0, "offset_bottom zeroed")
 		root.free()
 	)
