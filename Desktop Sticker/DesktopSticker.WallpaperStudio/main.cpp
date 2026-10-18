@@ -10,10 +10,16 @@
 // 保存，而打成 pck 时 res:// 是只读的（导出会直接失败）。见设计 §2.2。
 
 #include <windows.h>
+#include <dbghelp.h>
+#include <shlobj.h>
 
+#include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#pragma comment(lib, "dbghelp.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace {
 
@@ -58,6 +64,119 @@ void fatal(const std::wstring &message) {
 char *path_utf8(std::string &s) {
     return s.empty() ? const_cast<char *>("") : &s[0];
 }
+
+// ---------------------------------------------------------------- Vulkan 环境隔离
+
+// 第三方 Vulkan “隐式层”会被 loader 无条件注入每个 Vulkan 进程，即使对应程序没在跑。
+// 本机实测：dstk-studio 里加载了 C:\ProgramData\obs-studio-hook\graphics-hook64.dll
+// （OBS 的抓帧层，注册表 ImplicitLayers 里只有 disable_environment、没有
+// enable_environment，所以恒生效），而 OBS 根本没开。这类层在渲染线程上做 inline
+// hook，是卡死/掉帧的常见来源，而编辑器不需要被抓帧。
+//
+// 在创建实例之前设环境变量（loader 在 vkCreateInstance 时才读）：
+//   VK_LOADER_LAYERS_DISABLE=~implicit~   关掉全部隐式层（loader >= 1.3.234；本机 1.4.321）
+//   DISABLE_VULKAN_OBS_CAPTURE=1          老版本 OBS 层只认这个开关
+void shield_from_vulkan_overlays() {
+    SetEnvironmentVariableW(L"VK_LOADER_LAYERS_DISABLE", L"~implicit~");
+    SetEnvironmentVariableW(L"DISABLE_VULKAN_OBS_CAPTURE", L"1");
+}
+
+// ---------------------------------------------------------------- 卡顿自捕获
+//
+// 用户报的“运行一会就卡死”在没有符号的运行库里只能靠现场 dump 定位。外部看门狗
+// 只能等窗口被系统标成“未响应”（≥5s）之后才动，而且进程一关证据就没了，所以宿主
+// 自己盯：主循环每帧记一次开始时间，另开一个线程看它多久没更新；超过 3 秒就写一份
+// minidump + 一行日志到 %LOCALAPPDATA%\DesktopSticker\，进程照常继续跑。
+//
+// 只写前几份（每次启动最多 3 份），避免真出问题时把磁盘塞满。
+
+std::atomic<unsigned long long> g_iter_start_us{0}; // 0 = 不在帧内
+std::atomic<unsigned long long> g_iter_count{0};
+std::atomic<bool> g_watch_stop{false};
+
+unsigned long long now_us() {
+    LARGE_INTEGER f{}, c{};
+    ::QueryPerformanceFrequency(&f);
+    ::QueryPerformanceCounter(&c);
+    return static_cast<unsigned long long>(c.QuadPart * 1000000ull / f.QuadPart);
+}
+
+std::wstring stall_dir() {
+    wchar_t *base = nullptr;
+    std::wstring dir;
+    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &base)) && base) {
+        dir = std::wstring(base) + L"\\DesktopSticker";
+        ::CoTaskMemFree(base);
+    } else {
+        dir = L".";
+    }
+    dir += L"\\stalls";
+    ::CreateDirectoryW((std::wstring(dir).substr(0, dir.find_last_of(L'\\'))).c_str(), nullptr);
+    ::CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+
+void append_line(const std::wstring &path, const std::wstring &line) {
+    HANDLE f = ::CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    std::string utf8 = to_utf8(line + L"\r\n");
+    DWORD written = 0;
+    ::WriteFile(f, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    ::CloseHandle(f);
+}
+
+void write_stall_dump(const std::wstring &dir, unsigned long long stuck_ms, unsigned long long frames) {
+    SYSTEMTIME st{};
+    ::GetLocalTime(&st);
+    wchar_t stamp[64]{};
+    swprintf_s(stamp, L"%02d%02d%02d_%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    wchar_t name[128]{};
+    swprintf_s(name, L"stall_%u_%s.dmp", ::GetCurrentProcessId(), stamp);
+
+    const std::wstring path = dir + L"\\" + name;
+    HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    const auto type = static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo |
+                                                 MiniDumpWithHandleData | MiniDumpWithUnloadedModules);
+    ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), f, type, nullptr, nullptr, nullptr);
+    ::CloseHandle(f);
+
+    wchar_t line[512]{};
+    swprintf_s(line, L"%s  pid=%u  frame=%llu  stuck=%llums  dump=%s", stamp,
+               ::GetCurrentProcessId(), frames, stuck_ms, name);
+    append_line(dir + L"\\stalls.log", line);
+}
+
+DWORD WINAPI stall_watch_thread(LPVOID) {
+    const std::wstring dir = stall_dir();
+    int dumps = 0;
+    unsigned long long last_report = 0;
+    while (!g_watch_stop.load()) {
+        ::Sleep(400);
+        const unsigned long long started = g_iter_start_us.load();
+        if (started == 0) {
+            continue;
+        }
+        const unsigned long long stuck_ms = (now_us() - started) / 1000ull;
+        if (stuck_ms < 3000) {
+            continue;
+        }
+        // 同一帧只报一次；同一帧持续卡住时最多再补两份（间隔 20s）。
+        if (dumps < 3 && (last_report == 0 || now_us() - last_report > 20000000ull)) {
+            last_report = now_us();
+            write_stall_dump(dir, stuck_ms, g_iter_count.load());
+            ++dumps;
+        }
+    }
+    return 0;
+}
+
 
 // --self-test：加载 DLL、创建实例、推进几帧、干净退出。给构建脚本做冒烟用。
 //
@@ -104,6 +223,9 @@ int wmain(int argc, wchar_t **argv) {
     const std::wstring dir = exe_dir();
     const std::wstring dll_path = dir + L"\\godot\\godot.windows.template_release.x86_64.dll";
     const std::wstring studio_dir = dir + L"\\studio";
+
+    // 必须在引擎创建 Vulkan 实例之前（见函数注释）。
+    shield_from_vulkan_overlays();
 
     // Studio 自己的开关只有 --self-test；其余参数**原样转发**给引擎。
     // 这条通道是无头测试的生命线：tests/run_tests.gd 就是靠
@@ -173,8 +295,17 @@ int wmain(int argc, wchar_t **argv) {
 
     // 引擎自己管消息循环与窗口。iteration 返回 true = 引擎请求退出
     // （关窗 / 调用了 quit()）。语义见 godot_instance.h 与 tools/godot-host-test。
-    while (!iteration(instance)) {
+    ::CreateThread(nullptr, 0, stall_watch_thread, nullptr, 0, nullptr);
+    while (true) {
+        g_iter_start_us.store(now_us());
+        const bool quit = iteration(instance);
+        g_iter_start_us.store(0);
+        g_iter_count.fetch_add(1);
+        if (quit) {
+            break;
+        }
     }
+    g_watch_stop.store(true);
 
     // 关窗 = 直接结束进程，**不**调用 dstk_godot_destroy。
     //

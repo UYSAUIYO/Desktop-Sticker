@@ -23,6 +23,12 @@ window/size/resizable=true
 window/size/min_width=1024
 window/size/min_height=640
 
+; 对话框（文件选择、确认框）走**内嵌子窗口**，不开第二个原生窗口。
+; 原生子窗口会给同一台机器再建一条 Vulkan 交换链，本机的 NVIDIA 驱动在这条路径上
+; 出现过"打开选择框后整窗未响应"的卡死（现场 dump 的主线程停在 nvoglv64 里）；
+; 内嵌之后所有对话框都在主窗口里画，没有第二条交换链。编辑器本体也是这么做的。
+window/subwindows/embed_subwindows=true
+
 [rendering]
 
 renderer/rendering_method="forward_plus"
