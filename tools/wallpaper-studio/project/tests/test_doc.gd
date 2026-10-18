@@ -305,3 +305,42 @@ func register(t) -> void:
 		t.eq(doc.cover_span(PackedInt32Array([3])), Vector2i(2, 3), "跳过隐藏的遮罩层")
 	)
 
+	t.case("doc_cover_range_picks_middle_layers", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("A", Color.RED))
+		doc.add_layer(Layer.make_color("B", Color.GREEN))
+		doc.add_layer(Layer.make_color("C", Color.BLUE))
+		var m := Layer.make_mask("遮罩")
+		m["cover"] = {"mode": "range", "from": 2, "to": 3}
+		doc.add_layer(m)                      # 下标 3，位于 C 上面
+		var path := PackedInt32Array([3])
+		t.eq(doc.cover_capacity(path), 3, "下方可以覆盖 3 层")
+		t.eq(doc.covered_count(path), 2, "第 2~3 层共 2 层")
+		t.eq(doc.cover_span(path), Vector2i(0, 2), "真的是 A、B 两层（[0, 2)）")
+		t.eq(doc.covered_names(path), ["B", "A"], "名字自上而下 = B、A")
+		# 只盖中间一层：位置 2 = B。
+		doc.layers[3]["cover"] = {"mode": "range", "from": 2, "to": 2}
+		t.eq(doc.cover_span(path), Vector2i(1, 2), "只盖 B")
+		# 起点超出下方层数 = 什么都不盖（不是退化成"全部"）。
+		doc.layers[3]["cover"] = {"mode": "range", "from": 4, "to": 6}
+		t.eq(doc.covered_count(path), 0, "起点超出就不覆盖")
+		# 终点越界按层数截断。
+		doc.layers[3]["cover"] = {"mode": "range", "from": 2, "to": 99}
+		t.eq(doc.covered_count(path), 2, "终点越界截断到最底层")
+	)
+
+	t.case("doc_cover_range_survives_roundtrip", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("A", Color.RED))
+		doc.add_layer(Layer.make_color("B", Color.GREEN))
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"]["blur"]["enabled"] = true
+		fl["cover"] = {"mode": "range", "from": 1, "to": 1}
+		doc.add_layer(fl)
+		var parsed: Dictionary = StudioDoc.parse(doc.to_text())
+		t.eq(parsed.ok, true, "读回: " + String(parsed.error))
+		t.eq(String(parsed.doc.layers[2]["cover"]["mode"]), "range", "模式保留")
+		t.eq(int(parsed.doc.layers[2]["cover"]["from"]), 1, "起点保留")
+		t.eq(parsed.doc.covered_count(PackedInt32Array([2])), 1, "覆盖 1 层")
+	)
+

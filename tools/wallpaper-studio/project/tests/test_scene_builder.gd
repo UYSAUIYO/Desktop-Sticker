@@ -362,3 +362,27 @@ func register(t) -> void:
 		t.eq(covered.get_child_count() if covered != null else 0, 2, "合成里恰好两层")
 		root.free()
 	)
+
+	t.case("builder_cover_range_keeps_uncovered_layers_on_top", func() -> void:
+		# 只盖"第 2~3 层"时，紧挨着效果层下面的第 1 层不受影响，
+		# 必须继续画在合成结果**上面**（叠放次序不能被打乱）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("A", Color.RED))
+		doc.add_layer(Layer.make_color("B", Color.GREEN))
+		doc.add_layer(Layer.make_color("C", Color.BLUE))
+		var m := Layer.make_mask("只盖 A、B")
+		m["cover"] = {"mode": "range", "from": 2, "to": 3}
+		doc.add_layer(m)
+		var root = _build(doc)
+		t.eq(root.get_child_count(), 3, "背景 + A/B 合成 + C")
+		var last: Node = root.get_child(root.get_child_count() - 1)
+		t.eq(last.name, "L_" + String(doc.layers[2]["id"]), "没被覆盖的 C 仍在最上层")
+		var comp: Node = root.find_child("L_" + String(m["id"]), true, false)
+		t.ok(comp != null, "合成节点存在")
+		if comp != null:
+			var covered: Node = comp.find_child("covered", true, false)
+			t.eq(covered.get_child_count() if covered != null else 0, 2,
+					"合成里正好 A、B 两层")
+			t.eq(comp.get_index(), 1, "合成节点停在覆盖区间原来的位置")
+		root.free()
+	)

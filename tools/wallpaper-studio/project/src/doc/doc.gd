@@ -218,8 +218,10 @@ func walk(parent_path = null, depth: int = 0, out = null) -> Array:
 
 
 ## 效果层 path 覆盖的兄弟区间 [from, to)（to = 它自己的下标）。
-## 语义与场景构造完全一致：只看**它下方**能生成的兄弟（隐藏的效果层不生效、不占名额），
-## cover.mode = "all" 时 from = 0。
+##
+## 语义与场景构造完全一致：只看**它下方**真正生成过节点的兄弟 —— 隐藏的效果层不算，
+## 「覆盖不到任何图层的效果层」也不算（它在场景里根本不出现），所以位置编号和
+## SceneBuilder 里那张 `built` 列表一一对应。cover.mode = "all" 时 from = 0。
 func cover_span(path: PackedInt32Array) -> Vector2i:
 	if path.is_empty():
 		return Vector2i.ZERO
@@ -231,26 +233,64 @@ func cover_span(path: PackedInt32Array) -> Vector2i:
 	var effect: Dictionary = arr[idx]
 	if not Layer.is_effect(effect):
 		return Vector2i(idx, idx)
-	var below := []
+	var slots := []          # 可覆盖兄弟的下标，自下而上
+	var m := 0
 	for i in idx:
-		var s = arr[i]
-		if not (s is Dictionary):
-			continue
-		if Layer.is_effect(s) and not bool(s.get("visible", true)):
-			continue
-		below.append(i)
-	var n := Layer.cover_count(effect)
-	if n <= 0 or n > below.size():
-		n = below.size()
-	if n == 0:
+		if _built_weight(arr, i, m) > 0:
+			slots.append(i)
+			m += 1
+	var span := Layer.cover_range(effect, m)
+	if span.y < span.x:
 		return Vector2i(idx, idx)
-	return Vector2i(int(below[below.size() - n]), idx)
+	# 位置 a..b（1 = 紧邻效果层）-> arr 下标。位置越大离效果层越远 = 下标越小。
+	var lo: int = slots[m - span.y]
+	var hi: int = slots[m - span.x]
+	return Vector2i(lo, hi + 1)
+
+
+## 第 i 个兄弟在场景里是否占一个"可被覆盖"的位置（1 = 占，0 = 不占）。
+## m = 它下方已经占了多少个位置（效果层要按这个数算自己的覆盖区间）。
+func _built_weight(arr: Array, i: int, m: int) -> int:
+	var s = arr[i]
+	if not (s is Dictionary):
+		return 0
+	if not Layer.is_effect(s):
+		return 1
+	if not bool(s.get("visible", true)):
+		return 0
+	var span := Layer.cover_range(s, m)
+	return 1 if span.y >= span.x else 0
+
+
+## 效果层下方有多少层**可被覆盖**（= 属性面板里"起点/终点"的上限）。
+func cover_capacity(path: PackedInt32Array) -> int:
+	if path.is_empty():
+		return 0
+	var arr := siblings_at(parent_path_of(path))
+	var idx: int = path[path.size() - 1]
+	if idx < 0 or idx > arr.size():
+		return 0
+	var m := 0
+	for i in mini(idx, arr.size()):
+		m += _built_weight(arr, i, m)
+	return m
 
 
 ## 覆盖了多少层（给界面显示"覆盖下方 N 层"）。
 func covered_count(path: PackedInt32Array) -> int:
 	var span := cover_span(path)
 	return maxi(0, span.y - span.x)
+
+
+## 被覆盖图层的名字，自上而下（属性面板里让用户确认"覆盖的到底是哪几层"）。
+func covered_names(path: PackedInt32Array) -> Array:
+	var arr := siblings_at(parent_path_of(path))
+	var span := cover_span(path)
+	var out := []
+	for i in range(span.y - 1, span.x - 1, -1):
+		if i >= 0 and i < arr.size() and (arr[i] is Dictionary):
+			out.append(String(arr[i].get("name", "图层")))
+	return out
 
 
 # ---------------------------------------------------------------- 结构编辑

@@ -98,10 +98,11 @@ func rebuild() -> void:
 	if main == null or main.doc == null or _viewport == null:
 		return
 
-	# 不要 queue_free：延迟释放会让新旧两棵树共存一帧，画面闪一下。
+	# 先摘出树再 queue_free：直接 free 会在"某个子节点的信号正在发射"时 panic
+	# （报 freed while a signal is being emitted）；remove_child 之后画面也不会闪。
 	for c in _viewport.get_children():
 		_viewport.remove_child(c)
-		c.free()
+		c.queue_free()
 	_root = null
 
 	var size_i: Vector2i = main.doc.canvas

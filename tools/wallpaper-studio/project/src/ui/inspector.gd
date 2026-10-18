@@ -31,8 +31,8 @@ const ALIGN_NAMES := ["左对齐", "居中", "右对齐"]
 const DYNAMIC_KEYS := ["none", "clock", "date"]
 const DYNAMIC_NAMES := ["静态文本", "时钟", "日期"]
 const SHAPE_NAMES := ["矩形", "圆角矩形", "椭圆", "图片 alpha"]
-const COVER_MODES := ["all", "count"]
-const COVER_MODE_NAMES := ["下方全部图层", "指定层数"]
+const COVER_MODES := ["all", "count", "range"]
+const COVER_MODE_NAMES := ["下方全部图层", "下方紧邻 N 层", "指定区间（第几层到第几层）"]
 const PRESETS := [
 	{"name": "1920 × 1080（1080p）", "size": Vector2i(1920, 1080)},
 	{"name": "2560 × 1440（2K）", "size": Vector2i(2560, 1440)},
@@ -99,9 +99,13 @@ func _signature() -> String:
 
 
 func _rebuild() -> void:
+	# 必须 remove_child + queue_free，不能 free()：这些控件自己是信号的发射方
+	# （OptionButton.item_selected / SpinBox.value_changed 里就会重进到这儿），
+	# 在信号发射途中把发射方释放掉，引擎会报
+	# "Object was freed or unreferenced while a signal is being emitted from it"。
 	for c in _box.get_children():
 		_box.remove_child(c)
-		c.free()
+		c.queue_free()
 	var layer: Dictionary = main.selected_layer()
 	if layer.is_empty():
 		_build_doc()
@@ -251,15 +255,41 @@ func _build_layer(layer: Dictionary) -> void:
 func _build_cover(layer: Dictionary) -> void:
 	_section("覆盖范围")
 	var cover: Dictionary = layer["cover"]
-	var mode := _option(COVER_MODES, COVER_MODE_NAMES, String(cover.get("mode", "all")))
+	# 下方真正能生成节点的兄弟数 = 区间编号的上限（隐藏的效果层不占位置）。
+	var capacity: int = main.doc.cover_capacity(main.sel)
+	var top := float(maxi(1, capacity))
+	var mode_value := String(cover.get("mode", "all"))
+
+	var mode := _option(COVER_MODES, COVER_MODE_NAMES, mode_value)
 	_row("覆盖", mode)
 
-	var count := _spin(float(Layer.cover_count(layer)), 1.0, float(Layer.MAX_COVER), 1.0)
-	count.editable = String(cover.get("mode", "all")) == "count"
-	_row("层数", count)
+	var count := _spin(float(int(cover.get("count", 1))), 1.0, top, 1.0)
+	count.editable = mode_value == "count"
+	count.tooltip_text = "紧挨着效果层下面的 N 层"
+	_row("下方层数", count)
+
+	# 区间："第 from 层到第 to 层"，1 = 紧邻效果层下面那一层，数字越大离它越远。
+	var from_sp := _spin(float(int(cover.get("from", 1))), 1.0, top, 1.0)
+	from_sp.tooltip_text = "起点：1 = 紧邻下方那一层"
+	var to_sp := _spin(float(int(cover.get("to", 1))), 1.0, top, 1.0)
+	to_sp.tooltip_text = "终点：包含这一层"
+	var range_row := HBoxContainer.new()
+	range_row.add_theme_constant_override("separation", 6)
+	range_row.add_child(from_sp)
+	range_row.add_child(to_sp)
+	_row("第 … 到 … 层", range_row)
+	# 只有"指定区间"模式下这两个数字才有意义，其余模式置灰（否则用户会以为改了没反应）。
+	from_sp.editable = mode_value == "range"
+	to_sp.editable = mode_value == "range"
 
 	mode.item_selected.connect(func(i: int) -> void:
-		cover["mode"] = COVER_MODES[i]
+		var next_mode := String(COVER_MODES[i])
+		if next_mode == "range":
+			# 切到「指定区间」时先把区间设成"现在实际覆盖的那几层"，
+			# 画面不变，再让用户往上/往下微调 —— 否则一点进来就被缩成 1 层，很吓人。
+			cover["from"] = 1
+			cover["to"] = maxi(1, main.doc.covered_count(main.sel))
+		cover["mode"] = next_mode
 		main.apply_change(true)
 	)
 	count.value_changed.connect(func(v: float) -> void:
@@ -267,14 +297,32 @@ func _build_cover(layer: Dictionary) -> void:
 		cover["count"] = int(v)
 		main.apply_change(true)
 	)
+	from_sp.value_changed.connect(func(v: float) -> void:
+		cover["mode"] = "range"
+		cover["from"] = int(v)
+		# 起点超过终点时把终点一起推上去，避免出现空区间。
+		cover["to"] = maxi(int(cover.get("to", 1)), int(v))
+		main.apply_change(true)
+	)
+	to_sp.value_changed.connect(func(v: float) -> void:
+		cover["mode"] = "range"
+		cover["to"] = maxi(int(v), int(cover.get("from", 1)))
+		main.apply_change(true)
+	)
 
+	var names := PackedStringArray(main.doc.covered_names(main.sel))
 	var info := Label.new()
-	info.text = "当前实际覆盖：%d 层" % main.doc.covered_count(main.sel)
-	info.modulate = Color(0.66, 0.7, 0.78)
+	if names.is_empty():
+		info.text = "当前没有覆盖任何图层 —— 这一层暂时不生效。"
+		info.modulate = Color(0.9, 0.72, 0.5)
+	else:
+		info.text = "当前覆盖 %d 层：%s" % [names.size(), "、".join(names)]
+		info.modulate = Color(0.66, 0.7, 0.78)
+	info.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	info.add_theme_font_size_override("font_size", 11)
 	_box.add_child(info)
-	_hint("效果层只作用在**它下方**（同一父级里）的图层上；上移/下移这一层就能扩大/缩小范围。"
-			+ "选「指定层数」时只影响紧挨着它下面的 N 层。")
+	_hint("效果层只作用在**同一父级、它下方**的图层上。用「指定区间」可以只盖中间某几层："
+			+ "序号 1 = 紧挨着它的下一层，序号越大离它越远；没被盖到的层照常画在它上面。")
 
 
 # ---------------------------------------------------------------- 遮罩层

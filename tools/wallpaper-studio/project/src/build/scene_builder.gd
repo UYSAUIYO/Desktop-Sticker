@@ -77,9 +77,8 @@ static func add_children(parent: Node, children: Array, project_dir: String,
 			# 隐藏的效果层 = 不生效：被它覆盖的图层保持原样，一个节点都不动。
 			if not bool(layer.get("visible", true)):
 				continue
-			var merged := build_effect(layer, built, project_dir, parent_size)
-			if merged != null:
-				built.append({"layer": layer, "node": merged})
+			# build_effect 会自己把合成节点插回被覆盖区间原来的位置（保持叠放次序）。
+			build_effect(layer, built, project_dir, parent_size)
 			continue
 		built.append({"layer": layer,
 				"node": build_layer(layer, project_dir, parent_uv, parent_size)})
@@ -134,19 +133,25 @@ static func _build_group(layer: Dictionary, project_dir: String, group_uv: Rect2
 # ---------------------------------------------------------------- 效果图层
 
 ## 效果层：把它覆盖的兄弟节点收进一个合成节点，再套遮罩 / 滤镜。
-## 返回 null 表示"下面没有可覆盖的图层"（效果层什么也不做）。
 ##
-## 注意 `built` 会被就地改写：被收走的节点要从列表里摘掉，否则后面的效果层
-## 会把同一批节点再包一层（同一个节点不能有两个父亲）。
+## `built` 会被就地改写：被收走的节点从列表里摘掉，合成节点**插回它们原来所在的
+## 位置**（而不是append 到末尾）。位置很重要 —— cover 可以是"第 2~3 层"这种区间，
+## 这时紧挨着效果层下面的第 1 层不受影响，必须继续画在合成结果**上面**。
+## 返回合成节点；null 表示"下面没有可覆盖的图层"（效果层什么也不做）。
 static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 		parent_size: Vector2) -> Control:
-	var n := Layer.cover_count(effect)
-	var from: int = 0 if n <= 0 else maxi(0, built.size() - n)
-	if from >= built.size():
+	var m := built.size()
+	var span := Layer.cover_range(effect, m)
+	if span.y < span.x:
 		return null
-	var covered := built.slice(from)
-	while built.size() > from:
-		built.remove_at(built.size() - 1)
+	# 位置 p（1 = 紧邻下方）对应 built 下标 m - p。
+	var lo: int = m - span.y      # 覆盖区间最下面一层
+	var hi: int = m - span.x      # 最上面一层（含）
+	var covered := []
+	for i in range(hi, lo - 1, -1):
+		covered.push_front(built[i])       # 自下而上，和叠放次序一致
+	for i in range(hi, lo - 1, -1):
+		built.remove_at(i)
 
 	var stack := Control.new()
 	stack.name = "covered"
@@ -174,6 +179,7 @@ static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 	node.name = NODE_PREFIX + String(effect.get("id", "effect"))
 	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	node.set_meta("dstk_effect", true)
+	built.insert(lo, {"layer": effect, "node": node})
 	return node
 
 

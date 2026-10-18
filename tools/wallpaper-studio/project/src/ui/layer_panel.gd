@@ -172,8 +172,7 @@ func _label_for(layer: Dictionary, path: PackedInt32Array) -> String:
 	if not Layer.is_effect(layer):
 		return out
 	var n: int = main.doc.covered_count(path) if main != null and main.doc != null else 0
-	var scope := "下方全部" if Layer.cover_count(layer) <= 0 else ("下方 %d 层" % Layer.cover_count(layer))
-	out += "    ·    覆盖%s（共 %d 层）" % [scope, n]
+	out += "    ·    覆盖%s（共 %d 层）" % [Layer.cover_label(layer), n]
 	if Layer.is_filter(layer) and not Filters.any(layer.get("filters", {})):
 		out += "    ·    未启用"
 	return out

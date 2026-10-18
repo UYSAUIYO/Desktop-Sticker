@@ -55,6 +55,22 @@ func register(t) -> void:
 		t.eq(Layer.cover_count(m), 0, "非法模式退回 all")
 	)
 
+	t.case("cover_range_all_count_range", func() -> void:
+		var m := Layer.make_mask("遮罩")
+		t.eq(Layer.cover_range(m, 3), Vector2i(1, 3), "all = 下方全部")
+		m["cover"] = {"mode": "count", "count": 2}
+		t.eq(Layer.cover_range(m, 5), Vector2i(1, 2), "count 从最近的一层开始数")
+		t.eq(Layer.cover_range(m, 1), Vector2i(1, 1), "层数比可覆盖层数多时截断")
+		m["cover"] = {"mode": "range", "from": 2, "to": 4}
+		t.eq(Layer.cover_range(m, 6), Vector2i(2, 4), "range 原样")
+		m["cover"] = {"mode": "range", "from": 3, "to": 1}
+		t.eq(Layer.cover_range(m, 6), Vector2i(3, 3), "终点小于起点时退化成单层")
+		m["cover"] = {"mode": "range", "from": 7, "to": 9}
+		t.eq(Layer.cover_range(m, 6).y, 0, "起点超出 = 空区间")
+		t.eq(Layer.cover_range(m, 0).y, 0, "下方没有图层 = 空区间")
+		t.eq(Layer.cover_label(m), "第 7~9 层", "列表里显示设置本身，不显示截断结果")
+	)
+
 	t.case("filters_defaults_are_identity", func() -> void:
 		var f := Filters.normalize({})
 		t.eq(Filters.on(f, Filters.COLOR), false, "默认全关")

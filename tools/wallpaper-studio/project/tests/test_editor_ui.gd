@@ -1,4 +1,4 @@
-extends RefCounted
+﻿extends RefCounted
 ## 编辑器整体装配的冒烟用例：真的把 main.tscn 挂进树，选中图层、走一遍
 ## "改框 -> apply_live -> 重建 -> 点选"的路径。
 ##
@@ -153,6 +153,43 @@ func register(t) -> void:
 		editor.free()
 	)
 
+	t.case("editor_cover_option_rebuild_does_not_free_emitter", func() -> void:
+		# 回归：属性面板里的下拉框/数字框在信号回调里会触发整面板重建。
+		# 如果重建时把"正在发信号的控件"当场 free 掉，引擎会报
+		# "Object ... was freed or unreferenced while a signal is being emitted from it"。
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+
+		editor.doc.add_layer(Layer.make_color("底", Color.BLACK))
+		editor.doc.add_layer(Layer.make_color("中", Color.GRAY))
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		editor.doc.add_layer(fl)
+		editor.apply_change(true)
+		editor.select_layer(2)
+
+		var option := _find_option(editor._inspector._box, 3)
+		t.ok(option != null, "属性面板里有「覆盖」下拉框")
+		if option == null:
+			tree.root.remove_child(editor)
+			editor.free()
+			return
+		var cover: Dictionary = editor.doc.layers[2]["cover"]
+		option.item_selected.emit(2)                    # -> 指定区间
+		t.eq(String(cover["mode"]), "range", "切换成「指定区间」")
+		t.ok(is_instance_valid(option), "重建时不能当场释放发信号的控件")
+		t.ok(editor._inspector._box.get_child_count() > 5, "面板已重建完成")
+		t.eq(editor.doc.covered_count(PackedInt32Array([2])), 2, "默认区间覆盖下方全部")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+
+
 	t.case("editor_canvas_click_selects_mask_not_filter", func() -> void:
 		var tree := Engine.get_main_loop() as SceneTree
 		if tree == null:
@@ -183,3 +220,12 @@ func register(t) -> void:
 		editor.free()
 	)
 
+## 在面板里找一个条目数为 count 的 OptionButton（用来点那些会触发面板重建的下拉框）。
+func _find_option(node: Node, count: int) -> OptionButton:
+	for c in node.get_children():
+		if c is OptionButton and (c as OptionButton).item_count == count:
+			return c as OptionButton
+		var found := _find_option(c, count)
+		if found != null:
+			return found
+	return null

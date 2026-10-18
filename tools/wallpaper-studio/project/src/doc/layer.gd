@@ -19,8 +19,12 @@ const TYPES := ["color", "image", "text", "particles", "group", "mask", "filter"
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
 ## 效果图层：本身不画东西，作用在下方被覆盖的图层上。
 const EFFECT_TYPES := ["mask", "filter"]
-## cover.mode："all" = 下方全部；"count" = 只覆盖下方紧邻的 count 层。
-const COVER_MODES := ["all", "count"]
+## cover.mode：
+##   "all"   —— 下方全部图层；
+##   "count" —— 只覆盖下方紧邻的 count 层；
+##   "range" —— 覆盖"从效果层往下数"的第 from ~ to 层（1 = 紧邻它的下一层，闭区间）。
+## 位置一律用"离效果层多远"表达，所以移动效果层时覆盖的是同样的那几层。
+const COVER_MODES := ["all", "count", "range"]
 ## cover.count 的上限。只是防手滑，实际覆盖层数受兄弟数量限制。
 const MAX_COVER := 256
 
@@ -117,7 +121,7 @@ static func make_group(layer_name: String, w: float = 0.0, h: float = 0.0) -> Di
 ## 遮罩层：形状 + 边框（边框 = transform 的 x/y/w/h，w/h = 0 表示覆盖整个父级）。
 static func make_mask(layer_name: String) -> Dictionary:
 	var l := _base("mask", layer_name)
-	l["cover"] = {"mode": "all", "count": 1}
+	l["cover"] = normalize_cover(null)
 	l.merge(Mask.defaults())
 	return l
 
@@ -125,12 +129,13 @@ static func make_mask(layer_name: String) -> Dictionary:
 ## 滤镜层：7 组滤镜参数（默认全关；勾选任意一组才生效）。
 static func make_filter(layer_name: String) -> Dictionary:
 	var l := _base("filter", layer_name)
-	l["cover"] = {"mode": "all", "count": 1}
+	l["cover"] = normalize_cover(null)
 	l["filters"] = Filters.defaults()
 	return l
 
 
 ## 覆盖下方多少层：0 = 下方全部，>0 = 只覆盖紧邻的 N 层。
+## range 模式不返回具体层数（取决于下方有几层），用 cover_range / doc.covered_count。
 static func cover_count(layer: Dictionary) -> int:
 	var cover = layer.get("cover")
 	if not (cover is Dictionary):
@@ -138,6 +143,44 @@ static func cover_count(layer: Dictionary) -> int:
 	if String(cover.get("mode", "all")) != "count":
 		return 0
 	return clampi(int(cover.get("count", 1)), 1, MAX_COVER)
+
+
+## 覆盖区间（闭区间），坐标是"从效果层往下数第几层"（1 = 紧邻下方）。
+## below = 下方可覆盖的层数。y < x 表示空区间（下方没东西 / from 超出）。
+## **场景构造与界面显示都必须只走这一个函数**，否则"显示覆盖 2 层"和实际画出来的层数会不一致。
+static func cover_range(layer: Dictionary, below: int) -> Vector2i:
+	var n := maxi(0, below)
+	if n == 0:
+		return Vector2i(1, 0)
+	var cover = layer.get("cover")
+	if not (cover is Dictionary):
+		return Vector2i(1, n)
+	match String(cover.get("mode", "all")):
+		"count":
+			return Vector2i(1, clampi(int(cover.get("count", 1)), 1, n))
+		"range":
+			var a := clampi(int(cover.get("from", 1)), 1, MAX_COVER)
+			if a > n:
+				return Vector2i(1, 0)
+			return Vector2i(a, mini(maxi(a, int(cover.get("to", a))), n))
+		_:
+			return Vector2i(1, n)
+
+
+## 覆盖范围的简短描述（图层列表与属性面板共用）。按设置原样显示，不代表实际层数。
+static func cover_label(layer: Dictionary) -> String:
+	var cover = layer.get("cover")
+	if not (cover is Dictionary):
+		return "下方全部"
+	match String(cover.get("mode", "all")):
+		"count":
+			return "下方 %d 层" % clampi(int(cover.get("count", 1)), 1, MAX_COVER)
+		"range":
+			var a := clampi(int(cover.get("from", 1)), 1, MAX_COVER)
+			var b := maxi(a, clampi(int(cover.get("to", a)), 1, MAX_COVER))
+			return "第 %d~%d 层" % [a, b]
+		_:
+			return "下方全部"
 
 
 ## 把字典里缺失/类型不对的字段补成默认值。纯函数，返回新字典。
@@ -205,12 +248,14 @@ static func normalize(raw: Dictionary) -> Dictionary:
 
 
 static func normalize_cover(raw) -> Dictionary:
-	var out := {"mode": "all", "count": 1}
+	var out := {"mode": "all", "count": 1, "from": 1, "to": 1}
 	if not (raw is Dictionary):
 		return out
 	var mode := String(raw.get("mode", "all"))
 	out["mode"] = mode if mode in COVER_MODES else "all"
 	out["count"] = clampi(int(raw.get("count", 1)), 1, MAX_COVER)
+	out["from"] = clampi(int(raw.get("from", 1)), 1, MAX_COVER)
+	out["to"] = maxi(int(out["from"]), clampi(int(raw.get("to", out["from"])), 1, MAX_COVER))
 	return out
 
 
