@@ -86,8 +86,8 @@ func register(t) -> void:
 	t.case("frame_hit_test_respects_rotation", func() -> void:
 		var l := _layer(100, 100, 200, 100)
 		# 绕左上角转 90°：本地中心 (100,50) 转到画布坐标 (100-50, 100+100)。
-		t.ok(Frame.hit_test(l, CANVAS, Vector2(50, 200), 90.0, 1.0), "旋转后中心点命中")
-		t.ok(not Frame.hit_test(l, CANVAS, Vector2(200, 150), 90.0, 1.0),
+		t.ok(Frame.hit_test(l, CANVAS, Vector2(50, 200), 90.0), "旋转后中心点命中")
+		t.ok(not Frame.hit_test(l, CANVAS, Vector2(200, 150), 90.0),
 				"未旋转时的中心点在旋转后不命中")
 	)
 

@@ -87,9 +87,8 @@ func register(t) -> void:
 		t.ok(built != null, "built scene loadable")
 		var node := built.instantiate()
 		var found := false
-		for c in node.get_children():
-			if not (c is TextureRect):
-				continue
+		# 内容节点现在嵌在 layer box / stack 里，按类型递归找，别只看直接子节点。
+		for c in node.find_children("*", "TextureRect", true, false):
 			found = true
 			t.eq(c.texture, null, "no pixels inlined in the scene")
 			t.ok(String(c.get("src")).begins_with("res://build/"), "script points at the packed asset")
@@ -144,9 +143,10 @@ func register(t) -> void:
 		t.ok(scene != null, "main scene is a PackedScene")
 		var inst := scene.instantiate()
 		# 注意：图片层现在也带脚本（运行时解码），所以不能"第一个有脚本的节点"就算时钟。
+		# 内容节点嵌在 layer box / stack 里，递归找。
 		var found_clock := false
 		var found_image_script := false
-		for c in inst.get_children():
+		for c in inst.find_children("*", "", true, false):
 			if c.get_script() == null:
 				continue
 			if "mode" in c:

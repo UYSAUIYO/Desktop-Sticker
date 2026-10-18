@@ -1,11 +1,15 @@
 extends ScrollContainer
-## 属性面板：没选中图层时显示工程信息，选中后按图层类型动态建设控件。
+## 属性面板：没选中图层时显示工程信息（含画布设置），选中后按图层类型动态建设控件。
 ##
 ## 重建策略：只有当「选中的图层 / 类型 / id」变了才重建整面板。控件内部改值只写回文档
 ## 并重建画布 —— 不重建自己，否则拖滑块时控件会被换掉，手感直接坏掉。
+##
+## 面板分四段（选中图层时）：通用 → 类型专属 → 遮罩 → 滤镜。容器还多一段"容器"。
 
 const Layer = preload("res://src/doc/layer.gd")
 const Frame = preload("res://src/doc/frame.gd")
+const Mask = preload("res://src/doc/mask.gd")
+const Filters = preload("res://src/doc/filters.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
 
 const TYPE_NAMES := {
@@ -13,6 +17,7 @@ const TYPE_NAMES := {
 	"image": "图片",
 	"text": "文字",
 	"particles": "粒子",
+	"group": "容器",
 }
 const BLEND_KEYS := ["mix", "add", "sub", "mul", "screen", "overlay"]
 const BLEND_NAMES := ["正常", "相加", "相减", "正片叠底", "滤色", "叠加"]
@@ -22,6 +27,14 @@ const ALIGN_KEYS := ["left", "center", "right"]
 const ALIGN_NAMES := ["左对齐", "居中", "右对齐"]
 const DYNAMIC_KEYS := ["none", "clock", "date"]
 const DYNAMIC_NAMES := ["静态文本", "时钟", "日期"]
+const SHAPE_NAMES := ["矩形", "圆角矩形", "椭圆", "图片 alpha"]
+const PRESETS := [
+	{"name": "1920 × 1080（1080p）", "size": Vector2i(1920, 1080)},
+	{"name": "2560 × 1440（2K）", "size": Vector2i(2560, 1440)},
+	{"name": "3840 × 2160（4K）", "size": Vector2i(3840, 2160)},
+	{"name": "1080 × 1920（竖屏）", "size": Vector2i(1080, 1920)},
+	{"name": "1080 × 1080（方形）", "size": Vector2i(1080, 1080)},
+]
 
 var main = null
 
@@ -70,20 +83,25 @@ func refresh(force: bool = false) -> void:
 
 
 func _signature() -> String:
-	if main.selected < 0 or main.selected >= main.doc.layers.size():
+	var layer: Dictionary = main.selected_layer()
+	if layer.is_empty():
 		return "doc"
-	var l: Dictionary = main.doc.layers[main.selected]
-	return "layer:%d:%s:%s" % [main.selected, String(l.get("type", "")), String(l.get("id", ""))]
+	var parts := PackedStringArray()
+	for i in main.sel.size():
+		parts.append(str(main.sel[i]))
+	return "layer:%s:%s:%s" % [",".join(parts), String(layer.get("type", "")),
+			String(layer.get("id", ""))]
 
 
 func _rebuild() -> void:
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.free()
-	if main.selected < 0 or main.selected >= main.doc.layers.size():
+	var layer: Dictionary = main.selected_layer()
+	if layer.is_empty():
 		_build_doc()
 	else:
-		_build_layer(main.doc.layers[main.selected])
+		_build_layer(layer)
 
 
 # ---------------------------------------------------------------- 工程信息
@@ -98,9 +116,32 @@ func _build_doc() -> void:
 	)
 	_row("名称", name_edit)
 
-	var size_label := Label.new()
-	size_label.text = "%d × %d" % [main.doc.canvas.x, main.doc.canvas.y]
-	_row("画布", size_label)
+	_section("画布")
+	var w := _spin(float(main.doc.canvas.x), 64.0, 16384.0, 1.0)
+	var h := _spin(float(main.doc.canvas.y), 64.0, 16384.0, 1.0)
+	_row("宽", w)
+	_row("高", h)
+
+	var preset := OptionButton.new()
+	preset.add_item("选择预设…", -1)
+	for i in PRESETS.size():
+		preset.add_item(String(PRESETS[i]["name"]), i)
+	preset.item_selected.connect(func(i: int) -> void:
+		if i < 0:
+			return
+		var size: Vector2i = PRESETS[i]["size"]
+		w.value = float(size.x)
+		h.value = float(size.y)
+		_apply_canvas(Vector2i(size.x, size.y))
+	)
+	_row("预设", preset)
+
+	var apply := Button.new()
+	apply.text = "应用画布尺寸（按比例缩放元素）"
+	apply.pressed.connect(func() -> void:
+		_apply_canvas(Vector2i(int(w.value), int(h.value)))
+	)
+	_box.add_child(apply)
 
 	var bg := _color(main.doc.background)
 	bg.color_changed.connect(func(c: Color) -> void:
@@ -108,6 +149,8 @@ func _build_doc() -> void:
 		main.apply_change()
 	)
 	_row("背景", bg)
+	_hint("改画布尺寸默认把现有元素按比例拉伸（换 4K 不用重新摆一遍）；"
+			+ "想保持像素尺寸就把元素先选中再逐个改宽高。")
 
 	_section("工程目录")
 	var dir_label := Label.new()
@@ -118,7 +161,15 @@ func _build_doc() -> void:
 	_box.add_child(dir_label)
 
 	_hint("在左侧选择一个图层来编辑它的属性。")
-	_hint("画布按「纯色 → 图片 → 文字 → 粒子」的顺序自下而上叠加；列表顶部是最上层。")
+	_hint("图层是树：容器（画布）里的子元素跟着容器一起移动缩放，容器还可以裁掉超出的部分。"
+			+ "画布上点元素直接选中，Alt+点选最外层容器。")
+
+
+func _apply_canvas(size: Vector2i) -> void:
+	if main == null or main.doc == null:
+		return
+	main.doc.set_canvas(size, true)
+	main.apply_change(true)
 
 
 # ---------------------------------------------------------------- 图层属性
@@ -144,12 +195,14 @@ func _build_layer(layer: Dictionary) -> void:
 	)
 	_box.add_child(visible)
 
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
 	_transform_row("X", "x", layer, 0.0, -20000.0, 20000.0, 1.0)
 	_transform_row("Y", "y", layer, 0.0, -20000.0, 20000.0, 1.0)
-	_size_row("宽", "w", layer)
-	_size_row("高", "h", layer)
+	_size_row("宽", "w", layer, parent_size)
+	_size_row("高", "h", layer, parent_size)
 	_transform_row("旋转", "rotation", layer, 0.0, -3600.0, 3600.0, 1.0)
-	_hint("画布上直接拖动元素即可移动；拖八个手柄缩放尺寸，角点按住 Shift 等比。宽高和图片比例不一致时图片会被拉伸。")
+	_hint("X / Y / 宽 / 高 都是相对「父级」的像素：根图层相对画布，容器里的子元素相对容器框。"
+			+ "画布上拖动元素即可移动；拖八个手柄缩放尺寸，角点按住 Shift 等比。")
 
 	var opacity := _spin(float(layer["transform"].get("opacity", 1.0)), 0.0, 1.0, 0.01)
 	opacity.value_changed.connect(func(v: float) -> void:
@@ -172,8 +225,34 @@ func _build_layer(layer: Dictionary) -> void:
 			_build_text(layer)
 		"particles":
 			_build_particles(layer)
+		"group":
+			_build_group(layer)
 		_:
 			_build_color(layer)
+
+	_build_mask(layer)
+	_build_filters(layer)
+
+
+func _build_group(layer: Dictionary) -> void:
+	_section("容器")
+	var clip := CheckButton.new()
+	clip.text = "裁掉超出容器框的部分"
+	clip.button_pressed = bool(layer.get("clip", true))
+	clip.toggled.connect(func(on: bool) -> void:
+		layer["clip"] = on
+		main.apply_change()
+	)
+	_box.add_child(clip)
+	var kids = layer.get("children", [])
+	var count: int = (kids as Array).size() if kids is Array else 0
+	var info := Label.new()
+	info.text = "子图层：%d 个" % count
+	info.modulate = Color(0.62, 0.66, 0.74)
+	info.add_theme_font_size_override("font_size", 11)
+	_box.add_child(info)
+	_hint("容器改尺寸时子元素按同一比例拉伸；想看内容原尺寸就把容器框拖回去。"
+			+ "选中容器后点「＋ 添加」会把新图层加进容器里。")
 
 
 func _build_color(layer: Dictionary) -> void:
@@ -322,7 +401,170 @@ func _build_particles(layer: Dictionary) -> void:
 	)
 	_row("最大尺寸", scale_max)
 
-	_hint("粒子贴图留空时使用内置白色圆点，导出时会内联进场景。")
+	_hint("粒子贴图留空时使用内置白色圆点，导出时会内联进场景。"
+			+ "粒子不受遮罩/滤镜影响（它有自己的绘制管线）。")
+
+
+# ---------------------------------------------------------------- 遮罩
+
+func _build_mask(layer: Dictionary) -> void:
+	_section("遮罩（Mask）")
+	var mask: Dictionary = layer["mask"]
+	var size := Frame.of(layer, main.doc.parent_size(main.sel)).size
+
+	var on := CheckButton.new()
+	on.text = "启用遮罩"
+	on.button_pressed = bool(mask.get("enabled", false))
+	on.toggled.connect(func(v: bool) -> void:
+		mask["enabled"] = v
+		main.apply_change(true)
+	)
+	_box.add_child(on)
+
+	var shape := _option(Mask.SHAPES, SHAPE_NAMES, String(mask.get("shape", "rect")))
+	shape.item_selected.connect(func(i: int) -> void:
+		mask["shape"] = Mask.SHAPES[i]
+		main.apply_change(true)
+	)
+	_row("形状", shape)
+
+	var r := Mask.rect(mask, size)
+	_mask_spin("X", "x", mask, r.position.x, size, -20000.0, 20000.0, 1.0)
+	_mask_spin("Y", "y", mask, r.position.y, size, -20000.0, 20000.0, 1.0)
+	_mask_spin("宽", "w", mask, r.size.x, size, Frame.MIN_SIZE, 20000.0, 1.0)
+	_mask_spin("高", "h", mask, r.size.y, size, Frame.MIN_SIZE, 20000.0, 1.0)
+	_mask_spin("圆角", "radius", mask, float(mask.get("radius", 0.0)), size,
+		0.0, 4000.0, 1.0)
+	_mask_spin("羽化", "feather", mask, float(mask.get("feather", 0.0)), size,
+		0.0, 2000.0, 1.0)
+
+	var invert := CheckButton.new()
+	invert.text = "反相（只显示遮罩外面的部分）"
+	invert.button_pressed = bool(mask.get("invert", false))
+	invert.toggled.connect(func(v: bool) -> void:
+		mask["invert"] = v
+		main.apply_change()
+	)
+	_box.add_child(invert)
+
+	if String(mask.get("shape", "rect")) == "image":
+		var label := Label.new()
+		var src := String(mask.get("src", ""))
+		label.text = src if not src.is_empty() else "（未选择遮罩图）"
+		label.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+		label.modulate = Color(0.7, 0.73, 0.8)
+		label.add_theme_font_size_override("font_size", 11)
+		_row("遮罩图", label)
+		var pick := Button.new()
+		pick.text = "选择遮罩图…"
+		pick.pressed.connect(func() -> void: _pick_texture(layer, "mask"))
+		_row("替换", pick)
+
+	var edit := CheckButton.new()
+	edit.text = "在画布上编辑遮罩（拖黄框）"
+	edit.button_pressed = main.mask_edit
+	edit.toggled.connect(func(v: bool) -> void:
+		main.mask_edit = v
+		main.apply_change()
+	)
+	_box.add_child(edit)
+	_hint("遮罩坐标相对图层左上角；宽高留 0 表示覆盖整层。羽化用边缘柔化，和分辨率无关。")
+
+
+func _mask_spin(label_text: String, key: String, mask: Dictionary, value: float,
+		size: Vector2, minv: float, maxv: float, step: float) -> void:
+	var sp := _spin(value, minv, maxv, step)
+	sp.value_changed.connect(func(v: float) -> void:
+		if key == "radius" or key == "feather":
+			mask[key] = v
+		else:
+			# 第一次改位置/尺寸时把"覆盖整层"落成显式数字，之后拖多少是多少。
+			if float(mask.get("w", 0.0)) <= 0.0 or float(mask.get("h", 0.0)) <= 0.0:
+				var r := Mask.rect(mask, size)
+				mask["x"] = r.position.x
+				mask["y"] = r.position.y
+				mask["w"] = r.size.x
+				mask["h"] = r.size.y
+			mask[key] = maxf(1.0, v) if (key == "w" or key == "h") else v
+		main.apply_change()
+	)
+	_row(label_text, sp)
+
+
+# ---------------------------------------------------------------- 滤镜
+
+func _build_filters(layer: Dictionary) -> void:
+	_section("滤镜（Filters）")
+	var f: Dictionary = layer["filters"]
+
+	_filter_on("色彩调节（亮度 / 对比度 / 饱和度 / 色相）", f, Filters.COLOR)
+	_filter_spin(f, Filters.COLOR, "brightness", "亮度", -1.0, 1.0, 0.01)
+	_filter_spin(f, Filters.COLOR, "contrast", "对比度", 0.0, 3.0, 0.01)
+	_filter_spin(f, Filters.COLOR, "saturation", "饱和度", 0.0, 3.0, 0.01)
+	_filter_spin(f, Filters.COLOR, "hue", "色相（度）", -180.0, 180.0, 1.0)
+
+	_filter_on("模糊（高斯）", f, Filters.BLUR)
+	_filter_spin(f, Filters.BLUR, "radius", "半径（像素）", 0.0, 200.0, 1.0)
+
+	_filter_on("暗角", f, Filters.VIGNETTE)
+	_filter_spin(f, Filters.VIGNETTE, "amount", "强度", 0.0, 1.0, 0.01)
+	_filter_spin(f, Filters.VIGNETTE, "radius", "起始半径", 0.0, 1.5, 0.01)
+	_filter_spin(f, Filters.VIGNETTE, "softness", "柔和度", 0.01, 1.0, 0.01)
+
+	_filter_on("色调分离", f, Filters.POSTERIZE)
+	_filter_spin(f, Filters.POSTERIZE, "levels", "级数", 2.0, 64.0, 1.0)
+
+	_filter_on("阴影", f, Filters.SHADOW)
+	_filter_spin(f, Filters.SHADOW, "x", "偏移 X", -500.0, 500.0, 1.0)
+	_filter_spin(f, Filters.SHADOW, "y", "偏移 Y", -500.0, 500.0, 1.0)
+	_filter_spin(f, Filters.SHADOW, "alpha", "不透明度", 0.0, 1.0, 0.01)
+	_filter_color(f, Filters.SHADOW, "颜色")
+
+	_filter_on("发光", f, Filters.GLOW)
+	_filter_spin(f, Filters.GLOW, "radius", "半径（像素）", 0.0, 200.0, 1.0)
+	_filter_spin(f, Filters.GLOW, "alpha", "不透明度", 0.0, 1.0, 0.01)
+	_filter_color(f, Filters.GLOW, "颜色")
+
+	_filter_on("描边", f, Filters.STROKE)
+	_filter_spin(f, Filters.STROKE, "width", "宽度（像素）", 0.0, 64.0, 0.5)
+	_filter_color(f, Filters.STROKE, "颜色")
+
+	_hint("色彩 / 暗角 / 色调分离是逐像素着色器（几乎零开销）；模糊每层多两趟渲染，"
+			+ "大画布上多开几层会掉帧；阴影 / 发光 / 描边是复制内容再染色（发光会过一趟模糊）。"
+			+ "阴影 / 描边 / 发光对粒子与容器不生效。")
+
+
+func _filter_on(label_text: String, f: Dictionary, key: String) -> void:
+	var g: Dictionary = f[key]
+	var cb := CheckButton.new()
+	cb.text = label_text
+	cb.button_pressed = bool(g.get("enabled", false))
+	cb.toggled.connect(func(v: bool) -> void:
+		g["enabled"] = v
+		main.apply_change()
+	)
+	_box.add_child(cb)
+
+
+func _filter_spin(f: Dictionary, key: String, param: String, label_text: String,
+		minv: float, maxv: float, step: float) -> void:
+	var g: Dictionary = f[key]
+	var sp := _spin(float(g.get(param, minv)), minv, maxv, step)
+	sp.value_changed.connect(func(v: float) -> void:
+		g[param] = v
+		main.apply_change()
+	)
+	_row("  " + label_text, sp)
+
+
+func _filter_color(f: Dictionary, key: String, label_text: String) -> void:
+	var g: Dictionary = f[key]
+	var c := _color(Layer.to_color(g.get("color"), Color.WHITE))
+	c.color_changed.connect(func(col: Color) -> void:
+		g["color"] = col
+		main.apply_change()
+	)
+	_row("  " + label_text, c)
 
 
 # ---------------------------------------------------------------- 图片导入
@@ -353,7 +595,12 @@ func _on_texture_selected(path: String) -> void:
 	if rel.is_empty():
 		main.show_error("图片导入失败", "无法把图片拷进工程：\n" + path)
 		return
-	_pick_layer[_pick_field] = rel
+	if _pick_field == "mask":
+		var mask: Dictionary = _pick_layer.get("mask", {})
+		if not mask.is_empty():
+			mask["src"] = rel
+	else:
+		_pick_layer[_pick_field] = rel
 	_pick_layer = {}
 	_pick_field = ""
 	# 路径文字要跟着变，所以强制重建属性面板。
@@ -449,13 +696,13 @@ func _transform_row(label_text: String, key: String, layer: Dictionary,
 	_row(label_text, sp)
 
 
-## 宽/高。没定过尺寸的图层显示的是画布尺寸；第一次改值时才把框落成显式数字
+## 宽/高。没定过尺寸的图层显示的是父级尺寸；第一次改值时才把框落成显式数字
 ## （Frame.materialize），这样打开的旧文档不会被无声改写。
-func _size_row(label_text: String, key: String, layer: Dictionary) -> void:
-	var r := Frame.of(layer, main.doc.canvas)
+func _size_row(label_text: String, key: String, layer: Dictionary, parent_size: Vector2) -> void:
+	var r := Frame.of(layer, parent_size)
 	var sp := _spin(r.size.x if key == "w" else r.size.y, Frame.MIN_SIZE, 20000.0, 1.0)
 	sp.value_changed.connect(func(v: float) -> void:
-		Frame.materialize(layer, main.doc.canvas)
+		Frame.materialize(layer, parent_size)
 		layer["transform"][key] = maxf(Frame.MIN_SIZE, v)
 		main.apply_change()
 	)

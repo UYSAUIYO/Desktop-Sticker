@@ -1,5 +1,6 @@
 extends PanelContainer
-## 图层面板：列表顶部 = 最上层（与画布叠放顺序一致），下标换算只在这里做一次。
+## 图层面板：树形列表（容器的子层缩进显示在容器下面），顶部 = 最上层。
+## 下标换算只在 _rows 里做一次：每一行对应一条**路径**（PackedInt32Array）。
 ##
 ## 添加图片图层时会把文件拷进工程 assets/（见 asset_import.gd）——文档里只存相对路径，
 ## 这样工程拷到别的机器上仍然能打开。
@@ -12,6 +13,7 @@ const TYPE_NAMES := {
 	"image": "图片",
 	"text": "文字",
 	"particles": "粒子",
+	"group": "容器",
 }
 
 var main = null
@@ -23,7 +25,10 @@ var _btn_delete: Button
 var _btn_up: Button
 var _btn_down: Button
 var _btn_visible: Button
+var _btn_group: Button
+var _btn_ungroup: Button
 var _file_dialog: FileDialog
+var _rows: Array = []        # [{path: PackedInt32Array, layer: Dictionary, depth: int}]
 
 
 func setup(m) -> void:
@@ -59,12 +64,13 @@ func _ready() -> void:
 	_add_menu = MenuButton.new()
 	_add_menu.text = "＋ 添加"
 	_add_menu.flat = true
-	_add_menu.tooltip_text = "添加图层"
+	_add_menu.tooltip_text = "添加图层（选中容器时加进容器里）"
 	var popup := _add_menu.get_popup()
 	popup.add_item("纯色背景", 0)
 	popup.add_item("图片", 1)
 	popup.add_item("文字", 2)
 	popup.add_item("粒子", 3)
+	popup.add_item("容器 / 画布", 4)
 	popup.id_pressed.connect(_on_add)
 	header.add_child(_add_menu)
 
@@ -89,15 +95,23 @@ func _ready() -> void:
 	buttons.add_theme_constant_override("separation", 4)
 	box.add_child(buttons)
 
-	_btn_delete = _small_button(buttons, "删除", "删除选中图层")
+	_btn_delete = _small_button(buttons, "删除", "删除选中图层（含容器里的内容）")
 	_btn_up = _small_button(buttons, "上移", "向上（更靠前）移动一层")
 	_btn_down = _small_button(buttons, "下移", "向下（更靠后）移动一层")
 	_btn_visible = _small_button(buttons, "显示", "显示 / 隐藏选中图层")
+
+	var buttons2 := HBoxContainer.new()
+	buttons2.add_theme_constant_override("separation", 4)
+	box.add_child(buttons2)
+	_btn_group = _small_button(buttons2, "放进容器", "把选中图层包进一个新建的容器")
+	_btn_ungroup = _small_button(buttons2, "移出容器", "把选中图层移出它的父容器")
 
 	_btn_delete.pressed.connect(_on_delete)
 	_btn_up.pressed.connect(_on_move.bind(1))
 	_btn_down.pressed.connect(_on_move.bind(-1))
 	_btn_visible.pressed.connect(_on_toggle_visible)
+	_btn_group.pressed.connect(_on_wrap)
+	_btn_ungroup.pressed.connect(_on_unwrap)
 
 	_update_buttons()
 
@@ -114,73 +128,91 @@ func _small_button(parent: Control, text: String, tip: String) -> Button:
 
 # ---------------------------------------------------------------- 列表
 
-## 列表行 -> 文档下标。顶部 = 最上层 = 文档最后一个元素。
-func _row_to_doc(row: int) -> int:
-	if main == null or main.doc == null:
-		return -1
-	return main.doc.layers.size() - 1 - row
-
-
-func _doc_to_row(index: int) -> int:
-	if main == null or main.doc == null:
-		return -1
-	return main.doc.layers.size() - 1 - index
-
-
 func refresh() -> void:
 	if main == null or main.doc == null or _list == null:
 		return
 	_list.clear()
-	var count: int = main.doc.layers.size()
-	for i in range(count - 1, -1, -1):
-		var l: Dictionary = main.doc.layers[i]
-		var type_name := String(TYPE_NAMES.get(String(l.get("type", "color")), "图层"))
-		var label := "%s    ·    %s" % [String(l.get("name", "图层")), type_name]
-		if not bool(l.get("visible", true)):
+	_rows = []
+	_collect(PackedInt32Array(), 0)
+	for row in _rows:
+		var layer: Dictionary = row["layer"]
+		var type_name := String(TYPE_NAMES.get(String(layer.get("type", "color")), "图层"))
+		var marks := ""
+		if bool(layer.get("mask", {}).get("enabled", false)):
+			marks += " ◐"
+		var f: Dictionary = layer.get("filters", {})
+		for key in f.keys():
+			if bool((f[key] as Dictionary).get("enabled", false)):
+				marks += " ✳"
+				break
+		var indent := "　".repeat(int(row["depth"]))
+		var label := "%s%s    ·    %s%s" % [indent, String(layer.get("name", "图层")), type_name, marks]
+		if not bool(layer.get("visible", true)):
 			label = "（隐藏）" + label
-		var row := _list.add_item(label)
-		if not bool(l.get("visible", true)):
-			_list.set_item_custom_fg_color(row, Color(0.52, 0.54, 0.6))
-	if count > 0:
-		if main.selected < 0 or main.selected >= count:
-			# 默认选中最上层：打开工程后属性面板立刻有内容，不用先点一下。
-			main.select_layer(count - 1)
-		_list.select(_doc_to_row(main.selected))
-	_empty_hint.visible = count == 0
+		var idx := _list.add_item(label)
+		if not bool(layer.get("visible", true)):
+			_list.set_item_custom_fg_color(idx, Color(0.52, 0.54, 0.6))
+		if Layer.is_group(layer):
+			_list.set_item_custom_fg_color(idx, Color(0.78, 0.84, 0.95))
+	if not _rows.is_empty() and main.sel.is_empty():
+		# 默认选中最上层：打开工程后属性面板立刻有内容，不用先点一下。
+		main.select_layer_path(_rows[0]["path"])
+	_empty_hint.visible = _rows.is_empty()
+	sync_selection()
+
+
+## 递归收集行：同一个父级内从最上层往下，容器的子层紧跟在容器下面。
+func _collect(parent_path: PackedInt32Array, depth: int) -> void:
+	var arr: Array = main.doc.siblings_at(parent_path)
+	for i in range(arr.size() - 1, -1, -1):
+		var path := parent_path.duplicate()
+		path.append(i)
+		var layer: Dictionary = arr[i]
+		_rows.append({"path": path, "layer": layer, "depth": depth})
+		if Layer.is_group(layer):
+			_collect(path, depth + 1)
+
+
+func _row_of(path: PackedInt32Array) -> int:
+	for i in _rows.size():
+		if (_rows[i]["path"] as PackedInt32Array) == path:
+			return i
+	return -1
+
+
+func sync_selection() -> void:
+	if _list == null or main == null or main.doc == null:
+		return
+	var row := _row_of(main.sel)
+	if row >= 0:
+		_list.select(row)
+	else:
+		_list.deselect_all()
 	_update_buttons()
 
 
 func _update_buttons() -> void:
 	if _list == null:
 		return
-	var has: bool = (main != null and main.doc != null and main.selected >= 0
-			and main.selected < main.doc.layers.size())
+	var layer: Dictionary = main.selected_layer() if main != null else {}
+	var has := not layer.is_empty()
+	var parent: PackedInt32Array = main.doc.parent_path_of(main.sel) if (main != null and main.doc != null) else PackedInt32Array()
+	var siblings: Array = main.doc.siblings_at(parent) if (main != null and main.doc != null) else []
+	var idx: int = main.sel[main.sel.size() - 1] if main != null and not main.sel.is_empty() else -1
+	var path_size: int = 0 if (main == null or main.sel.is_empty()) else main.sel.size()
 	_btn_delete.disabled = not has
-	_btn_up.disabled = not has or main.selected >= main.doc.layers.size() - 1
-	_btn_down.disabled = not has or main.selected <= 0
+	_btn_up.disabled = not has or idx < 0 or idx >= siblings.size() - 1
+	_btn_down.disabled = not has or idx <= 0
 	_btn_visible.disabled = not has
+	_btn_group.disabled = not has
+	_btn_ungroup.disabled = not has or path_size <= 1
 	if has:
-		var l: Dictionary = main.doc.layers[main.selected]
-		_btn_visible.text = "隐藏" if bool(l.get("visible", true)) else "显示"
+		_btn_visible.text = "隐藏" if bool(layer.get("visible", true)) else "显示"
 
 
 func _on_item_selected(row: int) -> void:
-	var index := _row_to_doc(row)
-	if index >= 0:
-		main.select_layer(index)
-
-
-## 只把列表选中行与按钮状态同步到当前选中图层，不重建条目。
-## main.select_layer() 是程序化改选中的唯一入口（新建/删除图层也会走它），
-## 不同步的话列表还高亮着旧行，属性面板却已经是另一个图层。
-func sync_selection() -> void:
-	if _list == null or main == null or main.doc == null:
-		return
-	if main.selected >= 0 and main.selected < main.doc.layers.size():
-		_list.select(_doc_to_row(main.selected))
-	else:
-		_list.deselect_all()
-	_update_buttons()
+	if row >= 0 and row < _rows.size():
+		main.select_layer_path(_rows[row]["path"])
 
 
 # ---------------------------------------------------------------- 增删改
@@ -197,42 +229,66 @@ func _on_add(id: int) -> void:
 			_add_layer(Layer.make_text("文字", "文本"))
 		3:
 			_add_layer(Layer.make_particles("粒子", ""))
+		4:
+			_add_layer(Layer.make_group("容器"))
 
 
+## 选中容器时把新层加进容器，否则加到根的最上层。
 func _add_layer(layer: Dictionary) -> void:
-	main.doc.add_layer(layer)
-	main.selected = main.doc.layers.size() - 1
+	var parent := PackedInt32Array()
+	var current: Dictionary = main.selected_layer()
+	if not current.is_empty() and Layer.is_group(current):
+		parent = main.sel.duplicate()
+	var path: PackedInt32Array = main.doc.insert_layer(parent, layer)
+	main.select_layer_path(path)
 	main.apply_change(true)
 
 
 func _on_delete() -> void:
-	if main == null or main.doc == null or main.selected < 0:
+	if main == null or main.doc == null or main.sel.is_empty():
 		return
-	main.doc.remove_layer(main.selected)
-	if main.doc.layers.is_empty():
-		main.selected = -1
-	else:
-		main.selected = clampi(main.selected, 0, main.doc.layers.size() - 1)
+	var parent: PackedInt32Array = main.doc.parent_path_of(main.sel)
+	main.doc.remove_at(main.sel)
+	var siblings: Array = main.doc.siblings_at(parent)
+	var path := PackedInt32Array()
+	if not siblings.is_empty():
+		path = parent.duplicate()
+		path.append(siblings.size() - 1)
+	main.select_layer_path(path)
 	main.apply_change(true)
 
 
 func _on_move(delta: int) -> void:
-	if main == null or main.doc == null or main.selected < 0:
+	if main == null or main.doc == null or main.sel.is_empty():
 		return
-	var to: int = main.selected + delta
-	if to < 0 or to >= main.doc.layers.size():
-		return
-	main.doc.move_layer(main.selected, to)
-	main.selected = to
+	var moved: PackedInt32Array = main.doc.move_within(main.sel, delta)
+	main.select_layer_path(moved)
 	main.apply_change(true)
 
 
 func _on_toggle_visible() -> void:
-	if main == null or main.doc == null or main.selected < 0:
+	var layer: Dictionary = main.selected_layer()
+	if layer.is_empty():
 		return
-	var l: Dictionary = main.doc.layers[main.selected]
-	l["visible"] = not bool(l.get("visible", true))
+	layer["visible"] = not bool(layer.get("visible", true))
 	main.apply_change(false)
+
+
+func _on_wrap() -> void:
+	if main == null or main.doc == null or main.sel.is_empty():
+		return
+	var path: PackedInt32Array = main.doc.wrap_in_group(main.sel)
+	main.select_layer_path(path)
+	main.apply_change(true)
+
+
+func _on_unwrap() -> void:
+	if main == null or main.doc == null or main.sel.is_empty():
+		return
+	var grand: PackedInt32Array = main.doc.parent_path_of(main.doc.parent_path_of(main.sel))
+	var path: PackedInt32Array = main.doc.reparent(main.sel, grand)
+	main.select_layer_path(path)
+	main.apply_change(true)
 
 
 # ---------------------------------------------------------------- 图片导入

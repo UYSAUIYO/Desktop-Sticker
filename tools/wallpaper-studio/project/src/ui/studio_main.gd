@@ -16,11 +16,13 @@ const CanvasView = preload("res://src/ui/canvas_view.gd")
 const Inspector = preload("res://src/ui/inspector.gd")
 
 signal doc_changed
-signal selection_changed(index: int)
+signal selection_changed
 
 var doc = null                 # StudioDoc 实例（RefCounted，无类型标注是有意的）
 var project_dir := ""          # 用户工程目录（绝对路径）
-var selected := -1             # 当前选中图层的文档下标（0 = 最底层）
+## 当前选中图层的**路径**（空 = 未选）：[2] = 第 3 个根层，[2, 0] = 它的第一个子层。
+var sel := PackedInt32Array()
+var mask_edit := false         # 画布上编辑遮罩而不是元素框
 var dirty := false             # 有没有未保存的改动
 var busy := false              # 导出等阻塞操作进行中：禁止新建/打开/退出
 
@@ -104,7 +106,7 @@ func _install_fonts() -> void:
 func _set_doc(new_doc, dir_path: String) -> void:
 	doc = new_doc
 	project_dir = dir_path
-	selected = -1
+	sel = PackedInt32Array()
 	dirty = false
 	_update_window_title()
 
@@ -219,7 +221,42 @@ func apply_live() -> void:
 		return
 	dirty = true
 	if _canvas != null:
-		_canvas.apply_live(selected)
+		_canvas.apply_live(sel)
+
+
+## 当前选中的图层（未选/路径失效时返回空字典）。
+func selected_layer() -> Dictionary:
+	if doc == null or sel.is_empty():
+		return {}
+	return doc.layer_at(sel)
+
+
+## 选中图层。index 是根层下标（旧的调用方式），等价于路径 [index]。
+func select_layer(index: int) -> void:
+	if index < 0:
+		select_layer_path(PackedInt32Array())
+		return
+	select_layer_path(PackedInt32Array([index]))
+
+
+## 按路径选中（容器里的子层也能选）。空路径 = 取消选择。
+func select_layer_path(path: PackedInt32Array) -> void:
+	if doc == null:
+		return
+	if not path.is_empty() and doc.layer_at(path).is_empty():
+		path = PackedInt32Array()
+	sel = path
+	if _layers != null:
+		_layers.sync_selection()
+	_canvas_changed_selection()
+	selection_changed.emit()
+
+
+func _canvas_changed_selection() -> void:
+	if _canvas != null and _canvas.has_method("refresh_selection"):
+		_canvas.refresh_selection()
+	if _inspector != null:
+		_inspector.refresh(true)
 
 
 ## 只改了文档元信息（名称）或图层名：不需要重建画布。
@@ -237,19 +274,6 @@ func mark_dirty() -> void:
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
-
-
-func select_layer(index: int) -> void:
-	if doc == null:
-		return
-	if index < -1 or index >= doc.layers.size():
-		index = -1
-	selected = index
-	selection_changed.emit(index)
-	if _layers != null:
-		_layers.sync_selection()
-	if _inspector != null:
-		_inspector.refresh(true)
 
 
 func _refresh_all() -> void:

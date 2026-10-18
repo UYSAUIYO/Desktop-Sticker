@@ -38,13 +38,9 @@ static func export(doc, project_dir: String, out_path: String, poster_path: Stri
 
 	# 3) 拷资源。构建目录里按文件名平铺 —— 用户工程里 src 可能是 assets/a.png 这种相对路径，
 	#    平铺后不会出现 assets/assets/a.png 的嵌套。
-	for l in doc.layers:
-		var type := String(l.get("type", ""))
-		var rel := ""
-		if type == "image":
-			rel = String(l.get("src", ""))
-		elif type == "particles":
-			rel = String(l.get("texture", ""))
+	#    图层是树，所以遍历走 doc.asset_refs()（含容器里的子层与图片遮罩）。
+	for ref in doc.asset_refs():
+		var rel := String(ref["rel"])
 		if rel.is_empty():
 			continue
 		if not _copy_file(project_dir.path_join(rel), assets_abs.path_join(rel.get_file())):

@@ -1,7 +1,19 @@
 extends RefCounted
 ## 每种图层类型 -> 节点。只构造，不落盘（落盘是 exporter 的事）。
+##
+## 一个图层最终的样子（由 scene_builder 组装）：
+##
+##   layer_box（锚点 = 框，旋转/不透明度/可见性）
+##     └ 模糊链（可选，两趟 SubViewport）
+##          └ 阴影 / 描边 / 发光 副本（可选，染色副本垫在下面）
+##               └ 内容（纯色 / 图片 / 文字 / 粒子 / 容器子层）
+##
+## 遮罩与色彩类滤镜是**着色器**（见 doc/filters.gd）：遮罩吃的是画布 UV 比例，
+## 所以不栅格化、不糊、对文字同样有效。
 
 const Layer = preload("res://src/doc/layer.gd")
+const Mask = preload("res://src/doc/mask.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
 ## 时钟/日期图层的运行时脚本。
 ##
@@ -75,8 +87,8 @@ func _apply() -> void:
 "
 
 
-## 返回一个以 layer 内容为准的 Control（粒子也包一层 Control，便于统一布局与变换）。
-static func build(layer: Dictionary, project_dir: String) -> Control:
+## 内容节点：铺满自己的父级（= 图层框的内部）。粒子也包一层 Control，便于统一布局。
+static func build_content(layer: Dictionary, project_dir: String) -> Control:
 	match String(layer.get("type", "color")):
 		"image":
 			return _build_image(layer, project_dir)
@@ -184,12 +196,12 @@ static func _build_particles(layer: Dictionary, project_dir: String) -> Control:
 ## 没选贴图时的内置圆点：白色、边缘柔和。没有它的话新加的粒子图层在画布上
 ## 完全看不见，用户会以为"添加失败"。导出时这张小图会被内联进场景（几 KB）。
 static func default_particle_texture() -> Texture2D:
-	var size := 32
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	var center := Vector2(size * 0.5, size * 0.5)
-	var radius := size * 0.5
-	for y in size:
-		for x in size:
+	var px := 32
+	var img := Image.create(px, px, false, Image.FORMAT_RGBA8)
+	var center := Vector2(px * 0.5, px * 0.5)
+	var radius := px * 0.5
+	for y in px:
+		for x in px:
 			var d := Vector2(x + 0.5, y + 0.5).distance_to(center) / radius
 			var a := clampf(1.0 - d, 0.0, 1.0)
 			img.set_pixel(x, y, Color(1, 1, 1, a * a))
@@ -208,6 +220,193 @@ static func _particle_material(layer: Dictionary) -> ParticleProcessMaterial:
 	mat.gravity = Vector3(g.x, g.y, 0.0)
 	mat.scale_min = float(layer.get("scale_min", 0.4))
 	mat.scale_max = float(layer.get("scale_max", 1.0))
+	return mat
+
+
+# ---------------------------------------------------------------- 遮罩 / 滤镜
+
+## 这一层需要的材质：遮罩或色彩类滤镜 -> 着色器；只有混合模式 -> CanvasItemMaterial。
+## uv = 图层框在画布里的比例矩形；size = 图层本地像素尺寸。
+## 返回 null 表示"什么都不用挂"。
+static func style_material(layer: Dictionary, uv: Rect2, size: Vector2,
+		project_dir: String) -> Material:
+	var f: Dictionary = layer.get("filters", {})
+	var mask: Dictionary = layer.get("mask", {})
+	var mask_code := Mask.shape_code(mask)
+	var grade := Filters.needs_material(f)
+	var blend := String(layer.get("blend", "mix"))
+	if mask_code < 0 and not grade:
+		return blend_material(blend)
+
+	var shader := Shader.new()
+	shader.code = Filters.layer_shader(blend)
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	var uniforms := Filters.grade_uniforms(f, uv)
+	uniforms["screen_origin"] = Vector2.ZERO
+	uniforms["screen_size"] = Vector2.ONE
+	if mask_code >= 0:
+		var mr := Mask.uv_rect(mask, uv, size)
+		var msize := Mask.rect(mask, size).size
+		var radius := float(mask.get("radius", 0.0))
+		var feather := float(mask.get("feather", 0.0))
+		uniforms["mask_shape"] = mask_code
+		# 几何一律压成 Vector4：set_shader_parameter 收到 Rect2 会直接崩。
+		uniforms["mask_rect"] = Vector4(mr.position.x, mr.position.y, mr.size.x, mr.size.y)
+		uniforms["mask_radii"] = Vector2(
+				clampf(radius / maxf(1.0, msize.x), 0.0, 0.5),
+				clampf(radius / maxf(1.0, msize.y), 0.0, 0.5))
+		uniforms["mask_feather"] = Vector2(
+				feather / maxf(1.0, msize.x), feather / maxf(1.0, msize.y))
+		uniforms["mask_invert"] = bool(mask.get("invert", false))
+		if mask_code == 3:
+			var tex := Mask.load_texture(mask, project_dir)
+			if tex == null:
+				# 遮罩图丢了就整层遮住：明显可见的错误，比"当没设遮罩"更难漏掉。
+				var blank := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+				blank.fill(Color(0, 0, 0, 0))
+				tex = ImageTexture.create_from_image(blank)
+			uniforms["mask_tex"] = tex
+	for key in uniforms.keys():
+		mat.set_shader_parameter(key, uniforms[key])
+	return mat
+
+
+static func blend_material(blend: String) -> Material:
+	if blend == "mix":
+		return null
+	var mat := CanvasItemMaterial.new()
+	match blend:
+		"add":
+			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+		"sub":
+			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_SUB
+		"mul":
+			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_MUL
+		_:
+			# screen / overlay 等阶段 3 用自定义着色器实现，现在先当 mix 处理。
+			return null
+	return mat
+
+
+## 把材质挂到**这棵子树里所有会画东西的节点**上（含 root 自己）。
+## 粒子有自己的绘制着色器，挂 canvas_item 材质会盖掉它，所以跳过。
+## 注意 root 自己也要挂：纯色/图片/文字的内容节点就是叶子，漏掉它等于整层没生效
+## （踩过：只遍历 children，结果只有容器里的第二层才吃到滤镜）。
+static func apply_material(root: Node, mat: Material) -> void:
+	if mat == null:
+		return
+	if root is CanvasItem and not (root is GPUParticles2D):
+		(root as CanvasItem).material = mat
+	for child in root.get_children():
+		if child is GPUParticles2D:
+			continue
+		apply_material(child, mat)
+
+
+## 阴影 / 描边 / 发光：复制内容、染色、垫在下面。返回按绘制顺序排好的副本数组。
+## 粒子与容器不做副本（复制粒子会重开一套发射器；复制容器等于复制整棵子树）。
+static func effect_copies(layer: Dictionary, content: Control, size: Vector2) -> Array:
+	var f: Dictionary = layer.get("filters", {})
+	var out := []
+	if not Filters.needs_copy(f):
+		return out
+	if String(layer.get("type", "")) == "particles" or Layer.is_group(layer):
+		return out
+
+	if Filters.on(f, Filters.SHADOW):
+		var g: Dictionary = f[Filters.SHADOW]
+		out.append(_copy_tinted(content, g.get("color"), float(g.get("alpha", 0.45)),
+				Vector2(float(g.get("x", 0.0)), float(g.get("y", 0.0)))))
+	if Filters.on(f, Filters.STROKE):
+		var s: Dictionary = f[Filters.STROKE]
+		var w := float(s.get("width", 3.0))
+		if w > 0.0:
+			# 八方向各一份，凑出描边；半径大时会有轻微"重影"，但不需要额外渲染趟。
+			for dir in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
+					Vector2(0.707, 0.707), Vector2(-0.707, 0.707),
+					Vector2(0.707, -0.707), Vector2(-0.707, -0.707)]:
+				out.append(_copy_tinted(content, s.get("color"), 1.0, dir * w))
+	if Filters.on(f, Filters.GLOW):
+		var g2: Dictionary = f[Filters.GLOW]
+		var radius := float(g2.get("radius", 20.0))
+		var copy := _copy_tinted(content, g2.get("color"), float(g2.get("alpha", 0.55)),
+				Vector2.ZERO)
+		out.append(wrap_blur(copy, radius, size) if radius > 0.0 else copy)
+	return out
+
+
+static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2) -> Control:
+	var dup: Control = content.duplicate()
+	var c := Layer.to_color(color, Color.BLACK)
+	dup.modulate = Color(c.r, c.g, c.b, clampf(alpha, 0.0, 1.0))
+	# 内容节点是铺满父级的锚点节点：位移只能写 offsets，写 position 会被布局覆盖。
+	dup.offset_left += offset.x
+	dup.offset_top += offset.y
+	dup.offset_right += offset.x
+	dup.offset_bottom += offset.y
+	dup.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return dup
+
+
+## 两趟可分离高斯（水平 + 垂直），每趟一个 SubViewport。
+## 半径以**图层宽高的比例**传给着色器，所以窗口放大时视觉强度不变（不会糊成一团）。
+## stretch = true：SubViewport 尺寸跟随容器，窗口越大渲染分辨率越高。
+static func wrap_blur(content: Control, radius: float, size: Vector2) -> Control:
+	var px := Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+
+	var inner_vp := SubViewport.new()
+	inner_vp.size = px
+	inner_vp.transparent_bg = true
+	inner_vp.disable_3d = true
+	inner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	inner_vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+
+	var inner := SubViewportContainer.new()
+	inner.stretch = true
+	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	inner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	inner.add_child(inner_vp)
+	inner.material = _blur_material(radius, size, true)
+
+	var outer_vp := SubViewport.new()
+	outer_vp.size = px
+	outer_vp.transparent_bg = true
+	outer_vp.disable_3d = true
+	outer_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	outer_vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	outer_vp.add_child(inner)
+
+	var outer := SubViewportContainer.new()
+	outer.stretch = true
+	outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	outer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	outer.add_child(outer_vp)
+	outer.material = _blur_material(radius, size, false)
+
+	# 内容进内层 viewport：锚点相对 viewport 尺寸，铺满。
+	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	content.offset_left = 0.0
+	content.offset_top = 0.0
+	content.offset_right = 0.0
+	content.offset_bottom = 0.0
+	inner_vp.add_child(content)
+	return outer
+
+
+static func _blur_material(radius: float, size: Vector2, horizontal: bool) -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = Filters.blur_shader()
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	var step := Vector2.ZERO
+	# 一趟只走一个方向；7 个采样点跨度约 6 个步长，所以 step 取半径的 1/6。
+	var unit := Vector2(radius / maxf(1.0, size.x), radius / maxf(1.0, size.y)) / 6.0
+	if horizontal:
+		step = Vector2(unit.x, 0.0)
+	else:
+		step = Vector2(0.0, unit.y)
+	mat.set_shader_parameter("blur_step", step)
 	return mat
 
 

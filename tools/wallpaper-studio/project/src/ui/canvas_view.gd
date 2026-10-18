@@ -3,9 +3,13 @@ extends Control
 ##
 ## 预览走的就是导出用的那条构造路径（设计 §2.3 的不变式），所以画布上看到的
 ## 就是导出后桌面贴纸渲染出来的东西 —— 包括时钟脚本，它在这里也是真的在走。
+##
+## 交互（选中/拖动/缩放/遮罩手柄）全在 SelectionOverlay 里；这里只提供
+## "屏幕坐标 <-> 文档坐标"的换算和轻量重绘入口。
 
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
 const Frame = preload("res://src/doc/frame.gd")
+const Layer = preload("res://src/doc/layer.gd")
 const SelectionOverlay = preload("res://src/ui/selection_overlay.gd")
 
 const PADDING := 28.0
@@ -28,8 +32,8 @@ var _root: Control
 func setup(m) -> void:
 	main = m
 	if _selection != null:
-		_selection.setup(m)
-	main.selection_changed.connect(func(_i: int) -> void: _update_selection())
+		_selection.setup(main, self)
+	main.selection_changed.connect(func() -> void: _update_selection())
 
 
 func _ready() -> void:
@@ -71,11 +75,12 @@ func _ready() -> void:
 	_frame.add_theme_stylebox_override("panel", frame_style)
 	add_child(_frame)
 
-	# 选区框必须在 _frame 之上：它比画布边框更需要即时可见（拖动手柄时）。
+	# 选区框/遮罩手柄层铺满整个画布区（框和手柄都由它自己画），
+	# 放在最上层，鼠标事件也由它统一处理。
 	_selection = SelectionOverlay.new()
 	_selection.visible = false
 	if main != null:
-		_selection.setup(main)
+		_selection.setup(main, self)
 	add_child(_selection)
 
 	_hint = Label.new()
@@ -126,11 +131,11 @@ func _process(_delta: float) -> void:
 func _is_dynamic() -> bool:
 	if main == null or main.doc == null:
 		return false
-	for l in main.doc.layers:
-		var t := String(l.get("type", ""))
+	for item in main.doc.walk():
+		var t := String((item["layer"] as Dictionary).get("type", ""))
 		if t == "particles":
 			return true
-		if t == "text" and String(l.get("dynamic", "none")) != "none":
+		if t == "text" and String(item["layer"].get("dynamic", "none")) != "none":
 			return true
 	return false
 
@@ -152,24 +157,40 @@ func _fit() -> void:
 		_frame.size = canvas * s
 	_update_selection()
 	if _hint != null:
-		_hint.text = "%d × %d   ·   %d%%   ·   拖动元素可移动，拖手柄缩放（角点按住 Shift 等比）" % [
+		_hint.text = "%d × %d   ·   %d%%   ·   拖动元素移动、拖手柄缩放（角点 Shift 等比，Alt 点选容器）" % [
 			int(canvas.x), int(canvas.y), int(round(s * 100.0))]
 		_hint.reset_size()
 		_hint.position = Vector2(14.0, size.y - 24.0)
 
 
-# ---------------------------------------------------------------- 选区框
+# ---------------------------------------------------------------- 坐标换算
+
+## 屏幕像素 / 画布像素。
+func display_scale() -> float:
+	return maxf(0.0001, _scale)
+
+
+## 画布左上角在画布区里的位置。
+func container_origin() -> Vector2:
+	return _container.position
+
+
+## 屏幕点 -> 画布像素（根空间）。
+func to_canvas(screen_pos: Vector2) -> Vector2:
+	return (screen_pos - _container.position) / display_scale()
+
+
+# ---------------------------------------------------------------- 拖动中的轻量刷新
 
 ## 拖动过程中的轻量刷新：只改节点的位置/尺寸，不重建整棵树。
 ## 重建会让每个鼠标移动事件都重造一遍节点树，拖起来会一顿一顿的。
-func apply_live(index: int) -> void:
+func apply_live(path: PackedInt32Array) -> void:
 	if main == null or main.doc == null or _root == null:
 		return
-	if index < 0 or index >= main.doc.layers.size():
+	var layer: Dictionary = main.doc.layer_at(path)
+	if layer.is_empty():
 		return
-	var node := _root.get_node_or_null("layer_%d" % index)
-	if node is Control:
-		SceneBuilder.apply_frame(node, main.doc.layers[index], main.doc.canvas)
+	_apply_live_subtree(_root, layer, main.doc.parent_size(path))
 	# 静态画面平时是 UPDATE_ONCE（省电），拖动时必须重新开几帧重绘，
 	# 否则预览停在原地、看起来像"拖不动"。
 	_warmup = WARMUP_FRAMES
@@ -177,56 +198,72 @@ func apply_live(index: int) -> void:
 	_update_selection()
 
 
-## 把选中元素的框摆到它该在的屏幕位置（含旋转与节点缩放）。
+## 容器改尺寸时子层的框也变了，所以整棵子树都要同步（节点按图层 id 找）。
+func _apply_live_subtree(base: Node, layer: Dictionary, parent_size: Vector2) -> void:
+	var node := base.find_child(SceneBuilder.NODE_PREFIX + String(layer.get("id", "")),
+			true, false) as Control
+	if node == null:
+		return
+	SceneBuilder.apply_layer_node(node, layer, parent_size)
+	if Layer.is_group(layer):
+		var size := Frame.of(layer, parent_size).size
+		var kids = layer.get("children")
+		if kids is Array:
+			for child in kids:
+				if child is Dictionary:
+					_apply_live_subtree(base, child, size)
+
+
 func _update_selection() -> void:
 	if _selection == null:
 		return
-	if main == null or main.doc == null or main.selected < 0 \
-			or main.selected >= main.doc.layers.size():
-		_selection.visible = false
-		return
-	var layer: Dictionary = main.doc.layers[main.selected]
-	if not bool(layer.get("visible", true)):
-		_selection.visible = false
-		return
-	var t: Dictionary = layer.get("transform", {})
-	var sc := maxf(0.001, float(t.get("scale", 1.0)))
-	var r := Frame.of(layer, main.doc.canvas)
-	var pad := SelectionOverlay.PAD
-	# 控件框 = 可见框 + PAD 一圈；pivot 放在可见框左上角，旋转才绕元素原点转。
-	_selection.position = _container.position + r.position * _scale - Vector2(pad, pad)
-	_selection.pivot_offset = Vector2(pad, pad)
-	_selection.size = r.size * sc * _scale + Vector2(pad, pad) * 2.0
-	_selection.rotation_degrees = float(t.get("rotation", 0.0))
-	_selection.display_scale = _scale
-	_selection.node_scale = sc
-	_selection.visible = true
+	_selection.visible = main != null and not main.sel.is_empty()
 	_selection.queue_redraw()
 
 
-## 画布上点哪一层就选哪一层（从最上层往下找），空处取消选择。
-func _layer_at(screen_pos: Vector2) -> int:
+## 选中变化时由 main 调用：重画选区框/手柄。
+func refresh_selection() -> void:
+	_update_selection()
+
+
+# ---------------------------------------------------------------- 命中测试
+
+## 画布上点哪一层就选哪一层（从最上层往下、递归进容器），空处返回空路径。
+func layer_at_screen(screen_pos: Vector2) -> PackedInt32Array:
 	if main == null or main.doc == null:
-		return -1
-	var p := (screen_pos - _container.position) / maxf(0.0001, _scale)
-	for i in range(main.doc.layers.size() - 1, -1, -1):
-		var layer: Dictionary = main.doc.layers[i]
+		return PackedInt32Array()
+	return _hit_children(main.doc.layers, PackedInt32Array(), to_canvas(screen_pos),
+			Vector2(main.doc.canvas))
+
+
+func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vector2,
+		parent_size: Vector2) -> PackedInt32Array:
+	for i in range(arr.size() - 1, -1, -1):
+		var layer: Dictionary = arr[i]
 		if not bool(layer.get("visible", true)):
 			continue
-		var t: Dictionary = layer.get("transform", {})
-		if Frame.hit_test(layer, main.doc.canvas, p,
-				float(t.get("rotation", 0.0)), float(t.get("scale", 1.0))):
-			return i
-	return -1
+		var path := parent_path.duplicate()
+		path.append(i)
+		# 换算到本层 transform 所在空间（父空间）再判框。框在父空间里是轴对齐的：
+		# 图层的旋转只转内容，不改框（渲染端也是这么画的）。
+		var map := Frame.space_map(main.doc, path)
+		var local := Frame.to_space(canvas_point, map)
+		if not Frame.hit_test(layer, parent_size, local, 0.0):
+			continue
+		if Layer.is_group(layer):
+			var fr := Frame.of(layer, parent_size)
+			var inner := _hit_children(layer.get("children", []), path, canvas_point, fr.size)
+			if not inner.is_empty():
+				return inner
+		return path
+	return PackedInt32Array()
 
 
-func _gui_input(event: InputEvent) -> void:
-	if main == null or main.doc == null:
-		return
-	if not (event is InputEventMouseButton):
-		return
-	var mb := event as InputEventMouseButton
-	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
-		return
-	main.select_layer(_layer_at(mb.position))
-	accept_event()
+## Alt+点击用：命中的那一层最外层容器（拿不到就返回空）。
+func outer_group_at_screen(screen_pos: Vector2) -> PackedInt32Array:
+	var hit := layer_at_screen(screen_pos)
+	if hit.size() <= 1:
+		return hit
+	var out := PackedInt32Array()
+	out.append(hit[0])
+	return out

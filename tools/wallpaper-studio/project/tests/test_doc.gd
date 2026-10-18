@@ -98,3 +98,124 @@ func register(t) -> void:
 		t.eq(problems.size(), 1, "only the no-visible-layers problem")
 		t.ok(String(problems[0]).contains("可见图层"), "mentions visible layers")
 	)
+
+	# ---------------------------------------------------------------- 树形结构
+
+	t.case("doc_walk_reports_tree_paths", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("背景", Color.BLACK))
+		var group := Layer.make_group("容器", 400.0, 200.0)
+		group["children"] = [Layer.make_color("子", Color.WHITE)]
+		doc.add_layer(group)
+		var rows: Array = doc.walk()
+		t.eq(rows.size(), 3, "背景 + 容器 + 子层")
+		t.eq(rows[0]["path"], PackedInt32Array([0]), "第一个是根层 0")
+		t.eq(rows[1]["path"], PackedInt32Array([1]), "第二个是容器")
+		t.eq(rows[2]["path"], PackedInt32Array([1, 0]), "第三个是容器里的子层")
+		t.eq(rows[2]["depth"], 1, "子层深度 1")
+		t.eq(String(doc.layer_at(PackedInt32Array([1, 0]))["name"]), "子", "按路径取到子层")
+	)
+
+	t.case("doc_insert_into_group_and_remove", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var group := Layer.make_group("容器", 400.0, 200.0)
+		doc.add_layer(group)
+		var path: PackedInt32Array = doc.insert_layer(PackedInt32Array([0]),
+				Layer.make_color("子", Color.WHITE))
+		t.eq(path, PackedInt32Array([0, 0]), "插入到容器里，返回子路径")
+		t.eq((doc.layers[0]["children"] as Array).size(), 1, "容器有一个子层")
+		doc.remove_at(path)
+		t.eq((doc.layers[0]["children"] as Array).size(), 0, "子层被删掉")
+		doc.remove_at(PackedInt32Array([0]))
+		t.eq(doc.layers.size(), 0, "容器被删掉")
+	)
+
+	t.case("doc_move_within_siblings", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		doc.add_layer(Layer.make_color("上", Color.WHITE))
+		var moved: PackedInt32Array = doc.move_within(PackedInt32Array([0]), 1)
+		t.eq(moved, PackedInt32Array([1]), "移动后路径跟着变")
+		t.eq(String(doc.layers[1]["name"]), "底", "底图上移到最上层")
+	)
+
+	t.case("doc_reparent_keeps_screen_position", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_color("块", Color.WHITE)
+		l["transform"]["x"] = 100.0
+		l["transform"]["y"] = 50.0
+		l["transform"]["w"] = 200.0
+		l["transform"]["h"] = 100.0
+		doc.add_layer(l)
+		var group := Layer.make_group("容器", 400.0, 200.0)
+		group["transform"]["x"] = 400.0
+		group["transform"]["y"] = 300.0
+		doc.add_layer(group)
+		var path: PackedInt32Array = doc.reparent(PackedInt32Array([0]),
+				PackedInt32Array([1]))
+		var child: Dictionary = doc.layer_at(path)
+		t.approx(float(child["transform"]["x"]), -300.0, 0.001, "相对容器的新 X")
+		t.approx(float(child["transform"]["y"]), -250.0, 0.001, "相对容器的新 Y")
+		t.approx(float(child["transform"]["w"]), 200.0, 0.001, "尺寸不变")
+	)
+
+	t.case("doc_wrap_in_group_keeps_frame", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_color("块", Color.WHITE)
+		l["transform"]["x"] = 100.0
+		l["transform"]["y"] = 50.0
+		l["transform"]["w"] = 200.0
+		l["transform"]["h"] = 100.0
+		doc.add_layer(l)
+		var gpath: PackedInt32Array = doc.wrap_in_group(PackedInt32Array([0]))
+		t.eq(gpath, PackedInt32Array([0]), "容器占据原位置")
+		var group: Dictionary = doc.layer_at(gpath)
+		t.eq(String(group["type"]), "group", "新建的是容器")
+		t.eq(group["transform"]["x"], 100.0, "容器位置 = 原图层位置")
+		t.eq(group["transform"]["w"], 200.0, "容器宽 = 原图层宽")
+		var child: Dictionary = doc.layer_at(PackedInt32Array([0, 0]))
+		t.eq(child["transform"]["x"], 0.0, "子层在容器里从 0 开始")
+		t.eq(child["transform"]["w"], 200.0, "子层铺满容器")
+	)
+
+	t.case("doc_set_canvas_scales_layers", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_color("块", Color.WHITE)
+		l["transform"]["x"] = 100.0
+		l["transform"]["y"] = 50.0
+		l["transform"]["w"] = 200.0
+		l["transform"]["h"] = 100.0
+		doc.add_layer(l)
+		doc.set_canvas(Vector2i(2560, 1440), true)
+		var t2: Dictionary = doc.layers[0]["transform"]
+		t.eq(doc.canvas, Vector2i(2560, 1440), "画布换到 2K")
+		t.approx(float(t2["x"]), 200.0, 0.001, "位置按比例放大")
+		t.approx(float(t2["w"]), 400.0, 0.001, "宽按比例放大")
+	)
+
+	t.case("doc_group_resize_scales_children", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var group := Layer.make_group("容器", 400.0, 200.0)
+		var child := Layer.make_color("子", Color.WHITE)
+		child["transform"]["w"] = 200.0
+		child["transform"]["h"] = 100.0
+		group["children"] = [child]
+		doc.add_layer(group)
+		doc.set_canvas(Vector2i(1280, 1440), true)   # 只放大高度
+		var kid: Dictionary = (doc.layers[0]["children"] as Array)[0]
+		t.approx(float(kid["transform"]["w"]), 200.0, 0.001, "宽度比例 = 1，子层宽不变")
+		t.approx(float(kid["transform"]["h"]), 200.0, 0.001, "高度比例 = 2，子层高翻倍")
+	)
+
+	t.case("doc_validate_flags_missing_mask_image", func() -> void:
+		var doc = StudioDoc.create_empty("遮罩", Vector2i(1920, 1080))
+		var l := Layer.make_color("底", Color.BLACK)
+		l["mask"] = {"enabled": true, "shape": "image", "src": "gone.png"}
+		doc.add_layer(l)
+		var problems = doc.validate("user://nowhere")
+		var found := false
+		for p in problems:
+			if String(p).contains("gone.png"):
+				found = true
+		t.ok(found, "缺遮罩图要报出来")
+	)

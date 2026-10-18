@@ -1,12 +1,18 @@
 extends RefCounted
 ## 文档 -> 完整 Node 树。**预览和导出共用这一条路径**（设计 §2.3 的不变式）。
-## 阶段 1 只做 color/image/text/particles 的静态形态；时间轴与效果栈分别在阶段 2/3
-## 接入，两个接缝位置在 build() 里以注释标出。
+##
+## 图层是树（容器可以嵌套），所以这里也是递归的：每个图层一个 box，
+## box 的锚点 = 它相对父级的框；容器里的子层以容器的框为参照。
+## 于是"移动/缩放容器 -> 子元素跟着走"在运行时同样成立（锚点是比例，不是像素）。
 
 const LayerNodes = preload("res://src/build/layer_nodes.gd")
 const Frame = preload("res://src/doc/frame.gd")
+const Layer = preload("res://src/doc/layer.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
 const ROOT_NAME := "WallpaperRoot"
+## 图层节点名的前缀 + 图层 id。拖动时靠它在这棵树里定位节点（id 全局唯一）。
+const NODE_PREFIX := "L_"
 
 
 ## project_dir：用户工程目录（预览）或构建目录的 assets 目录（导出）。
@@ -33,18 +39,12 @@ static func build(doc, project_dir: String) -> Control:
 	root.add_child(bg)
 
 	# 列表顶部 = 最上层 = 最后 add_child；文档 index 0 是最底层，所以正序累加即可。
-	for i in doc.layers.size():
-		var layer: Dictionary = doc.layers[i]
-		var node = LayerNodes.build(layer, project_dir)
-		if node == null:
-			continue
-		node.name = "layer_%d" % i
-		apply_common(node, layer, doc.canvas)
-		root.add_child(node)
+	var canvas := Vector2(doc.canvas)
+	var root_uv := Rect2(Vector2.ZERO, Vector2.ONE)
+	for layer in doc.layers:
+		root.add_child(build_layer(layer, project_dir, root_uv, canvas))
 
 	# 阶段 2 的接缝：这里会调用 AnimationBuilder.compile(doc, root) 生成 AnimationPlayer。
-	# 阶段 3 的接缝：LayerNodes.build 会在 layer.effects 非空时返回 SubViewport 链
-	#               （链的第 0 趟吃原始节点），而不是原始节点本身。
 
 	# 必须做：PackedScene.pack() 会**静默丢弃** owner != 根节点的子节点
 	# （packed_scene.cpp 的 _parse_node 开头就是 `if (p_node != p_owner &&
@@ -54,6 +54,95 @@ static func build(doc, project_dir: String) -> Control:
 	return root
 
 
+## 单个图层 -> 节点。parent_uv 是父级（画布或容器）在画布里的比例矩形，
+## parent_size 是父级的设计像素尺寸。两者用来把本层的框换算成锚点与 UV。
+static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2,
+		parent_size: Vector2) -> Control:
+	var box := Control.new()
+	box.name = NODE_PREFIX + String(layer.get("id", "layer"))
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	apply_layer_node(box, layer, parent_size)
+
+	var fr := Frame.of(layer, parent_size)
+	var uv := uv_of(fr, parent_size, parent_uv)
+
+	var content: Control
+	if Layer.is_group(layer):
+		content = _build_group(layer, project_dir, uv, fr.size)
+	else:
+		content = LayerNodes.build_content(layer, project_dir)
+		content.name = "content"
+	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var stack := Control.new()
+	stack.name = "stack"
+	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for copy in LayerNodes.effect_copies(layer, content, fr.size):
+		stack.add_child(copy)
+	stack.add_child(content)
+
+	var material := LayerNodes.style_material(layer, uv, fr.size, project_dir)
+	var blur := Filters.blur_radius(layer.get("filters", {}))
+	if blur > 0.0:
+		# 模糊先渲染再调色/遮罩：材质挂在最外层容器上，那一层已经回到画布坐标，
+		# 屏幕 UV 直接就是画布比例（着色器里 screen_origin/size 用默认值即可）。
+		stack = LayerNodes.wrap_blur(stack, blur, fr.size)
+		if material != null:
+			stack.material = material
+	elif material != null:
+		if Layer.is_group(layer):
+			# 容器自己的材质不能直接挂到子层上（会盖掉子层自己的遮罩/滤镜），
+			# 所以把整棵子树渲进一个 SubViewport，材质挂在容器上。
+			stack = _wrap_viewport(stack, fr.size, material)
+		else:
+			LayerNodes.apply_material(content, material)
+
+	box.add_child(stack)
+	return box
+
+
+static func _build_group(layer: Dictionary, project_dir: String, group_uv: Rect2,
+		group_size: Vector2) -> Control:
+	var box := Control.new()
+	box.name = "group"
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.clip_contents = bool(layer.get("clip", true))
+	var kids = layer.get("children")
+	if kids is Array:
+		for child in kids:
+			if child is Dictionary:
+				box.add_child(build_layer(child, project_dir, group_uv, group_size))
+	return box
+
+
+static func _wrap_viewport(content: Control, size: Vector2, material: Material) -> Control:
+	var vp := SubViewport.new()
+	vp.name = "viewport"
+	vp.size = Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+	vp.transparent_bg = true
+	vp.disable_3d = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+
+	var cont := SubViewportContainer.new()
+	cont.name = "viewport_container"
+	cont.stretch = true
+	cont.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cont.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cont.add_child(vp)
+	cont.material = material
+
+	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	content.offset_left = 0.0
+	content.offset_top = 0.0
+	content.offset_right = 0.0
+	content.offset_bottom = 0.0
+	vp.add_child(content)
+	return cont
+
+
 ## 把整棵子树的 owner 指到 scene_root。预览时不需要，导出时是必需的。
 static func set_owner_recursive(node: Node, scene_root: Node) -> void:
 	for c in node.get_children():
@@ -61,26 +150,22 @@ static func set_owner_recursive(node: Node, scene_root: Node) -> void:
 		set_owner_recursive(c, scene_root)
 
 
-## 把通用字段（位置/尺寸 / 变换 / 可见性 / 混合模式）应用到节点上。
-static func apply_common(node: Control, layer: Dictionary, canvas: Vector2i) -> void:
-	var t: Dictionary = layer.get("transform", {})
-	apply_frame(node, layer, canvas)
-	node.scale = Vector2(float(t.get("scale", 1.0)), float(t.get("scale", 1.0)))
-	node.rotation_degrees = float(t.get("rotation", 0.0))
-	node.modulate = Color(1, 1, 1, float(t.get("opacity", 1.0)))
-	node.visible = bool(layer.get("visible", true))
-	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	apply_blend(node, String(layer.get("blend", "mix")))
+## 框在画布里的比例矩形。父级的 UV 矩形 + 本层在父级里的相对位置。
+static func uv_of(fr: Rect2, parent_size: Vector2, parent_uv: Rect2) -> Rect2:
+	var pw := maxf(1.0, parent_size.x)
+	var ph := maxf(1.0, parent_size.y)
+	return Rect2(
+		parent_uv.position + Vector2(fr.position.x / pw, fr.position.y / ph) * parent_uv.size,
+		Vector2(fr.size.x / pw, fr.size.y / ph) * parent_uv.size)
 
 
-## 位置与尺寸。显式框（transform.w/h > 0）用**锚点**表达：锚点值 = 画布像素 / 画布，
-## 于是导出的场景在任意窗口尺寸下都等比伸缩，和"铺满画布"的老图层行为一致。
-## 没有显式框的图层保持"铺满父级"的老语义（整张画布）。
-static func apply_frame(node: Control, layer: Dictionary, canvas: Vector2i) -> void:
+## 位置/尺寸/旋转/不透明度/可见性。显式框用**锚点**表达（像素 / 父级尺寸），
+## 于是导出的场景在任意窗口尺寸下都等比伸缩；没有显式框的图层保持"铺满父级"的老语义。
+static func apply_layer_node(node: Control, layer: Dictionary, parent_size: Vector2) -> void:
 	var t: Dictionary = layer.get("transform", {})
 	var explicit := float(t.get("w", 0.0)) > 0.0 and float(t.get("h", 0.0)) > 0.0
 	if explicit:
-		var a := Frame.anchors(layer, canvas)
+		var a := Frame.anchors(layer, parent_size)
 		node.anchor_left = float(a["left"])
 		node.anchor_top = float(a["top"])
 		node.anchor_right = float(a["right"])
@@ -90,23 +175,10 @@ static func apply_frame(node: Control, layer: Dictionary, canvas: Vector2i) -> v
 		node.offset_top = 0.0
 		node.offset_right = 0.0
 		node.offset_bottom = 0.0
-		return
-	node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	node.position = Frame.of(layer, canvas).position
-
-
-static func apply_blend(node: Control, blend: String) -> void:
-	if blend == "mix":
-		return
-	var mat := CanvasItemMaterial.new()
-	match blend:
-		"add":
-			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
-		"sub":
-			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_SUB
-		"mul":
-			mat.blend_mode = CanvasItemMaterial.BLEND_MODE_MUL
-		_:
-			# screen / overlay 阶段 3 用自定义着色器实现，现在先当 mix 处理。
-			return
-	node.material = mat
+	else:
+		node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		node.position = Frame.of(layer, parent_size).position
+	node.rotation_degrees = float(t.get("rotation", 0.0))
+	node.modulate = Color(1, 1, 1, float(t.get("opacity", 1.0)))
+	node.visible = bool(layer.get("visible", true))
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE

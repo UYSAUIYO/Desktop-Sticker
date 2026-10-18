@@ -1,12 +1,18 @@
 extends RefCounted
 ## 单个图层。用 Dictionary 承载（不是 class），因为 JSON 是文档的真源，
 ## 保持"文档 <-> 字典"零阻抗比类型安全更重要。
+##
+## 图层是树：`group`（容器 / 画布）可以有 children，子图层的位置尺寸都是
+## **相对父容器**的像素（见 doc/frame.gd）。所以移动/缩放容器会带着内容一起走。
+## 每个图层（含容器）都带一个 mask 与一套 filters，见 doc/mask.gd、doc/filters.gd。
 
 const StudioPaths = preload("res://src/doc/paths.gd")
+const Mask = preload("res://src/doc/mask.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
-const TYPES := ["color", "image", "text", "particles"]
+const TYPES := ["color", "image", "text", "particles", "group"]
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
-const CHANNELS := ["x", "y", "scale", "rotation", "opacity"]
+
 
 static func _base(type: String, layer_name: String) -> Dictionary:
 	return {
@@ -14,20 +20,28 @@ static func _base(type: String, layer_name: String) -> Dictionary:
 		"type": type,
 		"name": layer_name,
 		"visible": true,
-		# w / h = 0 表示"还没定过尺寸"，语义是铺满画布（见 doc/frame.gd）。
+		# w / h = 0 表示"还没定过尺寸"，语义是铺满父级（根层就是铺满画布）。
 		"transform": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0,
 				"scale": 1.0, "rotation": 0.0, "opacity": 1.0},
 		"blend": "mix",
+		"mask": Mask.defaults(),
+		"filters": Filters.defaults(),
 		"tracks": [],
 		"effects": [],
 		"script_path": "",
 		"shader_path": "",
 	}
 
+
+static func is_group(layer: Dictionary) -> bool:
+	return String(layer.get("type", "")) == "group"
+
+
 static func make_color(layer_name: String, color: Color) -> Dictionary:
 	var l := _base("color", layer_name)
 	l["color"] = color
 	return l
+
 
 static func make_image(layer_name: String, src: String) -> Dictionary:
 	var l := _base("image", layer_name)
@@ -35,6 +49,7 @@ static func make_image(layer_name: String, src: String) -> Dictionary:
 	l["fit"] = "contain"
 	l["speed"] = 1.0
 	return l
+
 
 static func make_text(layer_name: String, text: String) -> Dictionary:
 	var l := _base("text", layer_name)
@@ -45,6 +60,7 @@ static func make_text(layer_name: String, text: String) -> Dictionary:
 	l["dynamic"] = "none"
 	l["date_format"] = "%04d-%02d-%02d"
 	return l
+
 
 static func make_particles(layer_name: String, texture: String) -> Dictionary:
 	var l := _base("particles", layer_name)
@@ -58,6 +74,18 @@ static func make_particles(layer_name: String, texture: String) -> Dictionary:
 	l["scale_min"] = 0.4
 	l["scale_max"] = 1.0
 	return l
+
+
+## 容器 / 画布：一个可以嵌套的框，子图层的位置相对它。clip = 裁掉超出的部分。
+static func make_group(layer_name: String, w: float = 0.0, h: float = 0.0) -> Dictionary:
+	var l := _base("group", layer_name)
+	l["clip"] = true
+	l["children"] = []
+	if w > 0.0 and h > 0.0:
+		l["transform"]["w"] = w
+		l["transform"]["h"] = h
+	return l
+
 
 ## 把字典里缺失/类型不对的字段补成默认值。纯函数，返回新字典。
 static func normalize(raw: Dictionary) -> Dictionary:
@@ -77,6 +105,8 @@ static func normalize(raw: Dictionary) -> Dictionary:
 		var t: Dictionary = raw["transform"]
 		for k in ["x", "y", "w", "h", "rotation", "scale", "opacity"]:
 			out["transform"][k] = float(t.get(k, out["transform"][k]))
+	out["mask"] = Mask.normalize(raw.get("mask"))
+	out["filters"] = Filters.normalize(raw.get("filters"))
 	if raw.get("tracks") is Array:
 		out["tracks"] = raw["tracks"]
 	if raw.get("effects") is Array:
@@ -106,7 +136,16 @@ static func normalize(raw: Dictionary) -> Dictionary:
 			out["gravity"] = to_vec2(raw.get("gravity"), {"x": 0.0, "y": 20.0})
 			out["scale_min"] = float(raw.get("scale_min", 0.4))
 			out["scale_max"] = float(raw.get("scale_max", 1.0))
+		"group":
+			out["clip"] = bool(raw.get("clip", true))
+			var kids := []
+			if raw.get("children") is Array:
+				for item in raw["children"]:
+					if item is Dictionary:
+						kids.append(normalize(item))
+			out["children"] = kids
 	return out
+
 
 static func to_color(v, fallback: Color) -> Color:
 	if v is Color:
@@ -117,12 +156,14 @@ static func to_color(v, fallback: Color) -> Color:
 			return Color.html(s)
 	return fallback
 
+
 static func to_vec2(v, fallback: Dictionary) -> Dictionary:
 	if v is Vector2:
 		return {"x": v.x, "y": v.y}
 	if v is Dictionary:
 		return {"x": float(v.get("x", fallback["x"])), "y": float(v.get("y", fallback["y"]))}
 	return {"x": float(fallback["x"]), "y": float(fallback["y"])}
+
 
 static func as_vec2(v: Dictionary) -> Vector2:
 	return Vector2(float(v.get("x", 0.0)), float(v.get("y", 0.0)))
