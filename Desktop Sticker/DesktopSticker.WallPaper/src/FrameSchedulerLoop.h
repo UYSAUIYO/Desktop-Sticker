@@ -11,6 +11,7 @@
 
 #include "AudioEngine.h"
 #include "D3dContext.h"
+#include "MouseRelay.h"
 #include "WallPaperWindow.h"
 #include "WallpaperBackend.h"
 #include "desktopsticker/wallpaper/ClockPolicy.h"
@@ -46,6 +47,10 @@ public:
     void SetPaused(bool paused);
     bool Paused() const { return paused_.load(); }
 
+    // 鼠标交互（用户设置）。钩子只在接交互的后端打开时存在，这里只控制"要不要转发"。
+    void SetMouseInputEnabled(bool enabled) { mouseInput_.store(enabled); }
+    bool MouseInputEnabled() const { return mouseInput_.load(); }
+
     HWND Window() const { return hwnd_; }
     bool Embedded() const { return window_.Embedded(); }
     // 分区层级变化后重申壁纸窗口的底部位置
@@ -68,6 +73,7 @@ private:
 
     WallPaperWindow window_;
     D3dContext d3d_;
+    MouseRelay relay_;
     std::thread thread_;
     DWORD threadId_ = 0;
     HWND hwnd_ = nullptr;
@@ -75,6 +81,7 @@ private:
     std::atomic<bool> quit_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> running_{false};
+    std::atomic<bool> mouseInput_{true};
     std::atomic<double> speed_{1.0};
     AudioEngine* audio_ = nullptr;
     std::wstring exeDir_;

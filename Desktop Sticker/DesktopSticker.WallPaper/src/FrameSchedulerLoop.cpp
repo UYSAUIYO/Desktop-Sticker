@@ -145,6 +145,7 @@ void FrameSchedulerLoop::apply_pending_backend() {
     ctx.dcompDevice = d3d_.DCompDevice();
     ctx.setRootVisual = [this](IDCompositionVisual* v) { return d3d_.SetRootVisual(v); };
     ctx.restoreRootVisual = [this] { d3d_.RestoreRootVisual(); };
+    ctx.mouse = &relay_;
 
     auto candidate = create_backend(request.kind, request.sourcePath);
     wp_log("scheduler: creating backend (kind=" + std::to_string(static_cast<int>(request.kind)) + ")");
@@ -319,6 +320,10 @@ void FrameSchedulerLoop::thread_main(std::promise<bool> init) {
         if (quit_.load()) break;
 
         apply_pending_backend();
+
+        // 鼠标交互：把钩子线程排到的事件交给当前后端（只在渲染线程上接触后端）
+        relay_.SetEnabled(mouseInput_.load());
+        relay_.Drain(paused_.load());
 
         // 把暂停/速度的变化转发给后端（后端只在渲染线程上被调用）
         if (backend_) {

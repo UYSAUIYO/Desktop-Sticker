@@ -62,6 +62,7 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseFullscreenSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperPauseLockSwitch_{ nullptr };
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperInputSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch wallPaperUserPauseSwitch_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::ComboBox wallPaperVariantCombo_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::Slider wallPaperSpeedSlider_{ nullptr };

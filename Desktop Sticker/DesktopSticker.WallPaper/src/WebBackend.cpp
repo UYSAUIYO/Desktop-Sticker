@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <shlobj.h>
+#include <tlhelp32.h>
 
 using Microsoft::WRL::Callback;
 
@@ -54,6 +55,54 @@ struct WebView2Await {
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> env;
     Microsoft::WRL::ComPtr<ICoreWebView2CompositionController> composition;
 };
+
+// WebView2 只在"本进程拉起来的"浏览器里找宿主窗口：机器上可能还有别的 WebView2（资源监视器、
+// 其它应用），按进程名匹配会挪错窗口。
+bool is_own_webview2_process(DWORD pid) {
+    if (!pid) return false;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    const DWORD self = GetCurrentProcessId();
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    bool ours = false;
+    if (Process32FirstW(snap, &entry)) {
+        do {
+            if (entry.th32ProcessID == pid) {
+                ours = entry.th32ParentProcessID == self;
+                break;
+            }
+        } while (Process32NextW(snap, &entry));
+    }
+    CloseHandle(snap);
+    return ours;
+}
+
+struct HostSearch {
+    RECT parentRect{};
+    HWND found = nullptr;
+};
+
+BOOL CALLBACK enum_composition_host(HWND top, LPARAM param) {
+    auto* search = reinterpret_cast<HostSearch*>(param);
+    if (search->found) return FALSE;
+
+    wchar_t cls[64]{};
+    if (GetClassNameW(top, cls, static_cast<int>(std::size(cls))) == 0) return TRUE;
+    if (wcscmp(cls, L"Chrome_WidgetWin_1") != 0) return TRUE;
+
+    RECT rc{};
+    if (!GetWindowRect(top, &rc)) return TRUE;
+    // WebView2 把这个窗口摆在父窗口的位置上，所以位置是它最可靠的指纹
+    if (rc.left != search->parentRect.left || rc.top != search->parentRect.top) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(top, &pid);
+    if (!is_own_webview2_process(pid)) return TRUE;
+
+    search->found = top;
+    return FALSE;
+}
 
 } // namespace
 
@@ -212,6 +261,10 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
     apply_bounds();
     apply_audio();
 
+    // 视觉宿主拿不到系统输入：把自己登记成鼠标接收方（钩子由 WallPaper 模块统一持有）
+    relay_ = ctx.mouse;
+    if (relay_) relay_->Attach(ctx.window, this);
+
     const std::wstring url = std::wstring(L"https://") + kVirtualHost + L"/index.html";
     if (FAILED(core_->Navigate(url.c_str()))) {
         lastError_ = "navigate";
@@ -225,6 +278,11 @@ bool WebBackend::Open(const BackendRequest& request, const BackendContext& ctx) 
 }
 
 void WebBackend::Close() {
+    // 先撤钩子登记，再拆 WebView2：Detach 之后不会再有事件进来
+    if (relay_) {
+        relay_->Detach(this);
+        relay_ = nullptr;
+    }
     // 顺序要紧：先把 DComp 根换回我们自己的视觉，再放掉 WebView2 与它的视觉，
     // 否则根视觉会短暂指向一个已释放的对象
     if (visual_ && restoreRoot_) {
@@ -262,6 +320,43 @@ void WebBackend::apply_bounds() {
     const RECT bounds{ 0, 0, width_, height_ };
     controller_->put_Bounds(bounds);
     controller_->put_IsVisible(TRUE);
+
+    ensure_host_parked();
+}
+
+// WebView2 的视觉宿主（Chrome_WidgetWin_1）是**顶层**窗口：它贴在父窗口的屏幕位置上，
+// 全透明（分层属性的 alpha = 0）却照样参与命中测试。实测此时 WindowFromPoint 在任何
+// 位置都返回它 —— 整个桌面（图标 / 分区卡片 / 时钟）全都点不动，壁纸自身也拿不到
+// 转发（因为"命中桌面"的前提不成立）。把它挪到屏幕外即可：页面画面走的是我们 DComp
+// 树里的那个视觉，与这个窗口的位置无关（挪走之后画面不变，命中恢复成 SHELLDLL_DefView）。
+// 它可能被 WebView2 在导航 / 尺寸变化后摆回屏幕上，所以 Tick 里低频复查。
+void WebBackend::ensure_host_parked() {
+    if (!hwnd_ || !IsWindow(hwnd_)) return;
+
+    RECT parent{};
+    if (!GetWindowRect(hwnd_, &parent)) return;
+
+    if (!hostWindow_ || !IsWindow(hostWindow_)) {
+        HostSearch search;
+        search.parentRect = parent;
+        EnumWindows(enum_composition_host, reinterpret_cast<LPARAM>(&search));
+        if (!search.found) return;   // 还没建出来：下次再试
+        hostWindow_ = search.found;
+    }
+
+    RECT host{};
+    if (!GetWindowRect(hostWindow_, &host)) {
+        hostWindow_ = nullptr;
+        return;
+    }
+    if (host.left <= -10000) return;   // 已经在屏幕外
+
+    SetWindowPos(hostWindow_, nullptr, -32000, -32000, host.right - host.left, host.bottom - host.top,
+                 SWP_NOACTIVATE | SWP_NOZORDER);
+    if (!hostParked_) {
+        hostParked_ = true;
+        wp_log("web backend: parked the WebView2 composition host window (it covers the desktop hit-test)");
+    }
 }
 
 void WebBackend::apply_audio() {
@@ -286,6 +381,12 @@ void WebBackend::Tick() {
     if (controller_ && hwnd_ && GetClientRect(hwnd_, &rc)) {
         const int w = rc.right - rc.left;
         if (w > 0 && w != width_) apply_bounds();
+    }
+
+    // 宿主窗口可能被摆回屏幕上（导航完成、尺寸变化）：约 1 秒复查一次
+    if (++hostCheckTicks_ >= 60) {
+        hostCheckTicks_ = 0;
+        ensure_host_parked();
     }
 }
 
@@ -316,6 +417,53 @@ void WebBackend::suspend(bool want) {
     if (!pump_until([&] { return awaitSuspend->done; }, 3000)) return;
     wp_log(awaitSuspend->ok ? "web backend: suspended"
                             : "web backend: suspend refused (page still active)");
+}
+
+// ---------------------------------------------------------------------------
+// 鼠标交互
+// ---------------------------------------------------------------------------
+//
+// 视觉宿主（composition controller）拿不到系统输入：所有鼠标事件都要宿主自己
+// 通过 SendMouseInput 送进来。调用方是 MouseRelay::Drain（渲染线程），也就是
+// 创建这个控制器的同一条线程。
+void WebBackend::OnRelayMouse(const MouseRelayEvent& event) {
+    if (!composition_) return;
+
+    COREWEBVIEW2_MOUSE_EVENT_KIND kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE;
+    switch (event.kind) {
+        case RelayEventKind::Move: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE; break;
+        case RelayEventKind::Leave: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEAVE; break;
+        case RelayEventKind::LeftDown: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN; break;
+        case RelayEventKind::LeftUp: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP; break;
+        case RelayEventKind::RightDown: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN; break;
+        case RelayEventKind::RightUp: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP; break;
+        case RelayEventKind::MiddleDown: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN; break;
+        case RelayEventKind::MiddleUp: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP; break;
+        case RelayEventKind::Wheel: kind = COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL; break;
+        case RelayEventKind::HorizontalWheel:
+            kind = COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL;
+            break;
+    }
+
+    // virtualKeys 是"事件发生时按住的键"（含按键本身），不是"本事件要按的键"
+    COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS keys = COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_NONE;
+    if (event.buttons & kRelayLeft) keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_LEFT_BUTTON;
+    if (event.buttons & kRelayRight) keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_RIGHT_BUTTON;
+    if (event.buttons & kRelayMiddle) keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_MIDDLE_BUTTON;
+    if (event.shift) keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT;
+    if (event.ctrl) keys |= COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_CONTROL;
+
+    const bool wheel = event.kind == RelayEventKind::Wheel ||
+                       event.kind == RelayEventKind::HorizontalWheel;
+    const UINT32 mouseData = wheel ? static_cast<UINT32>(event.wheelDelta) : 0;
+    POINT point{ event.x, event.y };
+
+    const HRESULT hr = composition_->SendMouseInput(kind, keys, mouseData, point);
+    if (FAILED(hr) && !inputErrorLogged_) {
+        inputErrorLogged_ = true;   // 只报一次：每帧失败的日志会把 debug.log 刷满
+        wp_log("web backend: SendMouseInput failed (0x" +
+               std::to_string(static_cast<unsigned long>(hr)) + ")");
+    }
 }
 
 } // namespace desktopsticker::wallpaper

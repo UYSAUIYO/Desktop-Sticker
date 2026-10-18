@@ -70,12 +70,21 @@ bool GodotEmbeddedBackend::Open(const BackendRequest& request, const BackendCont
     }
 
     serial_ = 0;
+
+    // 场景壁纸接交互：把壁纸窗口登记成鼠标接收方（钩子由模块统一持有）
+    relay_ = ctx.mouse;
+    if (relay_) relay_->Attach(ctx.window, this);
+
     wp_log("godot backend opened: " + to_utf8(request.sourcePath) +
            " (main_scene=" + manifest.mainScene + ")");
     return true;
 }
 
 void GodotEmbeddedBackend::Close() {
+    if (relay_) {
+        relay_->Detach(this);
+        relay_ = nullptr;
+    }
     // 只停迭代并隐藏窗口；引擎与窗口保留（进程级单例，切换壁纸时复用）。
     GodotEngineHost::instance().deactivate();
 }
@@ -87,6 +96,11 @@ void GodotEmbeddedBackend::Tick() {
 
 void GodotEmbeddedBackend::SetPaused(bool paused) {
     GodotEngineHost::instance().notify_paused(paused);
+}
+
+// 渲染线程上的鼠标事件 → 引擎（Input::parse_input_event）。
+void GodotEmbeddedBackend::OnRelayMouse(const MouseRelayEvent& event) {
+    GodotEngineHost::instance().send_mouse(event);
 }
 
 } // namespace desktopsticker::wallpaper

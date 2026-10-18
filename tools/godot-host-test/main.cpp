@@ -1,4 +1,4 @@
-﻿// Desktop Sticker 场景壁纸 —— M1 宿主测试程序。
+// Desktop Sticker 场景壁纸 —— M1 宿主测试程序。
 //
 // 验证目标（对应 .zcode 计划的 M1 验收）：
 //   1) 加载我们 fork 出来的 Godot 运行库 DLL（libgodot 接口），全程无外部 Godot 进程；
@@ -34,6 +34,21 @@ using CreateFn = void *(*)(int, char **);
 using BoolFn = bool (*)(void *);
 using VoidFn = void (*)(void *);
 
+// 鼠标注入（壁纸交互）：结构与 platform/windows/dstk_embed_windows.h 的 DstkMouseInput 一致
+struct DstkMouseInput {
+	int32_t type;
+	int32_t x;
+	int32_t y;
+	int32_t relX;
+	int32_t relY;
+	int32_t button;
+	int32_t pressed;
+	int32_t wheelDelta;
+	int32_t buttonMask;
+	int32_t mods;
+};
+using InputMouseFn = void (*)(const DstkMouseInput *);
+
 static SetPresentHwndFn pfn_set_present = nullptr;
 static CreateFn pfn_create = nullptr;
 static BoolFn pfn_start = nullptr;
@@ -41,6 +56,7 @@ static BoolFn pfn_iteration = nullptr;
 static VoidFn pfn_pause = nullptr;
 static VoidFn pfn_resume = nullptr;
 static VoidFn pfn_destroy = nullptr;
+static InputMouseFn pfn_input_mouse = nullptr;
 
 // ---------------------------------------------------------------------------
 // 与壁纸模块一致的 WorkerW 查找（DesktopHost::FindWallpaperWorkerW 的精简版）
@@ -144,6 +160,8 @@ int main(int argc, char **argv) {
 	std::string dswall_path;
 	bool allow_top_level = false;
 	double auto_exit_sec = 0.0;
+	int inject_x = -1;
+	int inject_y = -1;
 
 	for (int i = 1; i < argc; ++i) {
 		if (std::strcmp(argv[i], "--dll") == 0 && i + 1 < argc) {
@@ -158,6 +176,8 @@ int main(int argc, char **argv) {
 			allow_top_level = true;
 		} else if (std::strcmp(argv[i], "--auto-exit") == 0 && i + 1 < argc) {
 			auto_exit_sec = std::atof(argv[++i]);
+		} else if (std::strcmp(argv[i], "--inject-click") == 0 && i + 1 < argc) {
+			std::sscanf(argv[++i], "%d,%d", &inject_x, &inject_y);
 		} else {
 			std::printf("[host] unknown argument: %s\n", argv[i]);
 			return 2;
@@ -237,6 +257,7 @@ int main(int argc, char **argv) {
 	pfn_pause = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_pause"));
 	pfn_resume = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_resume"));
 	pfn_destroy = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_destroy"));
+	pfn_input_mouse = reinterpret_cast<InputMouseFn>(GetProcAddress(dll, "dstk_embed_input_mouse"));
 
 	bool exports_ok = true;
 	struct {
@@ -342,6 +363,38 @@ int main(int argc, char **argv) {
 				break;
 			}
 			++frames;
+
+			// 鼠标注入：验证"宿主喂事件 → 引擎 Input → GDScript 收到"这条链路
+			if (pfn_input_mouse && inject_x >= 0) {
+				if (frames == 10) {
+					DstkMouseInput move{};
+					move.type = 0;
+					move.x = inject_x;
+					move.y = inject_y;
+					pfn_input_mouse(&move);
+					std::printf("[host] injected move (%d,%d)\n", inject_x, inject_y);
+				} else if (frames == 14) {
+					DstkMouseInput down{};
+					down.type = 1;
+					down.x = inject_x;
+					down.y = inject_y;
+					down.button = 1;   // MouseButton::LEFT
+					down.pressed = 1;
+					down.buttonMask = 1;
+					pfn_input_mouse(&down);
+					std::printf("[host] injected left-down\n");
+				} else if (frames == 18) {
+					DstkMouseInput up{};
+					up.type = 1;
+					up.x = inject_x;
+					up.y = inject_y;
+					up.button = 1;
+					up.pressed = 0;
+					up.buttonMask = 0;
+					pfn_input_mouse(&up);
+					std::printf("[host] injected left-up\n");
+				}
+			}
 		} else {
 			Sleep(16);
 		}

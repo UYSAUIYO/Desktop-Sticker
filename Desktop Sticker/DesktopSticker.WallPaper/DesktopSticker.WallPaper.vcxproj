@@ -1,4 +1,4 @@
-ï»¿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
@@ -11,12 +11,12 @@
     <RootNamespace>DesktopStickerWallPaper</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
-  <!-- WebView2ï¼šé™æ€ loaderï¼Œç†ç”±è§æ–‡ä»¶æœ«å°¾çš„ Import æ³¨é‡Š -->
+  <!-- WebView2£º¾²Ì¬ loader£¬ÀíÓÉ¼ûÎÄ¼þÄ©Î²µÄ Import ×¢ÊÍ -->
   <PropertyGroup>
     <WebView2LoaderPreference>Static</WebView2LoaderPreference>
   </PropertyGroup>
-  <!-- Vulkan å¤´æ–‡ä»¶ç”± tools/prepare_vulkan.ps1 æ‹‰å–ï¼Œåªåœ¨è·‘è¿‡ä¹‹åŽå­˜åœ¨ã€‚
-       ä¸å­˜åœ¨æ—¶è¿™ä¸ªå±žæ€§ä¸ºç©º â€”â€” ç¼–è¯‘ä¸å—å½±å“ï¼ŒVulkanBackend èµ° __has_include çš„é™çº§åˆ†æ”¯ã€‚ -->
+  <!-- Vulkan Í·ÎÄ¼þÓÉ tools/prepare_vulkan.ps1 À­È¡£¬Ö»ÔÚÅÜ¹ýÖ®ºó´æÔÚ¡£
+       ²»´æÔÚÊ±Õâ¸öÊôÐÔÎª¿Õ ¡ª¡ª ±àÒë²»ÊÜÓ°Ïì£¬VulkanBackend ×ß __has_include µÄ½µ¼¶·ÖÖ§¡£ -->
   <PropertyGroup>
     <DstkVulkanInclude Condition="Exists('$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Hpp\vulkan\vulkan.hpp')">$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Hpp;$(ProjectDir)..\..\tools\vulkan-sdk\Vulkan-Headers\include;</DstkVulkanInclude>
   </PropertyGroup>
@@ -129,6 +129,7 @@
     <ClInclude Include="src\VideoSource.h" />
     <ClInclude Include="src\WallPaperStore.h" />
     <ClInclude Include="src\WallPaperWindow.h" />
+    <ClInclude Include="src\MouseRelay.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -155,13 +156,14 @@
     <ClCompile Include="src\WallPaperModule.cpp" />
     <ClCompile Include="src\WallPaperStore.cpp" />
     <ClCompile Include="src\WallPaperWindow.cpp" />
+    <ClCompile Include="src\MouseRelay.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <!-- â‘¢ Web å£çº¸åŽç«¯ï¼šåªå–åŒ…å«ç›®å½•ä¸Ž loaderã€‚
-         ç”¨ Static loaderï¼ˆè§ä¸Šé¢çš„ WebView2LoaderPreferenceï¼‰æ˜¯åˆ»æ„çš„ï¼šæœ¬ DLL ç”±å®¿ä¸»
-         LoadLibrary åŠ¨æ€åŠ è½½ï¼Œå¤šä¸€ä¸ª WebView2Loader.dll çš„å¯¼å…¥ä¾èµ–ä¼šè®©"ç¼ºè¿™ä¸ªæ–‡ä»¶"
-         å‡çº§æˆ"æ•´ä¸ªå£çº¸æ¨¡å—ä¸å¯ç”¨"ï¼Œè€Œç¼º WebView2 è¿è¡Œæ—¶åªè¯¥è®© â‘¢ ä¸å¯ç”¨ã€‚ -->
+    <!-- ¢Û Web ±ÚÖ½ºó¶Ë£ºÖ»È¡°üº¬Ä¿Â¼Óë loader¡£
+         ÓÃ Static loader£¨¼ûÉÏÃæµÄ WebView2LoaderPreference£©ÊÇ¿ÌÒâµÄ£º±¾ DLL ÓÉËÞÖ÷
+         LoadLibrary ¶¯Ì¬¼ÓÔØ£¬¶àÒ»¸ö WebView2Loader.dll µÄµ¼ÈëÒÀÀµ»áÈÃ"È±Õâ¸öÎÄ¼þ"
+         Éý¼¶³É"Õû¸ö±ÚÖ½Ä£¿é²»¿ÉÓÃ"£¬¶øÈ± WebView2 ÔËÐÐÊ±Ö»¸ÃÈÃ ¢Û ²»¿ÉÓÃ¡£ -->
     <Import Project="$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('$(ProjectDir)..\packages\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets')" />
   </ImportGroup>
 </Project>

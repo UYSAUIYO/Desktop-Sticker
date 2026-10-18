@@ -71,6 +71,10 @@ struct WallPaperSettings {
     float audioVolume = 1.0f;
     // 解码/渲染路径（自动 / FFmpeg+Vulkan 硬解 / MF+D3D11 硬解 / 纯 CPU）
     DecodePath decodePath = DecodePath::Auto;
+    // 允许鼠标与壁纸交互（场景 / 网页壁纸有效，其它类型无所谓）。
+    // 开：空白桌面上的点击/移动/滚轮转发给壁纸，并吞掉桌面侧的响应
+    //（代价：双击桌面空白切换"干净桌面"的手势会被壁纸吃掉）。
+    bool interactiveInput = true;
 };
 
 } // namespace desktopsticker

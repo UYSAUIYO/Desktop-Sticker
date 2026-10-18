@@ -115,6 +115,8 @@ PersistedState WallPaperStore::LoadState() const {
             state.settings.audioVolume = s.value("audioVolume", 1.0f);
             state.settings.decodePath =
                 decode_path_from_string(s.value("decodePath", std::string("auto")));
+            // 老配置里没有这一项：默认开（场景/网页壁纸开箱即可交互）
+            state.settings.interactiveInput = s.value("interactiveInput", true);
         }
         if (j.contains("storage")) {
             const auto& st = j["storage"];
@@ -145,6 +147,7 @@ bool WallPaperStore::SaveState(const PersistedState& state) const {
         {"audioEnabled", state.settings.audioEnabled},
         {"audioVolume", state.settings.audioVolume},
         {"decodePath", decode_path_to_string(state.settings.decodePath)},
+        {"interactiveInput", state.settings.interactiveInput},
     };
     j["storage"] = {
         {"root", to_utf8(state.storage.root)},

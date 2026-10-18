@@ -21,10 +21,11 @@ namespace desktopsticker::wallpaper {
 //   · 页面跑在 WebView2 自带的沙箱进程里，**不注入任何宿主对象**；只能通过虚拟主机
 //     访问自己条目目录下的 web\ 资源。
 //   · DevTools / 右键菜单 / 状态栏 / 快捷键一律关掉 —— 这是壁纸，不是浏览器。
-//   · 不吃输入（壁纸窗口本就 HTTRANSPARENT），因此不接 SendMouseInput。
+//   · 视觉宿主拿不到系统输入：鼠标由宿主的低级钩子捕获后经 SendMouseInput 送进来
+//     （见 MouseRelay.h），这样壁纸才能"点得动"。
 //   · 调速不适用：页面动画节奏由它自己的 requestAnimationFrame 决定，我们唯一的杠杆
 //     是挂起（暂停时 TrySuspend 真正释放 CPU/GPU）。
-class WebBackend final : public IWallpaperBackend {
+class WebBackend final : public IWallpaperBackend, public IMouseSink {
 public:
     ~WebBackend() override { Close(); }
 
@@ -45,10 +46,16 @@ public:
     BackendKind Kind() const override { return BackendKind::Web; }
     const char* LastError() const { return lastError_.c_str(); }
 
+    // 渲染线程上的鼠标事件（来自 MouseRelay::Drain）
+    void OnRelayMouse(const MouseRelayEvent& event) override;
+
 private:
     void apply_bounds();
     void apply_audio();
     void suspend(bool want);
+    // WebView2 的视觉宿主窗口是**顶层**的透明窗口，会盖住整个桌面的命中测试；
+    // 把它挪到屏幕外（画面走我们自己的 DComp 视觉，不受影响）。
+    void ensure_host_parked();
 
     HWND hwnd_ = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> env_;
@@ -59,10 +66,15 @@ private:
     IDCompositionDevice* dcompDevice_ = nullptr;
     std::function<void()> restoreRoot_;
     AudioEngine* audio_ = nullptr;
+    MouseRelay* relay_ = nullptr;
+    HWND hostWindow_ = nullptr;   // WebView2 视觉宿主窗口（见 ensure_host_parked）
+    int hostCheckTicks_ = 0;
+    bool hostParked_ = false;
     int width_ = 0;
     int height_ = 0;
     bool muted_ = true;
     bool paused_ = false;
+    bool inputErrorLogged_ = false;
     std::string lastError_;
 };
 

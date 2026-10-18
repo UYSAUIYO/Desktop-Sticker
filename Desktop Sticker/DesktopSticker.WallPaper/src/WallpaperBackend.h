@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "AudioEngine.h"
+#include "MouseRelay.h"    // 鼠标交互：自呈现型后端把自己登记成 sink
 #include "VideoSource.h"   // VideoFrame：产帧型的结果（CPU BGRA 或 GPU NV12 纹理）
 #include "desktopsticker/wallpaper/Types.h"
 
@@ -33,6 +34,10 @@ struct BackendContext {
     IDCompositionDevice* dcompDevice = nullptr;
     std::function<bool(IDCompositionVisual*)> setRootVisual;
     std::function<void()> restoreRootVisual;
+
+    // 鼠标交互（可以接交互的后端在 Open 里 Attach，Close 里 Detach）。
+    // 事件只在渲染线程上回调 —— 与本契约的其它方法同一条线程。
+    MouseRelay* mouse = nullptr;
 };
 
 struct BackendRequest {

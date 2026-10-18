@@ -90,3 +90,7 @@ tools/godot/
 tools/vulkan-sdk/
 tools/shaderc/
 tools/glslang-src/
+
+# Godot 工程缓存（probe / host harness 导出时生成，不提交）
+tools/godot-host-test/probe/.godot/
+

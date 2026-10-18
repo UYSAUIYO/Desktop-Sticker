@@ -219,4 +219,10 @@ inline bool backend_kind_is_self_presenting(BackendKind k) {
     return k == BackendKind::Web || k == BackendKind::Shader3D;
 }
 
+// 鼠标交互：网页与场景壁纸能接（视频/动图/图片序列没有可交互对象）。
+// 注意 Shader3D 里的 Vulkan 内置场景不吃这些事件，只有 Godot 场景包会用到。
+inline bool backend_kind_supports_interaction(BackendKind k) {
+    return k == BackendKind::Web || k == BackendKind::Shader3D;
+}
+
 } // namespace desktopsticker::wallpaper

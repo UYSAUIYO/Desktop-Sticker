@@ -12,6 +12,8 @@
 
 #include <string>
 
+#include "MouseRelay.h"
+
 namespace desktopsticker::wallpaper {
 
 class GodotEngineHost {
@@ -34,6 +36,11 @@ public:
 
     // 暂停/恢复：向引擎发应用级通知（真正冻结靠调用方停止 tick）。
     void notify_paused(bool paused);
+
+    // 鼠标交互：把一条转发事件交给引擎（宿主的低级钩子 → 这里 → Input::parse_input_event）。
+    // 运行库缺少注入接口时返回 false（旧运行库仍能放壁纸，只是不能交互）。
+    bool send_mouse(const MouseRelayEvent& event);
+    bool mouse_input_available() const { return fn_input_mouse_ != nullptr; }
 
     bool active() const { return active_; }
 
@@ -72,6 +79,7 @@ private:
     void (*fn_resume_)(void*) = nullptr;
     void (*fn_destroy_)(void*) = nullptr;
     bool (*fn_load_pack_)(void*, const char*, const char*) = nullptr;
+    void (*fn_input_mouse_)(const struct DstkMouseInput*) = nullptr;
 };
 
 } // namespace desktopsticker::wallpaper

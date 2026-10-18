@@ -815,6 +815,13 @@ void SettingsController::EnsureWindow() {
               wallPaperPauseLockSwitch_);
     wallPaperPauseLockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
 
+    wallPaperInputSwitch_ = ToggleSwitch();
+    placeProp(makePropCard(wallPaperGroup, L"\uE962", L"鼠标交互",
+                           L"场景/网页壁纸可以接收鼠标（开关、拖动、滚轮）。开启时点击桌面不再拖出选择框，"
+                           L"双击桌面空白也不再切换干净桌面"),
+              wallPaperInputSwitch_);
+    wallPaperInputSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
+
     wallPaperUserPauseSwitch_ = ToggleSwitch();
     placeProp(makePropCard(wallPaperGroup, L"\uE769", L"手动暂停",
                            L"临时停止播放，不影响其他设置"),
@@ -1036,6 +1043,7 @@ void SettingsController::RefreshWallPaperControls() {
     wallPaperSwitch_.IsEnabled(available);
     if (wallPaperPauseFullscreenSwitch_) wallPaperPauseFullscreenSwitch_.IsEnabled(available);
     if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsEnabled(available);
+    if (wallPaperInputSwitch_) wallPaperInputSwitch_.IsEnabled(available);
     if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsEnabled(available);
     if (wallPaperVariantCombo_) wallPaperVariantCombo_.IsEnabled(available);
     if (wallPaperSpeedSlider_) wallPaperSpeedSlider_.IsEnabled(available);
@@ -1069,6 +1077,7 @@ void SettingsController::RefreshWallPaperControls() {
     wallPaperSwitch_.IsOn(settings.enabled);
     if (wallPaperPauseFullscreenSwitch_) wallPaperPauseFullscreenSwitch_.IsOn(settings.pauseOnFullscreen);
     if (wallPaperPauseLockSwitch_) wallPaperPauseLockSwitch_.IsOn(settings.pauseOnLock);
+    if (wallPaperInputSwitch_) wallPaperInputSwitch_.IsOn(settings.interactiveInput);
     if (wallPaperUserPauseSwitch_) wallPaperUserPauseSwitch_.IsOn(wp->IsUserPaused());
     if (wallPaperVariantCombo_) {
         const int index = settings.preferred == VariantKind::PowerSaver ? 2
@@ -1124,6 +1133,11 @@ void SettingsController::RefreshWallPaperControls() {
         if (wallPaperAudioSwitch_) wallPaperAudioSwitch_.IsEnabled(audioOk);
         if (wallPaperVolumeSlider_) {
             wallPaperVolumeSlider_.IsEnabled(audioOk && activeKind == BackendKind::Video);
+        }
+        // 只有场景/网页壁纸有可交互对象；视频之类的开关置灰
+        if (wallPaperInputSwitch_) {
+            wallPaperInputSwitch_.IsEnabled(
+                desktopsticker::wallpaper::backend_kind_supports_interaction(activeKind));
         }
     }
 
@@ -1343,6 +1357,7 @@ void SettingsController::SaveWallPaper() {
     if (wallPaperSwitch_) settings.enabled = wallPaperSwitch_.IsOn();
     if (wallPaperPauseFullscreenSwitch_) settings.pauseOnFullscreen = wallPaperPauseFullscreenSwitch_.IsOn();
     if (wallPaperPauseLockSwitch_) settings.pauseOnLock = wallPaperPauseLockSwitch_.IsOn();
+    if (wallPaperInputSwitch_) settings.interactiveInput = wallPaperInputSwitch_.IsOn();
     if (wallPaperVariantCombo_) {
         const int index = wallPaperVariantCombo_.SelectedIndex();
         settings.preferred = index == 2 ? VariantKind::PowerSaver

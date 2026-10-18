@@ -6,7 +6,9 @@ namespace desktopsticker::wallpaper {
 
 // .dswall 场景壁纸：由进程内嵌的 Godot 运行库渲染（无外部 Godot 程序、无独立渲染窗口）。
 // 自呈现型：引擎在自己的交换链上呈现到宿主提供的壁纸窗口，D3dContext 让位。
-class GodotEmbeddedBackend final : public IWallpaperBackend {
+// 鼠标：引擎嵌入时不会子类化宿主窗口，所以由 MouseRelay 钩子把事件喂进引擎
+//       （运行库的 dstk_embed_input_mouse）。
+class GodotEmbeddedBackend final : public IWallpaperBackend, public IMouseSink {
 public:
     ~GodotEmbeddedBackend() override { Close(); }
 
@@ -23,8 +25,11 @@ public:
     BackendKind Kind() const override { return BackendKind::Shader3D; }
     uint32_t FrameSerial() const override { return serial_; }
 
+    void OnRelayMouse(const MouseRelayEvent& event) override;
+
 private:
     uint32_t serial_ = 0;
+    MouseRelay* relay_ = nullptr;
 };
 
 } // namespace desktopsticker::wallpaper

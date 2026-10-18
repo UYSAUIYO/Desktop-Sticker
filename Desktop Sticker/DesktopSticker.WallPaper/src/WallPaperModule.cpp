@@ -227,6 +227,8 @@ bool WallPaperModuleImpl::Start() {
     }
 
     available_ = true;
+    // 鼠标交互设置对"之后的每次播放"都生效（钩子只随可交互后端装上）
+    loop_.SetMouseInputEnabled(state_.settings.interactiveInput);
     start_monitor();
 
     // 热应用收件箱：确保目录存在，启动轮询线程（启动时会先补处理一批积压的包）。
@@ -398,6 +400,8 @@ bool WallPaperModuleImpl::SetSettings(const WallPaperSettings& settings) {
         audio_.SetSpeed(settings.speed);
         loop_.SetSpeed(settings.speed);
     }
+    // 鼠标交互是热设置：关掉后钩子立刻放行，不用重开后端
+    loop_.SetMouseInputEnabled(settings.interactiveInput);
     (void)previousAudio;
     (void)previousVolume;
 
