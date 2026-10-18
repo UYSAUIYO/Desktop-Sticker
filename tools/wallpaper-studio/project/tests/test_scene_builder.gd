@@ -2,16 +2,16 @@ extends RefCounted
 ## 场景构造的用例。重点验证"预览与导出走同一条构造路径"这条不变式的前半段：
 ## 文档 -> 节点树的结构正确。
 ##
-## 节点形状：每个图层一个 box（名字 L_<id>，锚点 = 框），box 里是 stack/content。
-## 容器多一层 group；模糊会插两趟 SubViewportContainer。所以断言都按"找名字"来写，
-## 不要在用例里写死第几层孩子 —— 那层数已经改过两次了。
+## 节点形状：每个内容图层一个 box（名字 L_<id>，锚点 = 框），box 里是 content；
+## 效果图层（遮罩/滤镜）把覆盖到的兄弟节点收进一个合成节点（名字也换成 L_<id>），
+## 所以"被覆盖的图层"不再是根的直接孩子。断言都按"找名字"来写，
+## 不要在用例里写死第几层孩子 —— 那层数已经改过三次了。
 ##
 ## 注意：Node 不会被自动释放，每个用例末尾要 free()，否则引擎退出时会刷泄漏。
 
 const StudioDoc = preload("res://src/doc/doc.gd")
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
 const Layer = preload("res://src/doc/layer.gd")
-const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 
 
@@ -246,70 +246,119 @@ func register(t) -> void:
 		root.free()
 	)
 
-	t.case("builder_mask_becomes_shader_material", func() -> void:
+	t.case("builder_mask_layer_wraps_covered_layers", func() -> void:
 		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
 		var l := Layer.make_color("底", Color.WHITE)
 		l["transform"]["w"] = 640.0
 		l["transform"]["h"] = 360.0
-		l["mask"] = Mask.normalize({"enabled": true, "shape": "ellipse",
-				"x": 0.0, "y": 0.0, "w": 320.0, "h": 180.0, "feather": 12.0})
 		doc.add_layer(l)
+		var m := Layer.make_mask("遮罩")
+		m["shape"] = "ellipse"
+		m["transform"]["w"] = 320.0
+		m["transform"]["h"] = 180.0
+		doc.add_layer(m)
 		var root = _build(doc)
-		var mat = _content(root, 0).material
+		# 背景 + 合成节点：被遮罩的那层已经收进合成里，不再是根的直接孩子。
+		t.eq(root.get_child_count(), 2, "背景 + 合成节点")
+		var comp := root.get_child(1) as Control
+		t.eq(String(comp.name), "L_" + String(m["id"]), "合成节点用遮罩层的 id 命名")
+		t.ok(comp is SubViewportContainer, "遮罩把内容合成进 SubViewport")
+		var mat = comp.material
 		t.ok(mat is ShaderMaterial, "遮罩挂上着色器材质")
 		t.eq(int((mat as ShaderMaterial).get_shader_parameter("mask_shape")), 2, "椭圆 = 2")
 		var rect: Vector4 = (mat as ShaderMaterial).get_shader_parameter("mask_rect")
-		# 图层框 640x360 在 1280x720 画布里占一半；遮罩占图层的一半 -> 画布的 1/4。
+		# 遮罩框是画布坐标 320x180 / 1280x720。
 		t.approx(rect.z, 0.25, 0.0001, "遮罩 UV 宽 = 画布的 1/4")
 		t.approx(rect.w, 0.25, 0.0001, "遮罩 UV 高 = 画布的 1/4")
+		var covered: Control = comp.find_child("covered", true, false)
+		t.ok(covered != null, "合成节点里有被覆盖的图层")
+		if covered != null:
+			t.eq(covered.get_child_count(), 1, "一层内容进了合成")
 		root.free()
 	)
 
-	t.case("builder_color_filter_sets_uniforms", func() -> void:
+	t.case("builder_filter_layer_sets_uniforms", func() -> void:
 		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
-		var l := Layer.make_color("底", Color.WHITE)
-		var f := Filters.normalize({})
-		f[Filters.COLOR]["enabled"] = true
-		f[Filters.COLOR]["brightness"] = 0.25
-		l["filters"] = f
-		doc.add_layer(l)
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("调色")
+		fl["filters"][Filters.COLOR]["enabled"] = true
+		fl["filters"][Filters.COLOR]["brightness"] = 0.25
+		doc.add_layer(fl)
 		var root = _build(doc)
-		var mat = _content(root, 0).material
-		t.ok(mat is ShaderMaterial, "色彩滤镜挂上着色器材质")
-		t.approx(float((mat as ShaderMaterial).get_shader_parameter("brightness")), 0.25,
-				0.0001, "亮度写进 uniform")
+		var comp := root.get_child(1) as Control
+		t.ok(comp is SubViewportContainer, "调色也要先合成")
+		t.ok(comp.material is ShaderMaterial, "色彩滤镜挂上着色器材质")
+		t.approx(float((comp.material as ShaderMaterial).get_shader_parameter("brightness")),
+				0.25, 0.0001, "亮度写进 uniform")
 		root.free()
 	)
 
-	t.case("builder_blur_wraps_two_viewports", func() -> void:
+	t.case("builder_filter_layer_blur_wraps_two_viewports", func() -> void:
 		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
-		var l := Layer.make_color("底", Color.WHITE)
-		l["transform"]["w"] = 640.0
-		l["transform"]["h"] = 360.0
-		var f := Filters.normalize({})
-		f[Filters.BLUR]["enabled"] = true
-		f[Filters.BLUR]["radius"] = 24.0
-		l["filters"] = f
-		doc.add_layer(l)
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("模糊")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		fl["filters"][Filters.BLUR]["radius"] = 24.0
+		doc.add_layer(fl)
 		var root = _build(doc)
-		var box := _box(root, 0)
-		var containers := box.find_children("*", "SubViewportContainer", true, false)
-		t.eq(containers.size(), 2, "两趟（水平 + 垂直）")
-		t.ok(containers[0].material is ShaderMaterial, "模糊容器有着色器")
+		var comp := root.get_child(1) as Control
+		var inner := comp.find_children("*", "SubViewportContainer", true, false)
+		t.eq(inner.size() + (1 if comp is SubViewportContainer else 0), 2,
+				"两趟（水平 + 垂直）")
+		t.ok(comp.material is ShaderMaterial, "模糊容器有着色器")
+		t.ok((comp.material as ShaderMaterial).shader.code.contains("blur_step"),
+				"挂的是模糊着色器")
 		root.free()
 	)
 
-	t.case("builder_shadow_adds_copy_below_content", func() -> void:
+	t.case("builder_filter_shadow_copies_covered_content", func() -> void:
 		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
-		var l := Layer.make_color("底", Color.WHITE)
-		var f := Filters.normalize({})
-		f[Filters.SHADOW]["enabled"] = true
-		l["filters"] = f
-		doc.add_layer(l)
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("阴影")
+		fl["filters"][Filters.SHADOW]["enabled"] = true
+		doc.add_layer(fl)
 		var root = _build(doc)
-		var stack: Control = _box(root, 0).find_child("stack", true, false)
-		# 阴影副本 + 内容本身
-		t.eq(stack.get_child_count(), 2, "一份阴影副本垫在内容下面")
-		t.approx((stack.get_child(0) as Control).modulate.a, 0.45, 0.01, "阴影用 alpha 染色")
+		# 只开阴影时不需要逐像素合成，合成节点就是那个 stack。
+		var comp := root.get_child(1) as Control
+		t.eq(comp.get_child_count(), 2, "一份阴影副本垫在内容下面")
+		t.approx((comp.get_child(0) as Control).modulate.a, 0.45, 0.01, "阴影用 alpha 染色")
+		root.free()
+	)
+
+	t.case("builder_hidden_effect_layer_does_nothing", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var m := Layer.make_mask("遮罩")
+		m["visible"] = false
+		doc.add_layer(m)
+		var root = _build(doc)
+		t.eq(root.get_child_count(), 2, "背景 + 原图层（没有合成节点）")
+		t.eq(_box(root, 0).material, null, "隐藏的效果层不留材质")
+		root.free()
+	)
+
+	t.case("builder_effect_with_nothing_below_is_skipped", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_mask("孤零零的遮罩"))
+		var root = _build(doc)
+		t.eq(root.get_child_count(), 1, "只有背景")
+		root.free()
+	)
+
+	t.case("builder_effect_cover_count_limits_layers", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		doc.add_layer(Layer.make_color("中", Color.GRAY))
+		doc.add_layer(Layer.make_color("上", Color.WHITE))
+		var fl := Layer.make_filter("只盖两层")
+		fl["cover"] = {"mode": "count", "count": 2}
+		fl["filters"][Filters.POSTERIZE]["enabled"] = true
+		doc.add_layer(fl)
+		var root = _build(doc)
+		# 背景 + 底图 + 合成（中、上两层被覆盖）
+		t.eq(root.get_child_count(), 3, "最底下那层没被覆盖")
+		var comp := root.get_child(2) as Control
+		var covered: Control = comp.find_child("covered", true, false)
+		t.eq(covered.get_child_count() if covered != null else 0, 2, "合成里恰好两层")
 		root.free()
 	)

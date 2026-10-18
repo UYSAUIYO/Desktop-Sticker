@@ -209,9 +209,11 @@ func register(t) -> void:
 
 	t.case("doc_validate_flags_missing_mask_image", func() -> void:
 		var doc = StudioDoc.create_empty("遮罩", Vector2i(1920, 1080))
-		var l := Layer.make_color("底", Color.BLACK)
-		l["mask"] = {"enabled": true, "shape": "image", "src": "gone.png"}
-		doc.add_layer(l)
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		var m := Layer.make_mask("遮罩层")
+		m["shape"] = "image"
+		m["src"] = "gone.png"
+		doc.add_layer(m)
 		var problems = doc.validate("user://nowhere")
 		var found := false
 		for p in problems:
@@ -219,3 +221,87 @@ func register(t) -> void:
 				found = true
 		t.ok(found, "缺遮罩图要报出来")
 	)
+
+	t.case("doc_validate_counts_effect_layers_as_no_content", func() -> void:
+		var doc = StudioDoc.create_empty("只有遮罩", Vector2i(1920, 1080))
+		doc.add_layer(Layer.make_mask("遮罩层"))
+		var problems = doc.validate("user://nowhere")
+		t.eq(problems.size(), 1, "只有一条问题")
+		t.ok(String(problems[0]).contains("可见图层"), "效果层不算可见内容")
+	)
+
+	# ---------------------------------------------------------------- 遮罩 / 滤镜（效果图层）
+
+	t.case("doc_legacy_mask_and_filters_become_effect_layers", func() -> void:
+		# 老文档把遮罩/滤镜挂在图层自己身上；加载时拆成紧跟其上的效果图层，
+		# 覆盖层数 = 1，画出来的效果不变。
+		var text := '{"format_version":1,"canvas":{"width":1280,"height":720},"layers":['
+		text += '{"type":"color","name":"底","transform":{"x":100,"y":50,"w":640,"h":360},'
+		text += '"mask":{"enabled":true,"shape":"rounded","w":320,"h":180,"radius":30},'
+		text += '"filters":{"color":{"enabled":true,"brightness":0.25}}}]}'
+		var parsed: Dictionary = StudioDoc.parse(text)
+		t.eq(parsed.ok, true, "老文档能打开: " + String(parsed.error))
+		var doc = parsed.doc
+		t.eq(doc.layers.size(), 3, "底图 + 遮罩层 + 滤镜层")
+		t.eq(String(doc.layers[1]["type"]), "mask", "遮罩变成独立图层")
+		t.eq(String(doc.layers[2]["type"]), "filter", "滤镜变成独立图层")
+		t.eq(Layer.cover_count(doc.layers[1]), 1, "遮罩只覆盖下面那一层")
+		t.eq(float(doc.layers[1]["transform"]["x"]), 100.0, "遮罩框 = 图层位置 + 遮罩偏移")
+		t.eq(float(doc.layers[1]["transform"]["w"]), 320.0, "遮罩宽保留")
+		t.eq(String(doc.layers[1]["shape"]), "rounded", "形状保留")
+		t.approx(float(doc.layers[2]["filters"]["color"]["brightness"]), 0.25, 0.0001,
+				"滤镜参数保留")
+		t.eq(doc.layers[0].has("mask"), false, "图层自己不再带 mask 字段")
+		t.eq(doc.layers[0].has("filters"), false, "图层自己不再带 filters 字段")
+	)
+
+	t.case("doc_effect_layer_roundtrip", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		var m := Layer.make_mask("遮罩")
+		m["shape"] = "ellipse"
+		m["cover"] = {"mode": "count", "count": 2}
+		doc.add_layer(m)
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"]["blur"]["enabled"] = true
+		fl["filters"]["blur"]["radius"] = 9.0
+		doc.add_layer(fl)
+		var parsed: Dictionary = StudioDoc.parse(doc.to_text())
+		t.eq(parsed.ok, true, "读回: " + String(parsed.error))
+		var back = parsed.doc
+		t.eq(back.layers.size(), 3, "三层都在")
+		t.eq(String(back.layers[1]["shape"]), "ellipse", "遮罩形状")
+		t.eq(Layer.cover_count(back.layers[1]), 2, "覆盖层数")
+		t.approx(float(back.layers[2]["filters"]["blur"]["radius"]), 9.0, 0.0001,
+				"模糊半径")
+	)
+
+	t.case("doc_cover_span_all_and_count", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		for i in 3:
+			doc.add_layer(Layer.make_color("层%d" % i, Color.BLACK))
+		var m := Layer.make_mask("遮罩")
+		doc.add_layer(m)
+		t.eq(doc.covered_count(PackedInt32Array([3])), 3, "覆盖下方全部 3 层")
+		doc.layers[3]["cover"] = {"mode": "count", "count": 2}
+		t.eq(doc.covered_count(PackedInt32Array([3])), 2, "只覆盖紧邻的 2 层")
+		t.eq(doc.cover_span(PackedInt32Array([3])), Vector2i(1, 3), "区间是 [1, 3)")
+		doc.layers[3]["cover"] = {"mode": "count", "count": 99}
+		t.eq(doc.covered_count(PackedInt32Array([3])), 3, "层数超过兄弟数就退化成全部")
+	)
+
+	t.case("doc_cover_span_skips_hidden_effect_layers", func() -> void:
+		# 隐藏的效果层不生效，也就不占"被覆盖层数"的名额（和场景构造一致）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.BLACK))
+		var hidden := Layer.make_mask("隐藏遮罩")
+		hidden["visible"] = false
+		doc.add_layer(hidden)
+		doc.add_layer(Layer.make_color("上", Color.WHITE))
+		var fl := Layer.make_filter("滤镜")
+		fl["cover"] = {"mode": "count", "count": 1}
+		doc.add_layer(fl)
+		t.eq(doc.covered_count(PackedInt32Array([3])), 1, "只覆盖上那一层")
+		t.eq(doc.cover_span(PackedInt32Array([3])), Vector2i(2, 3), "跳过隐藏的遮罩层")
+	)
+

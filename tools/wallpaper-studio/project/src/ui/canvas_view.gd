@@ -191,8 +191,8 @@ func apply_live(path: PackedInt32Array) -> void:
 	if layer.is_empty():
 		return
 	_apply_live_subtree(_root, layer, main.doc.parent_size(path))
-	# 遮罩/滤镜的参数也可能同时变了（拖遮罩框）：只刷材质 uniform，不重建节点。
-	SceneBuilder.refresh_style(_root, main.doc, path, main.project_dir)
+	# 效果层（遮罩）改的是着色器 uniform：只刷材质参数，不重建节点。
+	SceneBuilder.refresh_effect(_root, main.doc, path, main.project_dir)
 	# 静态画面平时是 UPDATE_ONCE（省电），拖动时必须重新开几帧重绘，
 	# 否则预览停在原地、看起来像"拖不动"。
 	_warmup = WARMUP_FRAMES
@@ -245,6 +245,10 @@ func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vect
 	for i in range(arr.size() - 1, -1, -1):
 		var layer: Dictionary = arr[i]
 		if not bool(layer.get("visible", true)):
+			continue
+		if Layer.is_filter(layer):
+			# 滤镜层没有自己的框（它只调色/模糊下方被覆盖的层），画布上点不到它，
+			# 要改就从左侧列表里选 —— 否则它会一直挡着内容层的点击。
 			continue
 		var path := parent_path.duplicate()
 		path.append(i)

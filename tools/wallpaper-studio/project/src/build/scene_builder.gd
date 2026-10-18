@@ -1,18 +1,29 @@
 extends RefCounted
 ## 文档 -> 完整 Node 树。**预览和导出共用这一条路径**（设计 §2.3 的不变式）。
 ##
-## 图层是树（容器可以嵌套），所以这里也是递归的：每个图层一个 box，
+## 图层是树（容器可以嵌套），所以这里也是递归的：每个"内容图层"一个 box，
 ## box 的锚点 = 它相对父级的框；容器里的子层以容器的框为参照。
 ## 于是"移动/缩放容器 -> 子元素跟着走"在运行时同样成立（锚点是比例，不是像素）。
+##
+## 遮罩 / 滤镜是**效果图层**（兄弟节点），不是图层属性。所以每一层子图层的生成是一个
+## 从左到右的折叠：普通图层 -> 一个节点进 `built`；遇到效果层 -> 把 `built` 末尾被覆盖
+## 的若干节点收进一个合成节点（Stack），再整体套遮罩着色器 / 模糊链，合成节点本身
+## 顶替这批图层的位置继续往后排。
+##
+## 合成节点的着色器吃的是**自己贴图的 UV**（0..1 铺满父级），不是 SCREEN_UV ——
+## 嵌套容器/嵌套效果时 SCREEN_UV 会跟着外层 viewport 跑，遮罩会错位（见 filters.gd）。
 
 const LayerNodes = preload("res://src/build/layer_nodes.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const Mask = preload("res://src/doc/mask.gd")
 
 const ROOT_NAME := "WallpaperRoot"
 ## 图层节点名的前缀 + 图层 id。拖动时靠它在这棵树里定位节点（id 全局唯一）。
 const NODE_PREFIX := "L_"
+## 合成区域自己的 UV 矩形（着色器里遮罩/暗角都按这套比例）。
+const FULL_UV := Rect2(0.0, 0.0, 1.0, 1.0)
 
 
 ## project_dir：用户工程目录（预览）或构建目录的 assets 目录（导出）。
@@ -39,10 +50,7 @@ static func build(doc, project_dir: String) -> Control:
 	root.add_child(bg)
 
 	# 列表顶部 = 最上层 = 最后 add_child；文档 index 0 是最底层，所以正序累加即可。
-	var canvas := Vector2(doc.canvas)
-	var root_uv := Rect2(Vector2.ZERO, Vector2.ONE)
-	for layer in doc.layers:
-		root.add_child(build_layer(layer, project_dir, root_uv, canvas))
+	add_children(root, doc.layers, project_dir, FULL_UV, Vector2(doc.canvas))
 
 	# 阶段 2 的接缝：这里会调用 AnimationBuilder.compile(doc, root) 生成 AnimationPlayer。
 
@@ -54,7 +62,32 @@ static func build(doc, project_dir: String) -> Control:
 	return root
 
 
-## 单个图层 -> 节点。parent_uv 是父级（画布或容器）在画布里的比例矩形，
+## 把一串兄弟图层建成节点并按顺序挂到 parent 下。
+##
+## `built` 里一项 = 一个会进场景的兄弟（普通图层或已合成的效果层）。
+## 效果层只往前看：它覆盖的是**它下方**已经建好的节点，所以这里是"折叠"而不是递归。
+static func add_children(parent: Node, children: Array, project_dir: String,
+		parent_uv: Rect2, parent_size: Vector2) -> void:
+	var built := []
+	for raw in children:
+		if not (raw is Dictionary):
+			continue
+		var layer: Dictionary = raw
+		if Layer.is_effect(layer):
+			# 隐藏的效果层 = 不生效：被它覆盖的图层保持原样，一个节点都不动。
+			if not bool(layer.get("visible", true)):
+				continue
+			var merged := build_effect(layer, built, project_dir, parent_size)
+			if merged != null:
+				built.append({"layer": layer, "node": merged})
+			continue
+		built.append({"layer": layer,
+				"node": build_layer(layer, project_dir, parent_uv, parent_size)})
+	for item in built:
+		parent.add_child(item["node"])
+
+
+## 单个内容图层 -> 节点。parent_uv 是父级（画布或容器）在画布里的比例矩形，
 ## parent_size 是父级的设计像素尺寸。两者用来把本层的框换算成锚点与 UV。
 static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2,
 		parent_size: Vector2) -> Control:
@@ -64,41 +97,24 @@ static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2
 	apply_layer_node(box, layer, parent_size)
 
 	var fr := Frame.of(layer, parent_size)
-	var uv := uv_of(fr, parent_size, parent_uv)
-
 	var content: Control
 	if Layer.is_group(layer):
-		content = _build_group(layer, project_dir, uv, fr.size)
+		content = _build_group(layer, project_dir, uv_of(fr, parent_size, parent_uv), fr.size)
 	else:
 		content = LayerNodes.build_content(layer, project_dir)
 		content.name = "content"
 	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var stack := Control.new()
-	stack.name = "stack"
-	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for copy in LayerNodes.effect_copies(layer, content, fr.size):
-		stack.add_child(copy)
-	stack.add_child(content)
-
-	var material := LayerNodes.style_material(layer, uv, fr.size, project_dir)
-	var blur := Filters.blur_radius(layer.get("filters", {}))
-	if blur > 0.0:
-		# 模糊先渲染再调色/遮罩：材质挂在最外层容器上，那一层已经回到画布坐标，
-		# 屏幕 UV 直接就是画布比例（着色器里 screen_origin/size 用默认值即可）。
-		stack = LayerNodes.wrap_blur(stack, blur, fr.size)
-		if material != null:
-			stack.material = material
-	elif material != null:
+	var mat := LayerNodes.blend_material(String(layer.get("blend", "mix")))
+	if mat != null:
 		if Layer.is_group(layer):
-			# 容器自己的材质不能直接挂到子层上（会盖掉子层自己的遮罩/滤镜），
+			# 容器自己的材质不能直接挂到子层上（会盖掉子层自己的混合），
 			# 所以把整棵子树渲进一个 SubViewport，材质挂在容器上。
-			stack = _wrap_viewport(stack, fr.size, material)
+			content = _wrap_viewport(content, fr.size, mat)
 		else:
-			LayerNodes.apply_material(content, material)
+			LayerNodes.apply_material(content, mat)
 
-	box.add_child(stack)
+	box.add_child(content)
 	return box
 
 
@@ -111,12 +127,196 @@ static func _build_group(layer: Dictionary, project_dir: String, group_uv: Rect2
 	box.clip_contents = bool(layer.get("clip", true))
 	var kids = layer.get("children")
 	if kids is Array:
-		for child in kids:
-			if child is Dictionary:
-				box.add_child(build_layer(child, project_dir, group_uv, group_size))
+		add_children(box, kids, project_dir, group_uv, group_size)
 	return box
 
 
+# ---------------------------------------------------------------- 效果图层
+
+## 效果层：把它覆盖的兄弟节点收进一个合成节点，再套遮罩 / 滤镜。
+## 返回 null 表示"下面没有可覆盖的图层"（效果层什么也不做）。
+##
+## 注意 `built` 会被就地改写：被收走的节点要从列表里摘掉，否则后面的效果层
+## 会把同一批节点再包一层（同一个节点不能有两个父亲）。
+static func build_effect(effect: Dictionary, built: Array, project_dir: String,
+		parent_size: Vector2) -> Control:
+	var n := Layer.cover_count(effect)
+	var from: int = 0 if n <= 0 else maxi(0, built.size() - n)
+	if from >= built.size():
+		return null
+	var covered := built.slice(from)
+	while built.size() > from:
+		built.remove_at(built.size() - 1)
+
+	var stack := Control.new()
+	stack.name = "covered"
+	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 阴影 / 发光 / 描边 = 染色副本垫在下面（滤镜层才可能开这些）。
+	for copy in _copies_of(effect, covered, parent_size):
+		stack.add_child(copy)
+	for item in covered:
+		stack.add_child(item["node"])
+
+	var node: Control = stack
+	var mat := effect_material(effect, parent_size, project_dir)
+	var blur := 0.0
+	if Layer.is_filter(effect):
+		blur = Filters.blur_radius(effect.get("filters", {}))
+	if blur > 0.0:
+		# 先模糊再调色（和老的单层滤镜同一顺序），材质挂在最外层。
+		node = LayerNodes.wrap_blur(stack, blur, parent_size)
+		if mat != null:
+			node.material = mat
+	elif mat != null:
+		node = _wrap_viewport(stack, parent_size, mat)
+
+	node.name = NODE_PREFIX + String(effect.get("id", "effect"))
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	node.set_meta("dstk_effect", true)
+	return node
+
+
+## 滤镜层的"副本"类效果（阴影 / 描边 / 发光）。
+## 粒子不复制（复制等于多开一套发射器，数量翻倍）；已经是合成节点的也不复制
+## （复制它等于把整棵子树再渲染一遍）。
+static func _copies_of(effect: Dictionary, covered: Array, parent_size: Vector2) -> Array:
+	var out := []
+	if not Layer.is_filter(effect):
+		return out
+	var f: Dictionary = effect.get("filters", {})
+	if not Filters.needs_copy(f):
+		return out
+	for item in covered:
+		var layer: Dictionary = item["layer"]
+		var node: Control = item["node"]
+		if String(layer.get("type", "")) == "particles":
+			continue
+		if node.has_meta("dstk_effect"):
+			continue
+		if Filters.on(f, Filters.SHADOW):
+			var g: Dictionary = f[Filters.SHADOW]
+			out.append(_copy_tinted(node, g.get("color"), float(g.get("alpha", 0.45)),
+					Vector2(float(g.get("x", 0.0)), float(g.get("y", 0.0)))))
+		if Filters.on(f, Filters.STROKE):
+			var s: Dictionary = f[Filters.STROKE]
+			var w := float(s.get("width", 3.0))
+			if w > 0.0:
+				# 八方向各一份，凑出描边；半径大时会有轻微"重影"，但不需要额外渲染趟。
+				for dir in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
+						Vector2(0.707, 0.707), Vector2(-0.707, 0.707),
+						Vector2(0.707, -0.707), Vector2(-0.707, -0.707)]:
+					out.append(_copy_tinted(node, s.get("color"), 1.0, dir * w))
+		if Filters.on(f, Filters.GLOW):
+			var g2: Dictionary = f[Filters.GLOW]
+			var radius := float(g2.get("radius", 20.0))
+			var copy := _copy_tinted(node, g2.get("color"),
+					float(g2.get("alpha", 0.55)), Vector2.ZERO)
+			out.append(LayerNodes.wrap_blur(copy, radius, parent_size) if radius > 0.0 else copy)
+	return out
+
+
+static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2) -> Control:
+	var dup: Control = content.duplicate()
+	var c := Layer.to_color(color, Color.BLACK)
+	dup.modulate = Color(c.r, c.g, c.b, clampf(alpha, 0.0, 1.0))
+	# 内容节点是锚点节点：位移只能写 offsets，写 position 会被布局覆盖。
+	dup.offset_left += offset.x
+	dup.offset_top += offset.y
+	dup.offset_right += offset.x
+	dup.offset_bottom += offset.y
+	dup.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return dup
+
+
+## 效果层需要的材质：遮罩层 -> 遮罩着色器；滤镜层 -> 逐像素调色（色彩/暗角/色调分离）。
+## 返回 null 表示这一层不需要着色器（比如只开了模糊，或者什么都没勾）。
+static func effect_material(effect: Dictionary, parent_size: Vector2,
+		project_dir: String) -> Material:
+	if Layer.is_mask(effect):
+		return _material(_mask_uniforms(effect, parent_size, project_dir, true))
+	var f: Dictionary = effect.get("filters", {})
+	if not Filters.needs_material(f):
+		return null
+	return _material(_grade_uniforms(f))
+
+
+static func _grade_uniforms(f: Dictionary) -> Dictionary:
+	return Filters.grade_uniforms(f, FULL_UV)
+
+
+## 遮罩层的 uniform。遮罩矩形按**合成区域自己的 UV 比例**给（0..1），
+## 所以容器嵌套、窗口缩放都不会错位。
+static func _mask_uniforms(mask_layer: Dictionary, parent_size: Vector2,
+		project_dir: String, with_texture: bool) -> Dictionary:
+	# 恒等色彩：同一个着色器兼遮罩与调色，遮罩层只要遮罩那一段。
+	var uniforms := _grade_uniforms({})
+	var code := Mask.shape_code(mask_layer)
+	var fr := Frame.of(mask_layer, parent_size)
+	var r := Mask.uv_rect(mask_layer, parent_size)
+	var radius := float(mask_layer.get("radius", 0.0))
+	var feather := float(mask_layer.get("feather", 0.0))
+	uniforms["mask_shape"] = code
+	# 几何一律压成 Vector4：set_shader_parameter 收到 Rect2 会直接把进程打挂。
+	uniforms["mask_rect"] = Vector4(r.position.x, r.position.y, r.size.x, r.size.y)
+	uniforms["mask_radii"] = Vector2(
+			clampf(radius / maxf(1.0, fr.size.x), 0.0, 0.5),
+			clampf(radius / maxf(1.0, fr.size.y), 0.0, 0.5))
+	uniforms["mask_feather"] = Vector2(
+			feather / maxf(1.0, fr.size.x), feather / maxf(1.0, fr.size.y))
+	uniforms["mask_invert"] = bool(mask_layer.get("invert", false))
+	if code == 3 and with_texture:
+		var tex := Mask.load_texture(mask_layer, project_dir)
+		if tex == null:
+			# 遮罩图丢了就整块遮住：明显可见的错误，比"当没设遮罩"更难漏掉。
+			var blank := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+			blank.fill(Color(0, 0, 0, 0))
+			tex = ImageTexture.create_from_image(blank)
+		uniforms["mask_tex"] = tex
+	return uniforms
+
+
+## 按混合模式生成图层着色器（引擎按源码哈希复用已编译结果，所以每层新建对象没问题）。
+static func _material(uniforms: Dictionary) -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = Filters.layer_shader("mix")
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	for key in uniforms.keys():
+		mat.set_shader_parameter(key, uniforms[key])
+	# 打个标记：拖动遮罩时只更新这类材质的 uniform，不重建节点（见 refresh_effect）。
+	mat.set_meta("dstk_effect_style", true)
+	return mat
+
+
+## 拖动遮罩层时**不重建节点**：只把新的 uniform 写进已有的材质。
+## path 指向效果层；找不到节点/材质时静默返回（比如它下面没层、被隐藏了）。
+static func refresh_effect(root: Node, doc, path: PackedInt32Array,
+		project_dir: String) -> void:
+	if root == null or path.is_empty():
+		return
+	var layer: Dictionary = doc.layer_at(path)
+	if layer.is_empty() or not Layer.is_effect(layer):
+		return
+	var node := root.find_child(NODE_PREFIX + String(layer.get("id", "")), true, false)
+	if node == null or not node.has_meta("dstk_effect"):
+		return
+	if not (node is CanvasItem):
+		return
+	var mat: Material = (node as CanvasItem).material
+	if not (mat is ShaderMaterial) or not mat.has_meta("dstk_effect_style"):
+		return
+	var uniforms := {}
+	if Layer.is_mask(layer):
+		uniforms = _mask_uniforms(layer, doc.parent_size(path), project_dir, false)
+	else:
+		uniforms = _grade_uniforms(layer.get("filters", {}))
+	for key in uniforms.keys():
+		(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
+
+
+## 把一段内容渲进 SubViewport，材质挂在最外层的容器上（材质只影响这一个节点，
+## 所以想"整棵子树一起变"就必须先合成成一张图）。
 static func _wrap_viewport(content: Control, size: Vector2, material: Material) -> Control:
 	var vp := SubViewport.new()
 	vp.name = "viewport"
@@ -143,29 +343,6 @@ static func _wrap_viewport(content: Control, size: Vector2, material: Material) 
 	return cont
 
 
-## 拖动中的样式刷新：遮罩/滤镜的参数变了，但**节点树没变** —— 只把新的 uniform
-## 写进已有的材质，不重建节点、不重新解码遮罩图。path 用来逐级累加出画布 UV。
-static func refresh_style(root: Node, doc, path: PackedInt32Array, project_dir: String) -> void:
-	if root == null or path.is_empty():
-		return
-	var parent_uv := Rect2(Vector2.ZERO, Vector2.ONE)
-	var parent_size := Vector2(doc.canvas)
-	for i in path.size() - 1:
-		var anc: Dictionary = doc.layer_at(path.slice(0, i + 1))
-		if anc.is_empty():
-			return
-		var anc_frame := Frame.of(anc, parent_size)
-		parent_uv = uv_of(anc_frame, parent_size, parent_uv)
-		parent_size = anc_frame.size
-	var layer: Dictionary = doc.layer_at(path)
-	if layer.is_empty():
-		return
-	var fr := Frame.of(layer, parent_size)
-	var uv := uv_of(fr, parent_size, parent_uv)
-	var box := root.find_child(NODE_PREFIX + String(layer.get("id", "")), true, false)
-	LayerNodes.update_style(box, layer, uv, fr.size, project_dir)
-
-
 ## 把整棵子树的 owner 指到 scene_root。预览时不需要，导出时是必需的。
 static func set_owner_recursive(node: Node, scene_root: Node) -> void:
 	for c in node.get_children():
@@ -184,7 +361,14 @@ static func uv_of(fr: Rect2, parent_size: Vector2, parent_uv: Rect2) -> Rect2:
 
 ## 位置/尺寸/旋转/不透明度/可见性。显式框用**锚点**表达（像素 / 父级尺寸），
 ## 于是导出的场景在任意窗口尺寸下都等比伸缩；没有显式框的图层保持"铺满父级"的老语义。
+##
+## 效果图层没有自己的几何：遮罩框只是着色器 uniform，合成节点永远铺满父级，
+## 所以这里对它们直接返回（拖动遮罩时由 refresh_effect 更新 uniform）。
 static func apply_layer_node(node: Control, layer: Dictionary, parent_size: Vector2) -> void:
+	if Layer.is_effect(layer):
+		node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		node.visible = bool(layer.get("visible", true))
+		return
 	var t: Dictionary = layer.get("transform", {})
 	var explicit := float(t.get("w", 0.0)) > 0.0 and float(t.get("h", 0.0)) > 0.0
 	if explicit:

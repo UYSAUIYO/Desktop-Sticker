@@ -1,18 +1,10 @@
 extends RefCounted
-## 每种图层类型 -> 节点。只构造，不落盘（落盘是 exporter 的事）。
+## 每种**内容图层**类型 -> 节点。只构造，不落盘（落盘是 exporter 的事）。
 ##
-## 一个图层最终的样子（由 scene_builder 组装）：
-##
-##   layer_box（锚点 = 框，旋转/不透明度/可见性）
-##     └ 模糊链（可选，两趟 SubViewport）
-##          └ 阴影 / 描边 / 发光 副本（可选，染色副本垫在下面）
-##               └ 内容（纯色 / 图片 / 文字 / 粒子 / 容器子层）
-##
-## 遮罩与色彩类滤镜是**着色器**（见 doc/filters.gd）：遮罩吃的是画布 UV 比例，
-## 所以不栅格化、不糊、对文字同样有效。
+## 遮罩与滤镜不在这里：它们是独立的效果图层，整棵合成节点的组装在
+## scene_builder.gd 里（把覆盖到的兄弟图层收进一个控制节点，再套着色器/模糊）。
 
 const Layer = preload("res://src/doc/layer.gd")
-const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 
 ## 时钟/日期图层的运行时脚本。
@@ -223,89 +215,7 @@ static func _particle_material(layer: Dictionary) -> ParticleProcessMaterial:
 	return mat
 
 
-# ---------------------------------------------------------------- 遮罩 / 滤镜
-
-## 这一层需要的材质：遮罩或色彩类滤镜 -> 着色器；只有混合模式 -> CanvasItemMaterial。
-## uv = 图层框在画布里的比例矩形；size = 图层本地像素尺寸。
-## 返回 null 表示"什么都不用挂"。
-static func style_material(layer: Dictionary, uv: Rect2, size: Vector2,
-		project_dir: String) -> Material:
-	var mask_code := Mask.shape_code(layer.get("mask", {}))
-	var grade := Filters.needs_material(layer.get("filters", {}))
-	if mask_code < 0 and not grade:
-		return blend_material(String(layer.get("blend", "mix")))
-
-	var mat := ShaderMaterial.new()
-	mat.shader = _layer_shader(String(layer.get("blend", "mix")))
-	var uniforms := style_uniforms(layer, uv, size, project_dir)
-	for key in uniforms.keys():
-		mat.set_shader_parameter(key, uniforms[key])
-	# 打个标记：拖动遮罩时只更新这类材质的 uniform，不重建节点（见 update_style）。
-	mat.set_meta("dstk_layer_style", true)
-	return mat
-
-
-## 逐像素那套的 uniform（遮罩 + 色彩 + 暗角 + 色调分离）。with_texture=false 时不带
-## 贴图采样（拖动时每帧重设 mask_tex 会把遮罩图重新解码一遍）。
-static func style_uniforms(layer: Dictionary, uv: Rect2, size: Vector2,
-		project_dir: String, with_texture: bool = true) -> Dictionary:
-	var f: Dictionary = layer.get("filters", {})
-	var mask: Dictionary = layer.get("mask", {})
-	var mask_code := Mask.shape_code(mask)
-	var uniforms := Filters.grade_uniforms(f, uv)
-	uniforms["screen_origin"] = Vector2.ZERO
-	uniforms["screen_size"] = Vector2.ONE
-	if mask_code >= 0:
-		var mr := Mask.uv_rect(mask, uv, size)
-		var msize := Mask.rect(mask, size).size
-		var radius := float(mask.get("radius", 0.0))
-		var feather := float(mask.get("feather", 0.0))
-		uniforms["mask_shape"] = mask_code
-		# 几何一律压成 Vector4：set_shader_parameter 收到 Rect2 会直接崩。
-		uniforms["mask_rect"] = Vector4(mr.position.x, mr.position.y, mr.size.x, mr.size.y)
-		uniforms["mask_radii"] = Vector2(
-				clampf(radius / maxf(1.0, msize.x), 0.0, 0.5),
-				clampf(radius / maxf(1.0, msize.y), 0.0, 0.5))
-		uniforms["mask_feather"] = Vector2(
-				feather / maxf(1.0, msize.x), feather / maxf(1.0, msize.y))
-		uniforms["mask_invert"] = bool(mask.get("invert", false))
-		if mask_code == 3 and with_texture:
-			var tex := Mask.load_texture(mask, project_dir)
-			if tex == null:
-				# 遮罩图丢了就整层遮住：明显可见的错误，比"当没设遮罩"更难漏掉。
-				var blank := Image.create(1, 1, false, Image.FORMAT_RGBA8)
-				blank.fill(Color(0, 0, 0, 0))
-				tex = ImageTexture.create_from_image(blank)
-			uniforms["mask_tex"] = tex
-	return uniforms
-
-
-## 拖动中的轻量更新：只改"本图层样式材质"的 uniform（遮罩矩形、滤镜参数），
-## 不重建节点、不重新读遮罩图。找不到对应材质时什么也不做。
-static func update_style(root: Node, layer: Dictionary, uv: Rect2, size: Vector2,
-		project_dir: String) -> void:
-	if root == null:
-		return
-	var uniforms := style_uniforms(layer, uv, size, project_dir, false)
-	_apply_uniforms(root, uniforms)
-
-
-static func _apply_uniforms(node: Node, uniforms: Dictionary) -> void:
-	if node is CanvasItem:
-		var mat = (node as CanvasItem).material
-		if mat is ShaderMaterial and mat.has_meta("dstk_layer_style"):
-			for key in uniforms.keys():
-				(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
-	for child in node.get_children():
-		_apply_uniforms(child, uniforms)
-
-
-## 按混合模式生成图层着色器（引擎按源码哈希复用已编译结果，所以每层新建对象没问题）。
-static func _layer_shader(blend: String) -> Shader:
-	var shader := Shader.new()
-	shader.code = Filters.layer_shader(blend)
-	return shader
-
+# ---------------------------------------------------------------- 混合 / 模糊
 
 static func blend_material(blend: String) -> Material:
 	if blend == "mix":
@@ -337,51 +247,6 @@ static func apply_material(root: Node, mat: Material) -> void:
 		if child is GPUParticles2D:
 			continue
 		apply_material(child, mat)
-
-
-## 阴影 / 描边 / 发光：复制内容、染色、垫在下面。返回按绘制顺序排好的副本数组。
-## 粒子与容器不做副本（复制粒子会重开一套发射器；复制容器等于复制整棵子树）。
-static func effect_copies(layer: Dictionary, content: Control, size: Vector2) -> Array:
-	var f: Dictionary = layer.get("filters", {})
-	var out := []
-	if not Filters.needs_copy(f):
-		return out
-	if String(layer.get("type", "")) == "particles" or Layer.is_group(layer):
-		return out
-
-	if Filters.on(f, Filters.SHADOW):
-		var g: Dictionary = f[Filters.SHADOW]
-		out.append(_copy_tinted(content, g.get("color"), float(g.get("alpha", 0.45)),
-				Vector2(float(g.get("x", 0.0)), float(g.get("y", 0.0)))))
-	if Filters.on(f, Filters.STROKE):
-		var s: Dictionary = f[Filters.STROKE]
-		var w := float(s.get("width", 3.0))
-		if w > 0.0:
-			# 八方向各一份，凑出描边；半径大时会有轻微"重影"，但不需要额外渲染趟。
-			for dir in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1),
-					Vector2(0.707, 0.707), Vector2(-0.707, 0.707),
-					Vector2(0.707, -0.707), Vector2(-0.707, -0.707)]:
-				out.append(_copy_tinted(content, s.get("color"), 1.0, dir * w))
-	if Filters.on(f, Filters.GLOW):
-		var g2: Dictionary = f[Filters.GLOW]
-		var radius := float(g2.get("radius", 20.0))
-		var copy := _copy_tinted(content, g2.get("color"), float(g2.get("alpha", 0.55)),
-				Vector2.ZERO)
-		out.append(wrap_blur(copy, radius, size) if radius > 0.0 else copy)
-	return out
-
-
-static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2) -> Control:
-	var dup: Control = content.duplicate()
-	var c := Layer.to_color(color, Color.BLACK)
-	dup.modulate = Color(c.r, c.g, c.b, clampf(alpha, 0.0, 1.0))
-	# 内容节点是铺满父级的锚点节点：位移只能写 offsets，写 position 会被布局覆盖。
-	dup.offset_left += offset.x
-	dup.offset_top += offset.y
-	dup.offset_right += offset.x
-	dup.offset_bottom += offset.y
-	dup.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return dup
 
 
 ## 两趟可分离高斯（水平 + 垂直），每趟一个 SubViewport。

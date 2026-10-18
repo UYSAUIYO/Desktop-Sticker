@@ -1,14 +1,16 @@
 extends RefCounted
 ## 滤镜（Filters）：固定 7 组，每组一个开关 + 自己的参数。
+## 这组参数属于**滤镜层**（type = filter）—— 它是独立图层，作用在下方被覆盖的图层上，
+## 不是某个图层自己的属性（见 doc/layer.gd 的 EFFECT_TYPES）。
 ##
 ## 为什么不是"可任意排序的效果栈"：色彩 / 暗角 / 色调分离都是逐像素运算，顺序固定
 ## （色彩 → 暗角 → 色调分离）就够用；阴影 / 发光 / 描边是"内容下面多画几份"，
 ## 天然在内容之下。固定结构换来的好处是属性面板与文档结构都简单，且着色器只有一个。
 ##
 ## 实现分两条路：
-##   · 色彩 / 暗角 / 色调分离 / 遮罩 —— 一个 canvas_item 着色器，逐节点乘算，零额外开销；
-##   · 模糊 —— 需要采样邻域，用两趟 SubViewport + 可分离高斯（见 scene_builder.gd）；
-##   · 阴影 / 发光 / 描边 —— 复制内容节点、用 modulate 染色后垫在下面（发光那份过一趟模糊）。
+##   · 色彩 / 暗角 / 色调分离 / 遮罩 —— 一个 canvas_item 着色器，逐像素乘算，零额外开销；
+##   · 模糊 —— 需要采样邻域，用两趟 SubViewport + 可分离高斯（见 layer_nodes.gd）；
+##   · 阴影 / 发光 / 描边 —— 复制被覆盖的图层、用 modulate 染色后垫在下面（发光那份过一趟模糊）。
 
 const COLOR := "color"
 const BLUR := "blur"
@@ -84,6 +86,14 @@ static func on(f: Dictionary, key: String) -> bool:
 	return g is Dictionary and bool(g.get("enabled", false))
 
 
+## 任意一组开着吗（图层列表用它提示"这层滤镜还没启用任何项"）。
+static func any(f: Dictionary) -> bool:
+	for key in defaults().keys():
+		if on(f, key):
+			return true
+	return false
+
+
 ## Rect2 -> Vector4（着色器的 vec4 uniform）。
 static func _as_vec4(r: Rect2) -> Vector4:
 	return Vector4(r.position.x, r.position.y, r.size.x, r.size.y)
@@ -131,9 +141,6 @@ static func grade_uniforms(f: Dictionary, layer_uv: Rect2) -> Dictionary:
 
 
 const LAYER_BODY := """
-uniform vec2 screen_origin = vec2(0.0, 0.0);
-uniform vec2 screen_size = vec2(1.0, 1.0);
-
 uniform int mask_shape = -1;
 uniform vec4 mask_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform vec2 mask_radii = vec2(0.0, 0.0);
@@ -193,7 +200,10 @@ void fragment() {
 	if (posterize_levels >= 2.0) {
 		rgb = floor(clamp(rgb, 0.0, 1.0) * posterize_levels) / posterize_levels;
 	}
-	vec2 cuv = screen_origin + SCREEN_UV * screen_size;
+	// UV 是**合成区域自己的比例坐标**（铺满父级的 SubViewportContainer 的贴图 UV），
+	// 不是 SCREEN_UV：嵌套容器/嵌套合成时 SCREEN_UV 会跟着外层 viewport 跑，
+	// 遮罩就会错位。遮罩矩形也按同一套 0..1 比例存。
+	vec2 cuv = UV;
 	float a = mask_alpha(cuv);
 	if (vignette_amount > 0.0) {
 		vec2 p = (cuv - layer_uv.xy) / max(layer_uv.zw, vec2(0.000001));

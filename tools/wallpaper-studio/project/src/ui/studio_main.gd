@@ -22,7 +22,6 @@ var doc = null                 # StudioDoc 实例（RefCounted，无类型标注
 var project_dir := ""          # 用户工程目录（绝对路径）
 ## 当前选中图层的**路径**（空 = 未选）：[2] = 第 3 个根层，[2, 0] = 它的第一个子层。
 var sel := PackedInt32Array()
-var mask_edit := false         # 画布上编辑遮罩而不是元素框
 var dirty := false             # 有没有未保存的改动
 var busy := false              # 导出等阻塞操作进行中：禁止新建/打开/退出
 

@@ -1,14 +1,16 @@
 extends RefCounted
-## 遮罩（Mask）：每个图层一个，形状裁掉图层内容的一部分。
+## 遮罩层（mask）的形状参数。**边框不在这个文件里** —— 遮罩的位置与大小就是
+## 效果图层自己的 `transform`（x/y/w/h，w/h = 0 表示覆盖整个父级），
+## 所以遮罩在画布上可以直接拖动/缩放，和普通元素共用同一套选区框。
 ##
-## 实现方式是**着色器里的 alpha 衰减**，不是把内容裁成位图：
-##   · 坐标用「画布 UV 比例」表达，所以缩放窗口时遮罩跟着一起缩放，不会糊；
+## 实现方式仍是**着色器里的 alpha 衰减**，不是把内容裁成位图：
+##   · 坐标用「父级 UV 比例」表达，缩放窗口时遮罩跟着一起缩放，不会糊；
 ##   · 对文字/矢量内容同样有效（只乘 alpha，不重新采样内容自己的贴图）；
 ##   · 羽化 = 边缘的 smoothstep，和分辨率无关。
-## 早期设想是用 TextureRect + clip_children，那需要把遮罩栅格化成贴图：
-## 每拖一下手柄就要重算几十万像素，还会把贴图塞进导出包。放弃。
-##
-## 遮罩矩形存的是**图层本地像素**（相对图层左上角），所以图层移动/缩放时遮罩跟着走。
+## 遮罩层作用于**它下方被覆盖的若干层合成后的结果**（见 scene_builder 的合成节点），
+## 不是某个图层自己的属性。
+
+const Frame = preload("res://src/doc/frame.gd")
 
 const SHAPES := ["rect", "rounded", "ellipse", "image"]
 ## 图片遮罩内联进场景前会先缩到这么大：遮罩本来就会被羽化/缩放，480 足够。
@@ -17,9 +19,7 @@ const IMAGE_MAX := 480
 
 static func defaults() -> Dictionary:
 	return {
-		"enabled": false,
 		"shape": "rect",
-		"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0,
 		"radius": 24.0,
 		"feather": 0.0,
 		"invert": false,
@@ -31,45 +31,18 @@ static func normalize(raw) -> Dictionary:
 	var out := defaults()
 	if not (raw is Dictionary):
 		return out
-	out["enabled"] = bool(raw.get("enabled", false))
 	var shape := String(raw.get("shape", "rect"))
 	out["shape"] = shape if shape in SHAPES else "rect"
-	for k in ["x", "y", "w", "h", "radius", "feather"]:
-		out[k] = float(raw.get(k, out[k]))
+	out["radius"] = maxf(0.0, float(raw.get("radius", out["radius"])))
+	out["feather"] = maxf(0.0, float(raw.get("feather", out["feather"])))
 	out["invert"] = bool(raw.get("invert", false))
 	out["src"] = String(raw.get("src", ""))
-	if float(out["feather"]) < 0.0:
-		out["feather"] = 0.0
-	if float(out["radius"]) < 0.0:
-		out["radius"] = 0.0
 	return out
 
 
-## 遮罩矩形，图层本地像素。宽高为 0 表示"整层"（和选区框的 w/h 同一套语义）。
-static func rect(mask: Dictionary, layer_size: Vector2) -> Rect2:
-	var w := float(mask.get("w", 0.0))
-	var h := float(mask.get("h", 0.0))
-	if w <= 0.0 or h <= 0.0:
-		return Rect2(Vector2.ZERO, Vector2(maxf(1.0, layer_size.x), maxf(1.0, layer_size.y)))
-	return Rect2(Vector2(float(mask.get("x", 0.0)), float(mask.get("y", 0.0))), Vector2(w, h))
-
-
-## 遮罩矩形换算到画布 UV（0..1）。layer_uv = 图层框在画布里的 UV 矩形。
-## 场景构造时算一次写进着色器 uniform —— 运行时窗口怎么变都对得上，因为两边都是比例。
-static func uv_rect(mask: Dictionary, layer_uv: Rect2, layer_size: Vector2) -> Rect2:
-	var r := rect(mask, layer_size)
-	var lw := maxf(1.0, layer_size.x)
-	var lh := maxf(1.0, layer_size.y)
-	return Rect2(
-		layer_uv.position + Vector2(r.position.x / lw, r.position.y / lh) * layer_uv.size,
-		Vector2(r.size.x / lw, r.size.y / lh) * layer_uv.size)
-
-
-## 形状编号，直接进着色器：-1 = 关闭。
-static func shape_code(mask: Dictionary) -> int:
-	if not bool(mask.get("enabled", false)):
-		return -1
-	match String(mask.get("shape", "rect")):
+## 形状编号，直接进着色器。
+static func shape_code(mask_layer: Dictionary) -> int:
+	match String(mask_layer.get("shape", "rect")):
 		"rounded":
 			return 1
 		"ellipse":
@@ -80,11 +53,21 @@ static func shape_code(mask: Dictionary) -> int:
 			return 0
 
 
+## 遮罩框在**父级 UV**（0..1）里的矩形。合成节点渲染到父级大小的 SubViewport 里，
+## 着色器拿到的同样是一份 0..1 的 UV，两边直接对齐 —— 不需要再乘图层比例。
+static func uv_rect(mask_layer: Dictionary, parent_size: Vector2) -> Rect2:
+	var r := Frame.of(mask_layer, parent_size)
+	var pw := maxf(1.0, float(parent_size.x))
+	var ph := maxf(1.0, float(parent_size.y))
+	return Rect2(Vector2(r.position.x / pw, r.position.y / ph),
+			Vector2(r.size.x / pw, r.size.y / ph))
+
+
 ## 图片遮罩的贴图：载入后缩到 IMAGE_MAX 以内再交给着色器采样。
-## 找不到文件返回 null（着色器按 alpha=0 处理，画面上就是整层被遮住 —— 明确可见的错，
-## 比"当没设遮罩"更容易发现资源丢了）。
-static func load_texture(mask: Dictionary, project_dir: String) -> Texture2D:
-	var rel := String(mask.get("src", ""))
+## 找不到文件返回 null（调用方按 alpha=0 处理，画面上就是覆盖区域被整块遮住 ——
+## 明确可见的错，比"当没设遮罩"更容易发现资源丢了）。
+static func load_texture(mask_layer: Dictionary, project_dir: String) -> Texture2D:
+	var rel := String(mask_layer.get("src", ""))
 	if rel.is_empty():
 		return null
 	var path := rel
@@ -92,6 +75,9 @@ static func load_texture(mask: Dictionary, project_dir: String) -> Texture2D:
 		if project_dir.is_empty():
 			return null
 		path = project_dir.path_join(rel)
+		# 导出时资源被平铺拷进 assets/，工程里的 "assets/x.png" 会变成 "<dir>/x.png"。
+		if not FileAccess.file_exists(path):
+			path = project_dir.path_join(rel.get_file())
 	if not FileAccess.file_exists(path):
 		return null
 	var img := Image.new()

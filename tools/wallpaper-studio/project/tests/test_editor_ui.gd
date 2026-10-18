@@ -98,7 +98,7 @@ func register(t) -> void:
 		editor.free()
 	)
 
-	t.case("editor_inspector_builds_mask_and_filter_sections", func() -> void:
+	t.case("editor_inspector_builds_effect_layer_sections", func() -> void:
 		var tree := Engine.get_main_loop() as SceneTree
 		if tree == null:
 			t.ok(false, "no SceneTree")
@@ -106,23 +106,80 @@ func register(t) -> void:
 		var editor = load("res://main.tscn").instantiate()
 		tree.root.add_child(editor)
 
-		var l := Layer.make_text("标题", "你好")
-		l["mask"] = Mask.normalize({"enabled": true, "shape": "rounded", "w": 100.0, "h": 50.0})
-		var f := Filters.normalize({})
-		f[Filters.COLOR]["enabled"] = true
-		f[Filters.BLUR]["enabled"] = true
-		l["filters"] = f
-		editor.doc.add_layer(l)
+		editor.doc.add_layer(Layer.make_color("底", Color.BLACK))
+		var m := Layer.make_mask("遮罩")
+		editor.doc.add_layer(m)
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		editor.doc.add_layer(fl)
 		editor.apply_change(true)
-		editor.select_layer(0)
 
-		# 属性面板建出来（含遮罩/滤镜控件）不应报错，且内容节点带着材质。
-		var before: int = editor._inspector._box.get_child_count()
+		editor.select_layer(1)
+		t.eq(String(editor.selected_layer().get("type", "")), "mask", "选中遮罩层")
+		var mask_sections: int = editor._inspector._box.get_child_count()
+		t.ok(mask_sections > 10, "遮罩层面板建了一堆控件（形状/边框/羽化…）")
 		editor._inspector.refresh(true)
-		t.ok(editor._inspector._box.get_child_count() == before, "属性面板段落数稳定")
-		t.ok(before > 20, "遮罩/滤镜控件确实建了一堆")
-		t.ok(_node_of(editor, l).find_child("*", true, false) != null, "节点树建出来了")
+		t.eq(editor._inspector._box.get_child_count(), mask_sections, "面板段落数稳定")
+		t.ok(_node_of(editor, m) != null, "遮罩层在画布树里有合成节点")
+
+		editor.select_layer(2)
+		t.eq(String(editor.selected_layer().get("type", "")), "filter", "选中滤镜层")
+		t.ok(editor._inspector._box.get_child_count() > 10, "滤镜层面板建了一堆控件")
 
 		tree.root.remove_child(editor)
 		editor.free()
 	)
+
+	t.case("editor_add_effect_above_selected_layer", func() -> void:
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+
+		editor.doc.add_layer(Layer.make_color("底", Color.BLACK))
+		editor.doc.add_layer(Layer.make_text("标题", "你好"))
+		editor.apply_change(true)
+		editor.select_layer(0)
+		editor._layers._add_effect(Layer.make_mask("遮罩层"))
+		# 新层紧贴在选中层上面，且只覆盖那一层。
+		t.eq(editor.doc.layers.size(), 3, "多了一个图层")
+		t.eq(String(editor.doc.layers[1]["type"]), "mask", "遮罩层插在底图上方")
+		t.eq(Layer.cover_count(editor.doc.layers[1]), 1, "只覆盖紧邻的下面那层")
+		t.eq(editor.doc.covered_count(PackedInt32Array([1])), 1, "实际覆盖 1 层")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+
+	t.case("editor_canvas_click_selects_mask_not_filter", func() -> void:
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+
+		editor.doc.add_layer(Layer.make_color("底", Color.BLACK))
+		editor.doc.add_layer(Layer.make_mask("遮罩"))
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"][Filters.COLOR]["enabled"] = true
+		editor.doc.add_layer(fl)
+		editor.apply_change(true)
+		editor._canvas.size = Vector2(800, 600)
+		editor._canvas._fit()
+
+		var center: Vector2 = editor._canvas._container.position \
+				+ Vector2(editor.doc.canvas) * 0.5 * editor._canvas._scale
+		# 滤镜层没有自己的框：点画布跳过它，选到下面的遮罩层。
+		t.eq(editor._canvas.layer_at_screen(center), PackedInt32Array([1]), "点中遮罩层")
+
+		editor.select_layer(2)
+		t.eq(editor._canvas._selection.visible, true, "选中滤镜层后选区层仍接管点击")
+		t.eq(editor.doc.covered_count(PackedInt32Array([2])), 2, "滤镜覆盖下方两层")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+

@@ -6,6 +6,7 @@ extends PanelContainer
 ## 这样工程拷到别的机器上仍然能打开。
 
 const Layer = preload("res://src/doc/layer.gd")
+const Filters = preload("res://src/doc/filters.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
 
 const TYPE_NAMES := {
@@ -14,7 +15,11 @@ const TYPE_NAMES := {
 	"text": "文字",
 	"particles": "粒子",
 	"group": "容器",
+	"mask": "遮罩",
+	"filter": "滤镜",
 }
+const MASK_ROW_COLOR := Color(0.93, 0.76, 0.35)
+const FILTER_ROW_COLOR := Color(0.64, 0.86, 0.74)
 
 var main = null
 
@@ -71,6 +76,9 @@ func _ready() -> void:
 	popup.add_item("文字", 2)
 	popup.add_item("粒子", 3)
 	popup.add_item("容器 / 画布", 4)
+	popup.add_separator()
+	popup.add_item("遮罩层（作用在下方图层）", 5)
+	popup.add_item("滤镜层（作用在下方图层）", 6)
 	popup.id_pressed.connect(_on_add)
 	header.add_child(_add_menu)
 
@@ -136,29 +144,39 @@ func refresh() -> void:
 	_collect(PackedInt32Array(), 0)
 	for row in _rows:
 		var layer: Dictionary = row["layer"]
-		var type_name := String(TYPE_NAMES.get(String(layer.get("type", "color")), "图层"))
-		var marks := ""
-		if bool(layer.get("mask", {}).get("enabled", false)):
-			marks += " ◐"
-		var f: Dictionary = layer.get("filters", {})
-		for key in f.keys():
-			if bool((f[key] as Dictionary).get("enabled", false)):
-				marks += " ✳"
-				break
+		var path: PackedInt32Array = row["path"]
 		var indent := "　".repeat(int(row["depth"]))
-		var label := "%s%s    ·    %s%s" % [indent, String(layer.get("name", "图层")), type_name, marks]
+		var label := indent + _label_for(layer, path)
 		if not bool(layer.get("visible", true)):
 			label = "（隐藏）" + label
 		var idx := _list.add_item(label)
 		if not bool(layer.get("visible", true)):
 			_list.set_item_custom_fg_color(idx, Color(0.52, 0.54, 0.6))
-		if Layer.is_group(layer):
+		elif Layer.is_mask(layer):
+			_list.set_item_custom_fg_color(idx, MASK_ROW_COLOR)
+		elif Layer.is_filter(layer):
+			_list.set_item_custom_fg_color(idx, FILTER_ROW_COLOR)
+		elif Layer.is_group(layer):
 			_list.set_item_custom_fg_color(idx, Color(0.78, 0.84, 0.95))
 	if not _rows.is_empty() and main.sel.is_empty():
 		# 默认选中最上层：打开工程后属性面板立刻有内容，不用先点一下。
 		main.select_layer_path(_rows[0]["path"])
 	_empty_hint.visible = _rows.is_empty()
 	sync_selection()
+
+
+## 一行文字：名称 · 类型；效果层额外标出"覆盖哪些层"。
+func _label_for(layer: Dictionary, path: PackedInt32Array) -> String:
+	var type_name := String(TYPE_NAMES.get(String(layer.get("type", "color")), "图层"))
+	var out := "%s    ·    %s" % [String(layer.get("name", "图层")), type_name]
+	if not Layer.is_effect(layer):
+		return out
+	var n: int = main.doc.covered_count(path) if main != null and main.doc != null else 0
+	var scope := "下方全部" if Layer.cover_count(layer) <= 0 else ("下方 %d 层" % Layer.cover_count(layer))
+	out += "    ·    覆盖%s（共 %d 层）" % [scope, n]
+	if Layer.is_filter(layer) and not Filters.any(layer.get("filters", {})):
+		out += "    ·    未启用"
+	return out
 
 
 ## 递归收集行：同一个父级内从最上层往下，容器的子层紧跟在容器下面。
@@ -231,6 +249,10 @@ func _on_add(id: int) -> void:
 			_add_layer(Layer.make_particles("粒子", ""))
 		4:
 			_add_layer(Layer.make_group("容器"))
+		5:
+			_add_effect(Layer.make_mask("遮罩层"))
+		6:
+			_add_effect(Layer.make_filter("滤镜层"))
 
 
 ## 选中容器时把新层加进容器，否则加到根的最上层。
@@ -240,6 +262,27 @@ func _add_layer(layer: Dictionary) -> void:
 	if not current.is_empty() and Layer.is_group(current):
 		parent = main.sel.duplicate()
 	var path: PackedInt32Array = main.doc.insert_layer(parent, layer)
+	main.select_layer_path(path)
+	main.apply_change(true)
+
+
+## 效果层紧贴在当前图层**上面**插入，覆盖层数默认 = 1（正好盖住刚选中的那层）；
+## 没选中任何图层时加到最上层、覆盖下方全部 —— 两种默认都立刻能看出效果。
+## 选中的是容器时，效果层加进容器里（覆盖容器里的内容）。
+func _add_effect(layer: Dictionary) -> void:
+	var parent := PackedInt32Array()
+	var index := -1
+	var cover := {"mode": "all", "count": 1}
+	if not main.sel.is_empty():
+		var current: Dictionary = main.selected_layer()
+		if not current.is_empty() and Layer.is_group(current):
+			parent = main.sel.duplicate()
+		else:
+			parent = main.doc.parent_path_of(main.sel)
+			index = main.sel[main.sel.size() - 1] + 1
+			cover = {"mode": "count", "count": 1}
+	layer["cover"] = cover
+	var path: PackedInt32Array = main.doc.insert_layer(parent, layer, index)
 	main.select_layer_path(path)
 	main.apply_change(true)
 

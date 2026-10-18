@@ -4,14 +4,25 @@ extends RefCounted
 ##
 ## 图层是树：`group`（容器 / 画布）可以有 children，子图层的位置尺寸都是
 ## **相对父容器**的像素（见 doc/frame.gd）。所以移动/缩放容器会带着内容一起走。
-## 每个图层（含容器）都带一个 mask 与一套 filters，见 doc/mask.gd、doc/filters.gd。
+##
+## 遮罩与滤镜**不是图层属性，而是独立的效果图层**（type = mask / filter）：
+## 它们和普通图层并列在同一条兄弟列表里，靠 `cover` 决定覆盖**它下方**的哪几层。
+##   · mask   —— 形状遮罩：把它覆盖的若干层合成后整体乘 alpha；
+##   · filter —— 滤镜：对覆盖的若干层做调色/模糊/暗角/色调分离/阴影/发光/描边。
+## 因此同一个元素可以既被遮罩又被调色，也可以被另一个效果层再包一层 —— 顺序就是图层次序。
 
 const StudioPaths = preload("res://src/doc/paths.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 
-const TYPES := ["color", "image", "text", "particles", "group"]
+const TYPES := ["color", "image", "text", "particles", "group", "mask", "filter"]
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
+## 效果图层：本身不画东西，作用在下方被覆盖的图层上。
+const EFFECT_TYPES := ["mask", "filter"]
+## cover.mode："all" = 下方全部；"count" = 只覆盖下方紧邻的 count 层。
+const COVER_MODES := ["all", "count"]
+## cover.count 的上限。只是防手滑，实际覆盖层数受兄弟数量限制。
+const MAX_COVER := 256
 
 
 static func _base(type: String, layer_name: String) -> Dictionary:
@@ -21,11 +32,10 @@ static func _base(type: String, layer_name: String) -> Dictionary:
 		"name": layer_name,
 		"visible": true,
 		# w / h = 0 表示"还没定过尺寸"，语义是铺满父级（根层就是铺满画布）。
+		# 遮罩层用同一个框表达"遮罩形状的位置与大小"。
 		"transform": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0,
 				"scale": 1.0, "rotation": 0.0, "opacity": 1.0},
 		"blend": "mix",
-		"mask": Mask.defaults(),
-		"filters": Filters.defaults(),
 		"tracks": [],
 		"effects": [],
 		"script_path": "",
@@ -35,6 +45,23 @@ static func _base(type: String, layer_name: String) -> Dictionary:
 
 static func is_group(layer: Dictionary) -> bool:
 	return String(layer.get("type", "")) == "group"
+
+
+static func is_effect(layer: Dictionary) -> bool:
+	return String(layer.get("type", "")) in EFFECT_TYPES
+
+
+static func is_mask(layer: Dictionary) -> bool:
+	return String(layer.get("type", "")) == "mask"
+
+
+static func is_filter(layer: Dictionary) -> bool:
+	return String(layer.get("type", "")) == "filter"
+
+
+## 是否是有自己节点几何的普通图层（效果层不参与框/选区）。
+static func is_content(layer: Dictionary) -> bool:
+	return not layer.is_empty() and not is_effect(layer)
 
 
 static func make_color(layer_name: String, color: Color) -> Dictionary:
@@ -87,6 +114,32 @@ static func make_group(layer_name: String, w: float = 0.0, h: float = 0.0) -> Di
 	return l
 
 
+## 遮罩层：形状 + 边框（边框 = transform 的 x/y/w/h，w/h = 0 表示覆盖整个父级）。
+static func make_mask(layer_name: String) -> Dictionary:
+	var l := _base("mask", layer_name)
+	l["cover"] = {"mode": "all", "count": 1}
+	l.merge(Mask.defaults())
+	return l
+
+
+## 滤镜层：7 组滤镜参数（默认全关；勾选任意一组才生效）。
+static func make_filter(layer_name: String) -> Dictionary:
+	var l := _base("filter", layer_name)
+	l["cover"] = {"mode": "all", "count": 1}
+	l["filters"] = Filters.defaults()
+	return l
+
+
+## 覆盖下方多少层：0 = 下方全部，>0 = 只覆盖紧邻的 N 层。
+static func cover_count(layer: Dictionary) -> int:
+	var cover = layer.get("cover")
+	if not (cover is Dictionary):
+		return 0
+	if String(cover.get("mode", "all")) != "count":
+		return 0
+	return clampi(int(cover.get("count", 1)), 1, MAX_COVER)
+
+
 ## 把字典里缺失/类型不对的字段补成默认值。纯函数，返回新字典。
 static func normalize(raw: Dictionary) -> Dictionary:
 	var type := String(raw.get("type", "color"))
@@ -105,8 +158,6 @@ static func normalize(raw: Dictionary) -> Dictionary:
 		var t: Dictionary = raw["transform"]
 		for k in ["x", "y", "w", "h", "rotation", "scale", "opacity"]:
 			out["transform"][k] = float(t.get(k, out["transform"][k]))
-	out["mask"] = Mask.normalize(raw.get("mask"))
-	out["filters"] = Filters.normalize(raw.get("filters"))
 	if raw.get("tracks") is Array:
 		out["tracks"] = raw["tracks"]
 	if raw.get("effects") is Array:
@@ -144,6 +195,22 @@ static func normalize(raw: Dictionary) -> Dictionary:
 					if item is Dictionary:
 						kids.append(normalize(item))
 			out["children"] = kids
+		"mask":
+			out["cover"] = normalize_cover(raw.get("cover"))
+			out.merge(Mask.normalize(raw))
+		"filter":
+			out["cover"] = normalize_cover(raw.get("cover"))
+			out["filters"] = Filters.normalize(raw.get("filters"))
+	return out
+
+
+static func normalize_cover(raw) -> Dictionary:
+	var out := {"mode": "all", "count": 1}
+	if not (raw is Dictionary):
+		return out
+	var mode := String(raw.get("mode", "all"))
+	out["mode"] = mode if mode in COVER_MODES else "all"
+	out["count"] = clampi(int(raw.get("count", 1)), 1, MAX_COVER)
 	return out
 
 

@@ -5,11 +5,15 @@ extends RefCounted
 ## 图层是**树**：`layers` 是根数组（index 0 = 最底层），容器图层有自己的 children。
 ## 所有"某一层"的寻址都用**路径** PackedInt32Array（如 [2, 0] = 第 3 个根层的第一个子层）。
 ## 结构化编辑（增删、上下移、移入/移出容器）都在这里，界面只调这些方法。
+##
+## 遮罩/滤镜是**效果图层**（type = mask / filter），不是图层属性：它们与普通图层并列，
+## 用 cover 决定覆盖下方哪几层。见 Layer.is_effect() 与 cover_span()。
 
 const StudioPaths = preload("res://src/doc/paths.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
 const FORMAT_VERSION := 1
 const MIN_CANVAS := 64
@@ -65,22 +69,73 @@ static func parse(text: String) -> Dictionary:
 	if raw.get("layers") is Array:
 		for item in raw["layers"]:
 			if item is Dictionary:
-				d.layers.append(_migrate(Layer.normalize(item), Vector2(d.canvas)))
+				# _migrate 返回的是**一串**图层：老的"每层自带遮罩/滤镜"会被拆成
+				# 紧跟在该层上面的独立效果图层（见 _legacy_effects）。
+				d.layers.append_array(_migrate(item, Vector2(d.canvas)))
 
 	return {"ok": true, "doc": d, "error": ""}
 
 
-## 老文档用统一 scale 表达缩放：加载时就折进宽高，之后编辑器里只有"拖框"一种模型。
+## 规范化 + 历史迁移。返回 [{layer}, …]：图层本身，外加老字段折算出的效果图层。
 ## 容器里的子图层按容器框做参照，所以这里要递归下去。
-static func _migrate(layer: Dictionary, parent_size: Vector2) -> Dictionary:
+static func _migrate(raw: Dictionary, parent_size: Vector2) -> Array:
+	var own := raw.duplicate()
+	own.erase("children")
+	var layer := Layer.normalize(own)
 	Frame.migrate_scale(layer, parent_size)
-	if layer.get("children") is Array and not (layer["children"] as Array).is_empty():
-		var frame_size := Frame.of(layer, parent_size).size
+	if Layer.is_group(layer):
 		var kids := []
-		for child in layer["children"]:
-			kids.append(_migrate(child, frame_size))
+		var raw_kids = raw.get("children")
+		var frame_size := Frame.of(layer, parent_size).size
+		if raw_kids is Array:
+			for raw_child in raw_kids:
+				if raw_child is Dictionary:
+					kids.append_array(_migrate(raw_child, frame_size))
 		layer["children"] = kids
-	return layer
+	var out := [layer]
+	out.append_array(_legacy_effects(layer, raw, parent_size))
+	return out
+
+
+## 旧文档把遮罩/滤镜挂在图层自己身上（"节点属性"模型）。加载时把它们拆成
+## 紧跟在该层上方的独立效果图层，覆盖层数 = 1，画出来的效果保持一致。
+static func _legacy_effects(layer: Dictionary, raw: Dictionary, parent_size: Vector2) -> Array:
+	var out := []
+	if not bool(layer.get("visible", true)):
+		return out
+	# 效果图层自己的 filters 字段是它**自己的参数**，不是旧文档的"图层属性"，
+	# 不能再拆一层（否则每读一次工程就多出一个滤镜层）。
+	if Layer.is_effect(layer):
+		return out
+	var lf := Frame.of(layer, parent_size)
+
+	var old_mask = raw.get("mask")
+	if old_mask is Dictionary and bool(old_mask.get("enabled", false)):
+		var m := Layer.make_mask("遮罩")
+		var mw := float(old_mask.get("w", 0.0))
+		var mh := float(old_mask.get("h", 0.0))
+		var mpos := Vector2(float(old_mask.get("x", 0.0)), float(old_mask.get("y", 0.0)))
+		var msize := Vector2(mw, mh) if (mw > 0.0 and mh > 0.0) else lf.size
+		m["transform"]["x"] = lf.position.x + mpos.x
+		m["transform"]["y"] = lf.position.y + mpos.y
+		m["transform"]["w"] = msize.x
+		m["transform"]["h"] = msize.y
+		m["cover"] = {"mode": "count", "count": 1}
+		var shape := String(old_mask.get("shape", "rect"))
+		m["shape"] = shape if shape in Mask.SHAPES else "rect"
+		m["radius"] = maxf(0.0, float(old_mask.get("radius", 24.0)))
+		m["feather"] = maxf(0.0, float(old_mask.get("feather", 0.0)))
+		m["invert"] = bool(old_mask.get("invert", false))
+		m["src"] = String(old_mask.get("src", ""))
+		out.append(Layer.normalize(m))
+
+	var f := Filters.normalize(raw.get("filters"))
+	if Filters.any(f):
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"] = f
+		fl["cover"] = {"mode": "count", "count": 1}
+		out.append(Layer.normalize(fl))
+	return out
 
 
 func to_text() -> String:
@@ -160,6 +215,42 @@ func walk(parent_path = null, depth: int = 0, out = null) -> Array:
 		if Layer.is_group(layer):
 			walk(path, depth + 1, acc)
 	return acc
+
+
+## 效果层 path 覆盖的兄弟区间 [from, to)（to = 它自己的下标）。
+## 语义与场景构造完全一致：只看**它下方**能生成的兄弟（隐藏的效果层不生效、不占名额），
+## cover.mode = "all" 时 from = 0。
+func cover_span(path: PackedInt32Array) -> Vector2i:
+	if path.is_empty():
+		return Vector2i.ZERO
+	var parent := parent_path_of(path)
+	var arr := siblings_at(parent)
+	var idx: int = path[path.size() - 1]
+	if idx < 0 or idx >= arr.size():
+		return Vector2i.ZERO
+	var effect: Dictionary = arr[idx]
+	if not Layer.is_effect(effect):
+		return Vector2i(idx, idx)
+	var below := []
+	for i in idx:
+		var s = arr[i]
+		if not (s is Dictionary):
+			continue
+		if Layer.is_effect(s) and not bool(s.get("visible", true)):
+			continue
+		below.append(i)
+	var n := Layer.cover_count(effect)
+	if n <= 0 or n > below.size():
+		n = below.size()
+	if n == 0:
+		return Vector2i(idx, idx)
+	return Vector2i(int(below[below.size() - n]), idx)
+
+
+## 覆盖了多少层（给界面显示"覆盖下方 N 层"）。
+func covered_count(path: PackedInt32Array) -> int:
+	var span := cover_span(path)
+	return maxi(0, span.y - span.x)
 
 
 # ---------------------------------------------------------------- 结构编辑
@@ -261,7 +352,7 @@ func reparent(path: PackedInt32Array, new_parent: PackedInt32Array) -> PackedInt
 ## 把一个图层包进新建的容器（容器框 = 图层当前的框）。返回容器路径。
 func wrap_in_group(path: PackedInt32Array) -> PackedInt32Array:
 	var layer := layer_at(path)
-	if layer.is_empty():
+	if layer.is_empty() or Layer.is_effect(layer):
 		return path
 	var parent_path := parent_path_of(path)
 	var size := parent_size(path)
@@ -347,7 +438,7 @@ func validate(project_dir: String) -> PackedStringArray:
 		var l: Dictionary = item["layer"]
 		if not bool(l.get("visible", true)):
 			continue
-		if not Layer.is_group(l):
+		if Layer.is_content(l):
 			visible += 1
 		var type := String(l["type"])
 		var rel := ""
@@ -357,17 +448,14 @@ func validate(project_dir: String) -> PackedStringArray:
 				problems.append("图层「%s」没有选择图片。" % l["name"])
 		elif type == "particles":
 			rel = String(l.get("texture", ""))
+		elif type == "mask" and String(l.get("shape", "")) == "image":
+			rel = String(l.get("src", ""))
+			if rel.is_empty():
+				problems.append("遮罩层「%s」没有选择遮罩图。" % l["name"])
 		if not rel.is_empty() and not FileAccess.file_exists(project_dir.path_join(rel)):
 			problems.append("图层「%s」的资源不存在：%s" % [l["name"], rel])
 		if int(l.get("amount", 1)) < 1:
 			problems.append("图层「%s」的粒子数量必须大于 0。" % l["name"])
-		var mask: Dictionary = l.get("mask", {})
-		if bool(mask.get("enabled", false)) and String(mask.get("shape", "")) == "image":
-			var msrc := String(mask.get("src", ""))
-			if msrc.is_empty():
-				problems.append("图层「%s」的图片遮罩没有选择图片。" % l["name"])
-			elif not FileAccess.file_exists(project_dir.path_join(msrc)):
-				problems.append("图层「%s」的遮罩资源不存在：%s" % [l["name"], msrc])
 	if visible == 0:
 		problems.append("没有任何可见图层，导出的会是一张纯色图。")
 	return problems
@@ -390,9 +478,8 @@ func asset_refs() -> Array:
 			var rel2 := String(l.get("texture", ""))
 			if not rel2.is_empty():
 				out.append({"layer": l, "field": "texture", "rel": rel2})
-		var mask: Dictionary = l.get("mask", {})
-		if bool(mask.get("enabled", false)) and String(mask.get("shape", "")) == "image":
-			var msrc := String(mask.get("src", ""))
+		elif type == "mask" and String(l.get("shape", "")) == "image":
+			var msrc := String(l.get("src", ""))
 			if not msrc.is_empty():
-				out.append({"layer": l, "field": "mask", "rel": msrc})
+				out.append({"layer": l, "field": "src", "rel": msrc})
 	return out

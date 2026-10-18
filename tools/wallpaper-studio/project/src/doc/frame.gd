@@ -227,14 +227,11 @@ static func scale_children(children: Array, sx: float, sy: float, anchor: Vector
 		if float(t.get("h", 0.0)) > 0.0:
 			t["h"] = maxf(MIN_SIZE, float(t["h"]) * sy)
 		c["transform"] = t
-		# 遮罩是图层本地像素，跟着同一套比例走。
-		var mask: Dictionary = c.get("mask", {})
-		if not mask.is_empty() and float(mask.get("w", 0.0)) > 0.0:
-			mask["x"] = float(mask.get("x", 0.0)) * sx
-			mask["y"] = float(mask.get("y", 0.0)) * sy
-			mask["w"] = float(mask.get("w", 0.0)) * sx
-			mask["h"] = float(mask.get("h", 0.0)) * sy
-			mask["feather"] = float(mask.get("feather", 0.0)) * minf(sx, sy)
+		# 遮罩层是独立图层：它的框跟着同一套比例走，形状参数里的像素量也要一起缩，
+		# 否则画布放大两倍后圆角/羽化看起来只剩一半。
+		if String(c.get("type", "")) == "mask":
+			c["radius"] = float(c.get("radius", 0.0)) * minf(sx, sy)
+			c["feather"] = float(c.get("feather", 0.0)) * minf(sx, sy)
 		if c.get("children") is Array and not (c["children"] as Array).is_empty():
 			# 子容器里的内容按同一比例拉伸（相对它自己的原点）。
 			c["children"] = scale_children(c["children"], sx, sy, Vector2.ZERO)
