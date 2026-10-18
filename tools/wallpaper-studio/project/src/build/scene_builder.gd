@@ -4,6 +4,7 @@ extends RefCounted
 ## 接入，两个接缝位置在 build() 里以注释标出。
 
 const LayerNodes = preload("res://src/build/layer_nodes.gd")
+const Frame = preload("res://src/doc/frame.gd")
 
 const ROOT_NAME := "WallpaperRoot"
 
@@ -38,7 +39,7 @@ static func build(doc, project_dir: String) -> Control:
 		if node == null:
 			continue
 		node.name = "layer_%d" % i
-		apply_common(node, layer)
+		apply_common(node, layer, doc.canvas)
 		root.add_child(node)
 
 	# 阶段 2 的接缝：这里会调用 AnimationBuilder.compile(doc, root) 生成 AnimationPlayer。
@@ -60,16 +61,38 @@ static func set_owner_recursive(node: Node, scene_root: Node) -> void:
 		set_owner_recursive(c, scene_root)
 
 
-## 把通用字段（变换 / 可见性 / 混合模式）应用到节点上。
-static func apply_common(node: Control, layer: Dictionary) -> void:
+## 把通用字段（位置/尺寸 / 变换 / 可见性 / 混合模式）应用到节点上。
+static func apply_common(node: Control, layer: Dictionary, canvas: Vector2i) -> void:
 	var t: Dictionary = layer.get("transform", {})
-	node.position = Vector2(float(t.get("x", 0.0)), float(t.get("y", 0.0)))
+	apply_frame(node, layer, canvas)
 	node.scale = Vector2(float(t.get("scale", 1.0)), float(t.get("scale", 1.0)))
 	node.rotation_degrees = float(t.get("rotation", 0.0))
 	node.modulate = Color(1, 1, 1, float(t.get("opacity", 1.0)))
 	node.visible = bool(layer.get("visible", true))
 	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	apply_blend(node, String(layer.get("blend", "mix")))
+
+
+## 位置与尺寸。显式框（transform.w/h > 0）用**锚点**表达：锚点值 = 画布像素 / 画布，
+## 于是导出的场景在任意窗口尺寸下都等比伸缩，和"铺满画布"的老图层行为一致。
+## 没有显式框的图层保持"铺满父级"的老语义（整张画布）。
+static func apply_frame(node: Control, layer: Dictionary, canvas: Vector2i) -> void:
+	var t: Dictionary = layer.get("transform", {})
+	var explicit := float(t.get("w", 0.0)) > 0.0 and float(t.get("h", 0.0)) > 0.0
+	if explicit:
+		var a := Frame.anchors(layer, canvas)
+		node.anchor_left = float(a["left"])
+		node.anchor_top = float(a["top"])
+		node.anchor_right = float(a["right"])
+		node.anchor_bottom = float(a["bottom"])
+		# 锚点写完之后偏移必须归零，否则位置 = 锚点*父级 + 偏移，框会整体漂移。
+		node.offset_left = 0.0
+		node.offset_top = 0.0
+		node.offset_right = 0.0
+		node.offset_bottom = 0.0
+		return
+	node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	node.position = Frame.of(layer, canvas).position
 
 
 static func apply_blend(node: Control, blend: String) -> void:

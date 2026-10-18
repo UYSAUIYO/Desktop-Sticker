@@ -139,6 +139,10 @@ static func _build_text(layer: Dictionary) -> Control:
 		_:
 			n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	n.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# 显式框（拖过尺寸）的文本框要按框宽折行：拖窄了还溢出到框外就白改了。
+	# 没拖过尺寸的老图层保持不折行 —— 那是既有文档的样子，不能悄悄变。
+	if float(layer.get("transform", {}).get("w", 0.0)) > 0.0:
+		n.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
 	var dynamic := String(layer.get("dynamic", "none"))
 	if dynamic != "none":

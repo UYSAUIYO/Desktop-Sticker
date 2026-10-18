@@ -5,6 +5,7 @@ extends ScrollContainer
 ## 并重建画布 —— 不重建自己，否则拖滑块时控件会被换掉，手感直接坏掉。
 
 const Layer = preload("res://src/doc/layer.gd")
+const Frame = preload("res://src/doc/frame.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
 
 const TYPE_NAMES := {
@@ -145,8 +146,10 @@ func _build_layer(layer: Dictionary) -> void:
 
 	_transform_row("X", "x", layer, 0.0, -20000.0, 20000.0, 1.0)
 	_transform_row("Y", "y", layer, 0.0, -20000.0, 20000.0, 1.0)
-	_transform_row("缩放", "scale", layer, 1.0, 0.01, 20.0, 0.01)
+	_size_row("宽", "w", layer)
+	_size_row("高", "h", layer)
 	_transform_row("旋转", "rotation", layer, 0.0, -3600.0, 3600.0, 1.0)
+	_hint("画布上直接拖动元素即可移动；拖八个手柄缩放尺寸，角点按住 Shift 等比。宽高和图片比例不一致时图片会被拉伸。")
 
 	var opacity := _spin(float(layer["transform"].get("opacity", 1.0)), 0.0, 1.0, 0.01)
 	opacity.value_changed.connect(func(v: float) -> void:
@@ -441,6 +444,19 @@ func _transform_row(label_text: String, key: String, layer: Dictionary,
 	var sp := _spin(float(tr.get(key, default_value)), minv, maxv, step)
 	sp.value_changed.connect(func(v: float) -> void:
 		tr[key] = v
+		main.apply_change()
+	)
+	_row(label_text, sp)
+
+
+## 宽/高。没定过尺寸的图层显示的是画布尺寸；第一次改值时才把框落成显式数字
+## （Frame.materialize），这样打开的旧文档不会被无声改写。
+func _size_row(label_text: String, key: String, layer: Dictionary) -> void:
+	var r := Frame.of(layer, main.doc.canvas)
+	var sp := _spin(r.size.x if key == "w" else r.size.y, Frame.MIN_SIZE, 20000.0, 1.0)
+	sp.value_changed.connect(func(v: float) -> void:
+		Frame.materialize(layer, main.doc.canvas)
+		layer["transform"][key] = maxf(Frame.MIN_SIZE, v)
 		main.apply_change()
 	)
 	_row(label_text, sp)

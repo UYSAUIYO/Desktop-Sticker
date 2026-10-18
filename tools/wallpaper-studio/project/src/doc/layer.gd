@@ -14,7 +14,9 @@ static func _base(type: String, layer_name: String) -> Dictionary:
 		"type": type,
 		"name": layer_name,
 		"visible": true,
-		"transform": {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0},
+		# w / h = 0 表示"还没定过尺寸"，语义是铺满画布（见 doc/frame.gd）。
+		"transform": {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0,
+				"scale": 1.0, "rotation": 0.0, "opacity": 1.0},
 		"blend": "mix",
 		"tracks": [],
 		"effects": [],
@@ -73,7 +75,7 @@ static func normalize(raw: Dictionary) -> Dictionary:
 	out["shader_path"] = String(raw.get("shader_path", ""))
 	if raw.get("transform") is Dictionary:
 		var t: Dictionary = raw["transform"]
-		for k in ["x", "y", "rotation", "scale", "opacity"]:
+		for k in ["x", "y", "w", "h", "rotation", "scale", "opacity"]:
 			out["transform"][k] = float(t.get(k, out["transform"][k]))
 	if raw.get("tracks") is Array:
 		out["tracks"] = raw["tracks"]

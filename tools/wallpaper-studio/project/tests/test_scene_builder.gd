@@ -145,6 +145,42 @@ func register(t) -> void:
 		root.free()
 	)
 
+	t.case("builder_applies_explicit_frame_as_anchors", func() -> void:
+		# 显式框用**锚点**表达：导出的壁纸随窗口等比伸缩，而不是钉死在像素尺寸上。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_color("底", Color.BLACK)
+		l["transform"]["x"] = 100.0
+		l["transform"]["y"] = 50.0
+		l["transform"]["w"] = 640.0
+		l["transform"]["h"] = 360.0
+		doc.add_layer(l)
+		var root = _build(doc)
+		var n: Control = root.get_child(1)
+		t.approx(n.anchor_left, 100.0 / 1280.0, 0.0001, "left anchor")
+		t.approx(n.anchor_top, 50.0 / 720.0, 0.0001, "top anchor")
+		t.approx(n.anchor_right, 740.0 / 1280.0, 0.0001, "right anchor")
+		t.approx(n.anchor_bottom, 410.0 / 720.0, 0.0001, "bottom anchor")
+		t.eq(n.offset_left, 0.0, "offsets zeroed")
+		t.eq(n.offset_top, 0.0, "offsets zeroed")
+		root.free()
+	)
+
+	t.case("builder_text_wraps_only_when_framed", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_text("标题", "很长的一段文字，用来验证折行"))
+		var root = _build(doc)
+		var plain: Label = root.get_child(1)
+		t.eq(plain.autowrap_mode, TextServer.AUTOWRAP_OFF, "没拖过尺寸的文本不折行")
+		root.free()
+
+		doc.layers[0]["transform"]["w"] = 400.0
+		doc.layers[0]["transform"]["h"] = 120.0
+		var root2 = _build(doc)
+		var framed: Label = root2.get_child(1)
+		t.ok(framed.autowrap_mode != TextServer.AUTOWRAP_OFF, "显式框的文本按框宽折行")
+		root2.free()
+	)
+
 	t.case("builder_layers_fill_parent_without_doubling", func() -> void:
 		# 回归用例：用 set_anchors_preset 时 offset_right/bottom 会被留成画布尺寸，
 		# 进树后 size = anchor*parent + offset = 1920+1920 —— 整张画布放大一倍，

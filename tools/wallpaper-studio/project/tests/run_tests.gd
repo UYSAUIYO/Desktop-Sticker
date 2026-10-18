@@ -17,6 +17,15 @@ const DTest = preload("res://tests/test_framework.gd")
 
 
 func _initialize() -> void:
+	# 等第一帧结束再跑。编辑器装配用例要把 main.tscn 挂进树，而节点的 _ready
+	# 是引擎在帧边界统一触发的：在 _initialize 里同步 add_child 会撞上
+	# "Parent node is busy setting up children"，界面根本没建起来。
+	# 纯逻辑用例不关心这一帧。
+	await process_frame
+	_collect_and_run()
+
+
+func _collect_and_run() -> void:
 	var dir := DirAccess.open("res://tests")
 	if dir == null:
 		printerr("cannot open res://tests")

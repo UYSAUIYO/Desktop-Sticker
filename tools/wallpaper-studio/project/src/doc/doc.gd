@@ -4,6 +4,7 @@ extends RefCounted
 
 const StudioPaths = preload("res://src/doc/paths.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Frame = preload("res://src/doc/frame.gd")
 
 const FORMAT_VERSION := 1
 const MIN_CANVAS := 64
@@ -59,7 +60,11 @@ static func parse(text: String) -> Dictionary:
 	if raw.get("layers") is Array:
 		for item in raw["layers"]:
 			if item is Dictionary:
-				d.layers.append(Layer.normalize(item))
+				var l := Layer.normalize(item)
+				# 老文档用统一 scale 表达缩放：加载时就折进宽高，
+				# 之后编辑器里只有"拖框"一种模型（渲染结果不变）。
+				Frame.migrate_scale(l, d.canvas)
+				d.layers.append(l)
 
 	return {"ok": true, "doc": d, "error": ""}
 

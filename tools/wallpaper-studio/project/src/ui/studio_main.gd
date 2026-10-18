@@ -211,6 +211,17 @@ func apply_change(rebuild_inspector: bool = false) -> void:
 	_update_window_title()
 
 
+## 拖动类交互的轻量路径：只改画布上那个节点的位置/尺寸，不重建整棵树
+## （每个鼠标移动事件都重造节点树的话，拖起来会一顿一顿的）。
+## 松手后走 apply_change(true) 做完整刷新。
+func apply_live() -> void:
+	if doc == null:
+		return
+	dirty = true
+	if _canvas != null:
+		_canvas.apply_live(selected)
+
+
 ## 只改了文档元信息（名称）或图层名：不需要重建画布。
 func refresh_layers() -> void:
 	dirty = true
