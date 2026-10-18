@@ -11,8 +11,8 @@ extends Control
 ## space 字典统一描述"某个空间 -> 屏幕"：{origin, scale, rotation, rect}。
 ##
 ## 遮罩层同样是普通图层：它的框就是遮罩形状的位置尺寸，所以拖它=改遮罩（画黄框）。
-## 滤镜层平时没有几何（它只作用在被覆盖的层上），但打开「限制作用区域」之后
-## 就有了框（画绿框）：框内是滤镜后的样子，框外保持原样 —— 拖它=改滤镜的作用区域。
+## 滤镜层也**一直有框**（画绿框），但有两种状态：没固定时框跟着被覆盖的内容走（虚线），
+## 拖它/改尺寸就落成"固定范围"（实线）—— 框内是滤镜后的样子，框外保持原样。
 ##
 ## 手感上的要点：拖动过程中**不能**用 event.position 算位移。控件/元素自己的位置
 ## 每帧都在变，局部坐标会跟着跳；统一用 get_global_mouse_position() 的差值。
@@ -67,7 +67,7 @@ func _space() -> Dictionary:
 		"origin": canvas.container_origin() + (map["origin"] as Vector2) * d,
 		"scale": float(map["scale"]) * d,
 		"rotation": float(map["rotation"]),
-		"rect": Frame.of(_layer(), main.doc.parent_size(main.sel)),
+		"rect": main.doc.filter_frame(main.sel),
 	}
 
 
@@ -79,15 +79,11 @@ func _box_color(layer: Dictionary) -> Color:
 	return BORDER_COLOR
 
 
-## 这一层在画布上有没有"可拖的框"：普通图层有，遮罩层有（= 遮罩形状），
-## 滤镜层只有打开了「限制作用区域」才有 —— 否则它在画布上不可点，
-## 免得一个铺满画布的滤镜层把下面所有内容的点击都吃掉。
+## 这一层在画布上有没有"可拖的框"：内容图层、遮罩层、滤镜层都有。
+## 滤镜层的框一直存在（跟随被覆盖内容 / 固定范围），所以从第一次点选起就能拖 ——
+## 不需要先勾任何开关（"像图片一样调位置大小"）。
 func _frameable(layer: Dictionary) -> bool:
-	if layer.is_empty():
-		return false
-	if not Layer.is_filter(layer):
-		return true
-	return Filters.region_enabled(layer)
+	return not layer.is_empty()
 
 
 # ---------------------------------------------------------------- 坐标换算
@@ -146,16 +142,22 @@ func _draw() -> void:
 	var space := _space()
 	if space.is_empty():
 		return
-	_draw_box(space, _box_color(layer), true)
+	# 滤镜层还没固定范围时画虚线：框是跟着被覆盖内容走的，不是它自己的固定框。
+	var auto_follow := Layer.is_filter(layer) and not Filters.region_enabled(layer)
+	_draw_box(space, _box_color(layer), true, auto_follow)
 
 
-func _draw_box(space: Dictionary, color: Color, with_handles: bool) -> void:
+func _draw_box(space: Dictionary, color: Color, with_handles: bool,
+		dashed: bool = false) -> void:
 	var pts := _corners(space)
 	var screen_pts := []
 	for p in pts:
 		screen_pts.append(_to_screen(space, p))
 	for i in 4:
-		draw_line(screen_pts[i], screen_pts[(i + 1) % 4], color, 1.0)
+		if dashed:
+			_draw_dashed(screen_pts[i], screen_pts[(i + 1) % 4], color)
+		else:
+			draw_line(screen_pts[i], screen_pts[(i + 1) % 4], color, 1.0)
 	if not with_handles:
 		return
 	for i in Frame.HANDLES.size():
@@ -164,6 +166,19 @@ func _draw_box(space: Dictionary, color: Color, with_handles: bool) -> void:
 				Vector2(HANDLE_SIZE, HANDLE_SIZE))
 		draw_rect(r, Color(0.09, 0.1, 0.12, 0.92))
 		draw_rect(r, color, false, 1.0)
+
+
+## 虚线：一段实线 + 一段空白。用来说明"这个框还不是固定范围"。
+func _draw_dashed(a: Vector2, b: Vector2, color: Color) -> void:
+	var total := a.distance_to(b)
+	if total <= 0.001:
+		return
+	var dir := (b - a) / total
+	var t := 0.0
+	while t < total:
+		var e := minf(t + 6.0, total)
+		draw_line(a + dir * t, a + dir * e, color, 1.0)
+		t = e + 4.0
 
 
 # ---------------------------------------------------------------- 输入
@@ -226,7 +241,15 @@ func _try_start_drag(screen_p: Vector2) -> bool:
 	if handle < 0 and not _body_at(space, screen_p):
 		return false
 
-	Frame.materialize(layer, main.doc.parent_size(main.sel))
+	if Layer.is_filter(layer) and not Filters.region_enabled(layer):
+		# 第一次碰滤镜层：先把框落成"现在被处理的那块"并固定范围 —— 拖的就是眼前
+		# 这个框，位置不会跳。这里必须整棵重建（apply_change）：带模糊的滤镜只在
+		# 构建时判定区域，要重建才会多出"框外显示原图"那层混合。
+		main.doc.fix_filter_region(main.sel)
+		main.apply_change(true)
+		layer = _layer()
+	else:
+		Frame.materialize(layer, main.doc.parent_size(main.sel))
 	space = _space()
 	if Layer.is_group(layer):
 		# 容器改尺寸会按比例改写子层的框，所以先拍一份快照，拖动时从快照重算

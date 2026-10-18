@@ -488,3 +488,30 @@ func register(t) -> void:
 				Rect2(Vector2.ZERO, Vector2(1280, 720)), "没有可覆盖内容 = 整个父级")
 	)
 
+	t.case("doc_filter_frame_follows_content_until_fixed", func() -> void:
+		# 滤镜层的框一直存在（用户在画布上第一眼就能拖）：没固定时跟着被覆盖内容走，
+		# 第一次触碰（拖动/改数字）落成固定范围，之后内容再动它也不动。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		a["transform"]["x"] = 100.0
+		a["transform"]["y"] = 50.0
+		a["transform"]["w"] = 200.0
+		a["transform"]["h"] = 100.0
+		doc.add_layer(a)
+		var fl := Layer.make_filter("滤镜")
+		doc.add_layer(fl)
+		var fp := PackedInt32Array([1])
+		t.eq(doc.filter_frame(fp), Rect2(Vector2(100, 50), Vector2(200, 100)),
+				"跟随：框 = 被覆盖内容的包围盒")
+		Frame.move(doc.layers[0], doc.canvas, Vector2(60.0, 10.0))
+		t.eq(doc.filter_frame(fp), Rect2(Vector2(160, 60), Vector2(200, 100)),
+				"内容动了，框跟着走")
+		doc.fix_filter_region(fp)
+		t.eq(Filters.region_enabled(doc.layers[1]), true, "固定：区域生效")
+		t.eq(Frame.of(doc.layers[1], doc.canvas), Rect2(Vector2(160, 60), Vector2(200, 100)),
+				"固定后的框 = 当时的包围盒")
+		Frame.move(doc.layers[0], doc.canvas, Vector2(60.0, 10.0))
+		t.eq(doc.filter_frame(fp), Rect2(Vector2(160, 60), Vector2(200, 100)),
+				"固定后内容再动，框不再跟着")
+	)
+

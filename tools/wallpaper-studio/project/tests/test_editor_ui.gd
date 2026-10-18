@@ -255,9 +255,9 @@ func register(t) -> void:
 		editor.free()
 	)
 
-	t.case("editor_filter_region_toggle_makes_canvas_frame", func() -> void:
-		# 滤镜层的「作用区域」：勾上之后这一层就有了画布上的框，能像图片一样拖/缩放，
-		# 画布上也点得中（没开区域时点不到，见上一个用例）。
+	t.case("editor_filter_frame_is_draggable_like_a_layer", func() -> void:
+		# 用户报的"滤镜层没法像图片一样调位置大小"：滤镜层的框一直存在，
+		# 不需要勾任何开关；没固定时框跟着被覆盖内容走，第一次拖/改数字就固定范围。
 		var tree := Engine.get_main_loop() as SceneTree
 		if tree == null:
 			t.ok(false, "no SceneTree")
@@ -279,34 +279,42 @@ func register(t) -> void:
 		editor._canvas.size = Vector2(800, 600)
 		editor._canvas._fit()
 		editor.select_layer(1)
+		var path := PackedInt32Array([1])
+		t.ok(_find_label(editor._inspector._box, "跟随被覆盖图层") != null,
+				"面板写明框现在跟随被覆盖图层")
 
+		# 框从第一眼起就在，并且等于被覆盖内容的包围盒（跟随状态）。
+		t.eq(editor.doc.filter_frame(path), Rect2(Vector2(320, 180), Vector2(640, 360)),
+				"滤镜层的框 = 被覆盖内容的包围盒")
+		t.eq(editor._canvas._selection._frameable(editor.doc.layers[1]), true,
+				"没固定范围也能在画布上拖框")
+		t.eq((editor._canvas._selection._space()["rect"] as Rect2).size, Vector2(640, 360),
+				"选区框画在包围盒上")
+
+		# 画布点选优先内容层：滤镜层的框不抢下面内容的点击。
 		var center: Vector2 = editor._canvas._container.position \
 				+ Vector2(editor.doc.canvas) * 0.5 * editor._canvas._scale
 		t.eq(editor._canvas.layer_at_screen(center), PackedInt32Array([0]),
-				"区域没开时点不到滤镜层，选到下面的内容")
+				"点画布选中内容，不是覆盖在上面的滤镜层")
 
-		var cb := _find_check(editor._inspector._box, "只在框内应用")
-		t.ok(cb != null, "属性面板里有作用区域开关")
-		if cb == null:
-			tree.root.remove_child(editor)
-			editor.free()
-			return
-		cb.button_pressed = true                    # 触发 toggled -> apply_change(true)
-		t.eq(Filters.region_enabled(editor.doc.layers[1]), true, "区域已打开")
-		# 框先落成"被覆盖内容"的包围盒：画面不变，但画布上立刻有框可拖。
+		# 在框上按下 = 开始拖，瞬间落成"固定范围"，框的位置不跳。
+		t.eq(editor._canvas._selection._try_start_drag(center), true, "框上按下能开始拖")
+		t.eq(Filters.region_enabled(editor.doc.layers[1]), true, "第一次拖就固定范围")
 		t.eq(Frame.of(editor.doc.layers[1], editor.doc.canvas),
-				Rect2(Vector2(320, 180), Vector2(640, 360)), "框 = 被覆盖内容的包围盒")
-		t.eq(editor._canvas.layer_at_screen(center), PackedInt32Array([1]),
-				"开了区域之后画布上能直接点中滤镜层")
+				Rect2(Vector2(320, 180), Vector2(640, 360)), "框落成包围盒，不跳")
+		editor._canvas._selection._end_drag()
 
-		# 拖框（等价于在画布上拖）：只刷 uniform，不重建节点。
+		# 固定之后场景里就有区域 uniform；拖动只刷新它，不重建节点。
 		var node := _node_of(editor, editor.doc.layers[1])
 		t.ok(node != null, "滤镜层在画布树里有合成节点")
+		var mat = node.material if node != null else null
+		t.ok(mat is ShaderMaterial, "区域混合材质")
+		if mat is ShaderMaterial:
+			t.eq(int((mat as ShaderMaterial).get_shader_parameter("region_shape")), 0,
+					"固定范围后 region_shape 生效")
 		Frame.move(editor.doc.layers[1], editor.doc.canvas, Vector2(100.0, 0.0))
 		editor.apply_live()
 		t.ok(_node_of(editor, editor.doc.layers[1]) == node, "拖动不重建节点")
-		var mat = node.material if node != null else null
-		t.ok(mat is ShaderMaterial, "区域混合材质")
 		if mat is ShaderMaterial:
 			var rect: Vector4 = (mat as ShaderMaterial).get_shader_parameter("region_rect")
 			t.approx(rect.x, 420.0 / 1280.0, 0.0001, "拖动后 region_rect 立刻更新")
@@ -326,12 +334,12 @@ func _find_option(node: Node, count: int) -> OptionButton:
 	return null
 
 
-## 按文字找复选框（作用区域开关）。
-func _find_check(node: Node, fragment: String) -> CheckButton:
+## 按文字找标签（用来确认面板当前写的是"跟随被覆盖图层"还是"固定范围"）。
+func _find_label(node: Node, fragment: String) -> Label:
 	for c in node.get_children():
-		if c is CheckButton and (c as CheckButton).text.contains(fragment):
-			return c as CheckButton
-		var found := _find_check(c, fragment)
+		if c is Label and String((c as Label).text).contains(fragment):
+			return c as Label
+		var found := _find_label(c, fragment)
 		if found != null:
 			return found
 	return null

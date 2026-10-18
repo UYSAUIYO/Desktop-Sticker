@@ -386,6 +386,35 @@ func covered_bounds(path: PackedInt32Array) -> Rect2:
 	return r
 
 
+## 滤镜层在画布上的框（父级像素）。滤镜层**一直有框**，和图片/遮罩层一样能拖能缩：
+##   · 固定范围（region.enabled）—— 框就是它自己的 transform，滤镜只在这个框内生效；
+##   · 跟随被覆盖图层（默认）—— 框 = 被覆盖内容的包围盒，跟着内容走，滤镜作用在整块内容上。
+## 用户第一次拖这个框 / 改 X·Y·宽·高 时由 fix_filter_region() 落成固定范围。
+func filter_frame(path: PackedInt32Array) -> Rect2:
+	if path.is_empty():
+		return Rect2()
+	var layer: Dictionary = layer_at(path)
+	if Layer.is_filter(layer) and not Filters.region_enabled(layer):
+		return covered_bounds(path)
+	return Frame.of(layer, parent_size(path))
+
+
+## 把滤镜层的框从"跟随"落成"固定"：框 = 当前被覆盖内容的包围盒，区域同时生效。
+## 因为框正好等于现在被处理的那块，画面不变 —— 用户接着拖/缩放即可。
+func fix_filter_region(path: PackedInt32Array) -> void:
+	if path.is_empty():
+		return
+	var layer: Dictionary = layer_at(path)
+	if not Layer.is_filter(layer):
+		return
+	var b := covered_bounds(path)
+	Frame.materialize(layer, parent_size(path))
+	Frame.set_rect(layer, b)
+	var rg := Filters.region(layer)
+	rg["enabled"] = true
+	layer["region"] = rg
+
+
 ## 这一层是不是"绑定到指定图层"的效果层（不管目标还在不在）。
 func _is_bound(path: PackedInt32Array) -> bool:
 	if path.is_empty():

@@ -139,6 +139,12 @@ static func anchor_point(handle: int, r: Rect2) -> Vector2:
 	return Vector2(x, y)
 
 
+## 点是否落在指定矩形里（不旋转）。滤镜层的框可能是"跟随被覆盖内容"算出来的包围盒，
+## 不总是它自己的 transform，所以单独给一个吃矩形的版本。
+static func hit_rect(r: Rect2, point: Vector2) -> bool:
+	return Rect2(r.position, r.size).has_point(point)
+
+
 ## 点是否落在元素里（考虑旋转）。point 是**父级像素**。
 static func hit_test(layer: Dictionary, parent_size, point: Vector2, rotation_deg: float) -> bool:
 	var r := of(layer, parent_size)

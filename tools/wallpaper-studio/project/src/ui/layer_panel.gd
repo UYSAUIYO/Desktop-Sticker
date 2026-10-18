@@ -187,8 +187,8 @@ func _label_for(layer: Dictionary, path: PackedInt32Array) -> String:
 		out += "    ·    覆盖%s（共 %d 层）" % [Layer.cover_label(layer), n]
 	if Layer.is_filter(layer) and not Filters.any(layer.get("filters", {})):
 		out += "    ·    未启用"
-	elif Layer.is_filter(layer) and Filters.region_enabled(layer):
-		out += "    ·    限定区域"
+	elif Layer.is_filter(layer):
+		out += "    ·    固定范围" if Filters.region_enabled(layer) else "    ·    跟随内容"
 	return out
 
 

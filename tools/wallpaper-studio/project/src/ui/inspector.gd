@@ -363,7 +363,7 @@ func _build_cover(layer: Dictionary) -> void:
 			+ "前三种模式按\"离这一层多远\"算：序号 1 = 紧挨着它的下一层，没被盖到的层照常画在它上面。")
 	_hint("效果覆盖的区域 = 被覆盖图层自己的框。目标铺满整张画布（没设过宽高）时，"
 			+ "滤镜自然就是全屏的 —— 想只做局部有三种办法：把目标拖小、把它放进容器，"
-			+ "或者（滤镜层）打开上面的「限制作用区域」直接框出一块。")
+			+ "或者（滤镜层）直接拖画布上的绿框，把作用范围框小。")
 
 
 ## 可绑定的图层：**同一组兄弟**里的内容图层（和 doc.cover_target_path 的规则一致）。
@@ -454,35 +454,38 @@ func _build_mask_layer(layer: Dictionary) -> void:
 
 # ---------------------------------------------------------------- 滤镜层
 
-## 作用区域的分段（滤镜层专属）。默认关闭 = 作用在被覆盖图层的整个区域上；
-## 打开之后这一层在画布上就有了自己的框（绿框），拖/缩放/Shift 等比和其他元素一样。
-## 形状只有矩形/圆角矩形/椭圆 —— 区域是"哪儿生效"，不需要图片 alpha。
+## 滤镜层的「位置与尺寸（作用区域）」。
+##
+## 滤镜层的框**一直存在**，和图片 / 遮罩层一样：画布上直接拖、拖手柄缩放、
+## 改这里的 X·Y·宽·高，不需要先勾任何开关。两种状态：
+##   · 跟随被覆盖图层（默认）—— 框 = 被覆盖内容的包围盒（画布上画虚线），
+##     滤镜作用在整块内容上；内容移动/改尺寸时框跟着走。
+##   · 固定范围 —— 框就是它自己的 transform，框内是滤镜后的样子，框外是原图。
+## 第一次拖框 / 改数字 / 改形状就落成固定范围（画面先不变，框正好等于现在的包围盒），
+## 想回到跟随点下面的按钮。
 func _build_filter_region(layer: Dictionary) -> void:
-	_section("作用区域")
-	var rg: Dictionary = Filters.normalize_region(layer.get("region"))
+	_section("位置与尺寸（作用区域）")
+	var rg: Dictionary = Filters.region(layer)
 	layer["region"] = rg
-	var on := CheckButton.new()
-	on.text = "只在框内应用（限制作用区域）"
-	on.button_pressed = bool(rg.get("enabled", false))
-	on.toggled.connect(func(v: bool) -> void:
-		rg["enabled"] = v
-		if v:
-			# 打开时把框落成"现在被处理的那块内容"的包围盒：画面先不变，但画布上
-			# 立刻有框可拖 —— 否则还得去别处猜该填什么位置。
-			var b: Rect2 = main.doc.covered_bounds(main.sel)
-			var tr: Dictionary = layer["transform"]
-			tr["x"] = b.position.x
-			tr["y"] = b.position.y
-			tr["w"] = maxf(Frame.MIN_SIZE, b.size.x)
-			tr["h"] = maxf(Frame.MIN_SIZE, b.size.y)
-		main.apply_change(true)
-	)
-	_box.add_child(on)
+	var fixed := bool(rg.get("enabled", false))
 
-	if not bool(rg.get("enabled", false)):
-		_hint("现在作用在被覆盖图层的整个区域上（区域 = 它们的包围盒）。"
-				+ "想只处理画面的一块（比如只糊右下角、只给一段文字调色），"
-				+ "勾上上面的开关，然后在画布上拖动/缩放这个框。")
+	var state := Label.new()
+	state.text = ("固定范围：框内是滤镜后的样子，框外是原图。" if fixed
+			else "跟随被覆盖图层（画布上是虚线框）：拖动框或改下面的数字，就会固定成你框出来的范围。")
+	state.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+	state.modulate = Color(0.62, 0.8, 0.68) if fixed else Color(0.66, 0.7, 0.78)
+	state.add_theme_font_size_override("font_size", 11)
+	_box.add_child(state)
+
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	_frame_row("X", "x", layer, parent_size, -20000.0, 20000.0, 1.0, true)
+	_frame_row("Y", "y", layer, parent_size, -20000.0, 20000.0, 1.0, true)
+	_frame_row("宽", "w", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0, true)
+	_frame_row("高", "h", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0, true)
+
+	if not fixed:
+		_hint("框正好盖住现在被处理的那块内容；把它拖小 / 拖到别处，滤镜就只在那儿生效。"
+				+ "没固定时形状（矩形/椭圆…）用不上 —— 框固定之后才出现。")
 		return
 
 	var shapes: Array = Filters.REGION_SHAPES
@@ -493,12 +496,6 @@ func _build_filter_region(layer: Dictionary) -> void:
 		main.apply_change(true)
 	)
 	_row("形状", shape)
-
-	var parent_size: Vector2 = main.doc.parent_size(main.sel)
-	_frame_row("X", "x", layer, parent_size, -20000.0, 20000.0, 1.0)
-	_frame_row("Y", "y", layer, parent_size, -20000.0, 20000.0, 1.0)
-	_frame_row("宽", "w", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0)
-	_frame_row("高", "h", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0)
 
 	var radius := _spin(float(rg.get("radius", 0.0)), 0.0, 4000.0, 1.0)
 	radius.value_changed.connect(func(v: float) -> void:
@@ -523,9 +520,16 @@ func _build_filter_region(layer: Dictionary) -> void:
 	)
 	_box.add_child(invert)
 
+	var follow := Button.new()
+	follow.text = "改回「跟随被覆盖图层」"
+	follow.pressed.connect(func() -> void:
+		rg["enabled"] = false
+		main.apply_change(true)
+	)
+	_box.add_child(follow)
+
 	_hint("框内是滤镜后的样子，框外是原图（对模糊/调色/暗角/色调分离都成立）；"
 			+ "阴影/发光/描边这些副本也只在框内出现。")
-	_hint("画布上拖绿框即可改位置/大小（角点按住 Shift 等比），和拖动普通元素是同一样手感。")
 
 
 func _build_filter_layer(layer: Dictionary) -> void:
@@ -917,17 +921,25 @@ func _size_row(label_text: String, key: String, layer: Dictionary, parent_size: 
 	_row(label_text, sp)
 
 
-## 遮罩框的四条边（存在图层的 transform 里，和普通元素的选区框同一个模型）。
+## 遮罩框 / 滤镜框的四条边（存在图层的 transform 里，和普通元素的选区框同一个模型）。
+## pin_region = true（滤镜层）：显示的是 doc.filter_frame()（没固定时 = 被覆盖内容的
+## 包围盒），第一次改值就把它落成固定范围 —— 和拖画布上的框是同一个动作。
 func _frame_row(label_text: String, key: String, layer: Dictionary, parent_size: Vector2,
-		minv: float, maxv: float, step: float) -> void:
-	var r := Frame.of(layer, parent_size)
-	var value := r.position.x if key == "x" else r.position.y
+		minv: float, maxv: float, step: float, pin_region: bool = false) -> void:
+	var r: Rect2 = main.doc.filter_frame(main.sel) if pin_region else Frame.of(layer, parent_size)
+	var value: float = r.position.x if key == "x" else r.position.y
 	if key == "w":
 		value = r.size.x
 	elif key == "h":
 		value = r.size.y
 	var sp := _spin(value, minv, maxv, step)
 	sp.value_changed.connect(func(v: float) -> void:
+		if pin_region:
+			if not Filters.region_enabled(layer):
+				main.doc.fix_filter_region(main.sel)
+			layer["transform"][key] = maxf(Frame.MIN_SIZE, v) if (key == "w" or key == "h") else v
+			main.apply_change(true)     # 固定后要重建面板：形状/圆角/羽化这时才出现
+			return
 		if key == "x" or key == "y":
 			Frame.materialize(layer, parent_size)
 		layer["transform"][key] = maxf(Frame.MIN_SIZE, v) if (key == "w" or key == "h") else v

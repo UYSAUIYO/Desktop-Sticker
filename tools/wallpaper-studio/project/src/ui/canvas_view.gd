@@ -10,7 +10,6 @@ extends Control
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
-const Filters = preload("res://src/doc/filters.gd")
 const SelectionOverlay = preload("res://src/ui/selection_overlay.gd")
 
 const PADDING := 28.0
@@ -235,23 +234,31 @@ func refresh_selection() -> void:
 # ---------------------------------------------------------------- 命中测试
 
 ## 画布上点哪一层就选哪一层（从最上层往下、递归进容器），空处返回空路径。
+##
+## 分两轮：先只找**内容**图层，找不到才轮到（没固定作用区域的）滤镜层。
+## 滤镜层的框默认就铺在被处理的内容上，若它抢点击，底下所有东西都选不中了；
+## 反过来完全不认它，用户又没法在画布上抓住它的框 —— 两轮正好兼顾。
+## 选中滤镜层之后，拖它的框由选区层（SelectionOverlay）接管，不受这里影响。
 func layer_at_screen(screen_pos: Vector2) -> PackedInt32Array:
 	if main == null or main.doc == null:
 		return PackedInt32Array()
-	return _hit_children(main.doc.layers, PackedInt32Array(), to_canvas(screen_pos),
-			Vector2(main.doc.canvas))
+	var canvas_point := to_canvas(screen_pos)
+	var parent_size := Vector2(main.doc.canvas)
+	var hit := _hit_children(main.doc.layers, PackedInt32Array(), canvas_point,
+			parent_size, true)
+	if hit.is_empty():
+		hit = _hit_children(main.doc.layers, PackedInt32Array(), canvas_point,
+				parent_size, false)
+	return hit
 
 
 func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vector2,
-		parent_size: Vector2) -> PackedInt32Array:
+		parent_size: Vector2, skip_filters: bool) -> PackedInt32Array:
 	for i in range(arr.size() - 1, -1, -1):
 		var layer: Dictionary = arr[i]
 		if not bool(layer.get("visible", true)):
 			continue
-		if Layer.is_filter(layer) and not Filters.region_enabled(layer):
-			# 没开作用区域的滤镜层没有自己的框（它只调色/模糊被覆盖的层），画布上点不到它，
-			# 要改就从左侧列表里选 —— 否则它会一直挡着内容层的点击。
-			# 开了作用区域就有了明确的框，这时该像普通元素一样可以直接点中。
+		if skip_filters and Layer.is_filter(layer):
 			continue
 		var path := parent_path.duplicate()
 		path.append(i)
@@ -259,11 +266,15 @@ func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vect
 		# 图层的旋转只转内容，不改框（渲染端也是这么画的）。
 		var map := Frame.space_map(main.doc, path)
 		var local := Frame.to_space(canvas_point, map)
-		if not Frame.hit_test(layer, parent_size, local, 0.0):
+		# 滤镜层的框：固定范围 = 自己的 transform，跟随内容 = 被覆盖内容的包围盒。
+		var fr := Frame.of(layer, parent_size)
+		if Layer.is_filter(layer):
+			fr = main.doc.filter_frame(path)
+		if not Frame.hit_rect(fr, local):
 			continue
 		if Layer.is_group(layer):
-			var fr := Frame.of(layer, parent_size)
-			var inner := _hit_children(layer.get("children", []), path, canvas_point, fr.size)
+			var inner := _hit_children(layer.get("children", []), path, canvas_point,
+					fr.size, skip_filters)
 			if not inner.is_empty():
 				return inner
 		return path
