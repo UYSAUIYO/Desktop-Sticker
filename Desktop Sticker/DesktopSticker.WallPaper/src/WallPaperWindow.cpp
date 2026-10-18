@@ -89,21 +89,35 @@ bool WallPaperWindow::Create() {
     }
 
     parent_ = DesktopHost::FindWallpaperWorkerW();
-    if (parent_) {
-        const HWND previous = SetParent(hwnd_, parent_);
-        if (GetAncestor(hwnd_, GA_PARENT) == parent_) {
-            embedded_ = true;
-            // 与 Wallpaper Engine 一致：认领宿主（样式 + 属性标记），让桌面层确认归属
-            DesktopHost::ClaimWorkerW(parent_);
-        } else {
-            // SetParent 没生效，回滚成独立窗口，走降级路径
-            if (previous) SetParent(hwnd_, previous);
-            parent_ = nullptr;
-            wp_log("SetParent to wallpaper WorkerW did not take effect; degrading");
-        }
-    } else {
-        wp_log("wallpaper WorkerW unavailable; degrading to bottom-most window");
+    if (!parent_) {
+        wp_log("wallpaper WorkerW unavailable; refusing fullscreen top-level fallback");
+        Destroy();
+        return false;
     }
+
+    // SetParent 要求窗口使用 WS_CHILD；保留其余样式，避免它继续作为全屏弹出窗口显示。
+    LONG_PTR style = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR previousStyle = SetWindowLongPtrW(
+        hwnd_, GWL_STYLE, (style & ~static_cast<LONG_PTR>(WS_POPUP)) | WS_CHILD);
+    if (previousStyle == 0 && GetLastError() != ERROR_SUCCESS) {
+        wp_log("converting wallpaper window to WS_CHILD failed: " +
+               std::to_string(GetLastError()));
+        Destroy();
+        return false;
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    SetParent(hwnd_, parent_);
+    const DWORD parentError = GetLastError();
+    if (GetAncestor(hwnd_, GA_PARENT) != parent_) {
+        wp_log("SetParent to wallpaper WorkerW failed: " + std::to_string(parentError));
+        Destroy();
+        return false;
+    }
+    embedded_ = true;
+    // 与 Wallpaper Engine 一致：认领宿主（样式 + 属性标记），让桌面层确认归属
+    DesktopHost::ClaimWorkerW(parent_);
 
     PlaceAtBottom();
 

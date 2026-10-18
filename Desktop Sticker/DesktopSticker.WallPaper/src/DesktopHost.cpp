@@ -91,19 +91,12 @@ HWND DesktopHost::FindWallpaperWorkerW() {
             return found.worker;
         }
 
-        // 兼容旧结构：Progman 自己持有 SHELLDLL_DefView，此时没有独立的壁纸宿主。
+        // Progman 持有图标视图是常见桌面结构；Explorer 可能还在处理上面的消息。
+        // 只记录一次并继续重试，不能因此跳过剩余的 WorkerW 查找轮次。
         if (attempt == 0 && FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr)) {
-            wp_log("no separate wallpaper WorkerW; Progman holds DefView");
-            return nullptr;
+            wp_log("Progman holds DefView; continuing wallpaper WorkerW retries");
         }
 
-        // 长时间拿不到：按 WE 的做法让桌面重建一次（SPI_SETCLIENTAREAANIMATION +
-        // SENDCHANGE 会广播设置变更，Explorer 会重新整理桌面窗口树）。
-        if (attempt > 0x13) {
-            SystemParametersInfoW(0x1043 /* SPI_SETCLIENTAREAANIMATION */, 0,
-                                  reinterpret_cast<PVOID>(1),
-                                  0x3 /* SPIF_UPDATEINIFILE | SPIF_SENDCHANGE */);
-        }
         Sleep(advanced ? kSlowRetryMs : kFastRetryMs);
     }
 
