@@ -38,16 +38,14 @@ struct MouseRelayEvent {
 };
 
 // 接收方（WebView2 / 内嵌 Godot）。只在渲染线程上被调用。
+//
+// 约定：壁纸窗口位于图标层之下且命中测试透明，**永远收不到真实的鼠标消息**。
+// 后端的输入只有一条来源 —— 本模块转发过来的事件。后端不得再让系统把真实流
+// 投给自己（内嵌 Godot 的窗口过程会在按下后立刻交还捕获），否则两条流会重复。
 class IMouseSink {
 public:
     virtual ~IMouseSink() = default;
     virtual void OnRelayMouse(const MouseRelayEvent& event) = 0;
-
-    // 后端自己是否已经握着系统鼠标捕获（按下期间）。为 true 时系统会把真实鼠标消息
-    // 直接投递给它，宿主必须停止转发与拦截，否则会和真实消息重复。
-    // 只有"能用窗口消息收输入"的后端（内嵌 Godot）会返回 true；
-    // WebView2 视觉宿主只能靠 SendMouseInput，永远返回 false。
-    virtual bool OwnsCapture() const { return false; }
 };
 
 class MouseRelay {
@@ -91,8 +89,6 @@ private:
     IMouseSink* sink_ = nullptr;
     std::atomic<bool> enabled_{true};
     std::atomic<bool> active_{true};
-    // 后端是否握着系统捕获（每帧由 Drain 在渲染线程上问一次）
-    std::atomic<bool> nativeCapture_{false};
 
     std::thread thread_;
     DWORD thread_id_ = 0;

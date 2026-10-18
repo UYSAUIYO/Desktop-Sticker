@@ -38,13 +38,10 @@ public:
     void notify_paused(bool paused);
 
     // 鼠标交互：把一条转发事件以窗口消息的形式 PostMessage 给引擎窗口。
-    // 引擎的窗口过程（fork 装的那层薄壳）走它自己的原生输入处理 —— 按下时它会
-    // SetCapture，之后系统把真实的移动/抬起直接送给这个窗口，宿主不再参与。
+    // 引擎的窗口过程（fork 装的那层薄壳）走它自己的原生输入处理，和真实窗口同一条
+    // 路径；窗口过程在按下后会立刻把系统捕获交还，所以引擎的鼠标流始终只有
+    // "宿主转发"这一条，不会和真实消息叠在一起。
     bool send_mouse(const MouseRelayEvent& event);
-
-    // 引擎窗口当前是否握着鼠标捕获（按下期间为真）：为真时宿主必须停止转发/拦截，
-    // 否则会和系统捕获送来的真实消息重复。
-    bool owns_capture() const;
 
     bool active() const { return active_; }
 

@@ -255,9 +255,9 @@ void GodotEngineHost::notify_paused(bool paused) {
 
 // 鼠标交互：宿主钩子 → 这里 → PostMessage 给引擎窗口。
 // 引擎窗口过程被 fork 换成了薄壳（见 dstk_embed_windows.cpp），鼠标消息走
-// DisplayServerWindows::WndProc —— 和真实窗口完全同一条路径：按下时引擎自己
-// SetCapture，之后的移动/抬起由系统直接投递给它，宿主不再插手（也就不会和
-// 真实消息重复、不需要模拟 relative/速度）。滚动条、悬停进出同样由引擎维护。
+// DisplayServerWindows::WndProc —— 和真实窗口完全同一条路径，滚动条、悬停进出、
+// 按下/抬起计数都由引擎自己维护。薄壳在每条消息之后把系统捕获交还，所以这里
+// 转发出去的就是引擎收到的唯一一条流（不会和真实鼠标消息重复）。
 bool GodotEngineHost::send_mouse(const MouseRelayEvent& event) {
     if (!active_ || !instance_ || !window_ || !IsWindow(window_)) {
         return false;
@@ -304,13 +304,6 @@ bool GodotEngineHost::send_mouse(const MouseRelayEvent& event) {
     }
 
     return PostMessageW(window_, message, wparam, lparam) != FALSE;
-}
-
-// 引擎窗口是否握着鼠标捕获（按下期间）。调用方必须在本进程的渲染线程上问：
-// GetCapture 只对"调用线程自己的消息队列"有效，而引擎正是在那条线程上捕获的。
-bool GodotEngineHost::owns_capture() const {
-    if (!active_ || !window_ || !IsWindow(window_)) return false;
-    return GetCapture() == window_;
 }
 
 void GodotEngineHost::destroy_all() {

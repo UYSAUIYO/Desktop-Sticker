@@ -206,3 +206,32 @@ TEST(MouseRelay_ButtonBitsMatchKinds) {
     ASSERT_TRUE(relay_is_up(RelayEventKind::RightUp));
     ASSERT_FALSE(relay_is_down(RelayEventKind::Move));
 }
+
+TEST(MouseRelay_DropsMoveSupersededByButton) {
+    // 引擎的消息泵每帧先派发按键/滚轮、最后才派发一条移动：同一批里"按钮之前的移动"
+    // 会晚于按钮执行，位置比按钮更旧（按下/抬起那一帧画面往回跳 = 抽搐），必须丢掉。
+    const RelayEventKind move_then_down[] = {RelayEventKind::Move, RelayEventKind::LeftDown};
+    ASSERT_TRUE(relay_move_superseded(move_then_down, 2, 0));
+    ASSERT_FALSE(relay_move_superseded(move_then_down, 2, 1));
+
+    // 按钮之后的移动是最新的，要照常转发（拖动靠它跟手）
+    const RelayEventKind down_then_move[] = {RelayEventKind::LeftDown, RelayEventKind::Move};
+    ASSERT_FALSE(relay_move_superseded(down_then_move, 2, 1));
+
+    // 一批里只有移动：不会被谁顶掉
+    const RelayEventKind moves[] = {RelayEventKind::Move, RelayEventKind::Move};
+    ASSERT_FALSE(relay_move_superseded(moves, 2, 0));
+    ASSERT_FALSE(relay_move_superseded(moves, 2, 1));
+
+    // 抬起前的移动同样丢：松手后不应再冒出一条更旧位置的移动
+    const RelayEventKind move_then_up[] = {RelayEventKind::Move, RelayEventKind::LeftUp};
+    ASSERT_TRUE(relay_move_superseded(move_then_up, 2, 0));
+
+    // 滚轮也属于"离散消息"
+    const RelayEventKind move_then_wheel[] = {RelayEventKind::Move, RelayEventKind::Wheel};
+    ASSERT_TRUE(relay_move_superseded(move_then_wheel, 2, 0));
+
+    // 空批 / 越界不炸
+    ASSERT_FALSE(relay_move_superseded(nullptr, 0, 0));
+    ASSERT_FALSE(relay_move_superseded(moves, 2, 5));
+}

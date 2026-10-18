@@ -315,7 +315,7 @@ int main(int argc, char **argv) {
 	bool paused = false;
 	bool f8_down = false, f9_down = false, f10_down = false;
 	long long frames = 0;
-	bool injected = false;
+	long long inject_frames = 0;   // 不随 fps 统计重置
 	double fps_t0 = now_ms();
 	const double start_ms = fps_t0;
 
@@ -350,15 +350,40 @@ int main(int argc, char **argv) {
 				break;
 			}
 			++frames;
+			++inject_frames;
 
-			// 鼠标注入：PostMessage 给壁纸窗口，走引擎自己的窗口过程（与真实窗口同一条路径）
-			if (!injected && inject_x >= 0 && frames == 10) {
-				injected = true;
-				PostMessageW(host_wnd, WM_MOUSEMOVE, 0, MAKELPARAM(inject_x, inject_y));
-				PostMessageW(host_wnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(inject_x, inject_y));
-				PostMessageW(host_wnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(inject_x + 40, inject_y + 10));
-				PostMessageW(host_wnd, WM_LBUTTONUP, 0, MAKELPARAM(inject_x + 40, inject_y + 10));
-				std::printf("[host] posted move/down/move/up at (%d,%d)\n", inject_x, inject_y);
+			// 鼠标注入：PostMessage 给壁纸窗口，走引擎自己的窗口过程（与真实窗口同一条路径）。
+			// 每次只发一条、间隔两帧 —— 和应用里 relay_.Drain 每帧最多交一条移动的节奏一致
+			// （引擎 process_events 每帧只派发一条 WM_MOUSEMOVE，一次塞一堆会被重新排序）。
+			if (inject_x >= 0 && inject_frames >= 10 && inject_frames <= 30 && (inject_frames % 2) == 0) {
+				static int step = -1;
+				const int s = (int)((inject_frames - 10) / 2);
+				if (s != step) {
+					step = s;
+					const LPARAM at = MAKELPARAM(inject_x + s * 10, inject_y + s * 5);
+					switch (s) {
+						case 0:
+							PostMessageW(host_wnd, WM_MOUSEMOVE, 0, at);
+							std::printf("[host] post move\n");
+							break;
+						case 1:
+							PostMessageW(host_wnd, WM_LBUTTONDOWN, MK_LBUTTON, at);
+							std::printf("[host] post left-down\n");
+							break;
+						case 2:
+						case 3:
+						case 4:
+							PostMessageW(host_wnd, WM_MOUSEMOVE, MK_LBUTTON, at);
+							std::printf("[host] post move (held)\n");
+							break;
+						case 5:
+							PostMessageW(host_wnd, WM_LBUTTONUP, 0, at);
+							std::printf("[host] post left-up\n");
+							break;
+						default:
+							break;
+					}
+				}
 			}
 		} else {
 			Sleep(16);

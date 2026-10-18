@@ -10,6 +10,7 @@
 // 本文件只放"该不该转发 / 该不该吞掉 / 谁抢到了这一点"的判断；
 // 钩子线程、窗口命中测试、图标命中测试都在 src/MouseRelay.cpp。
 
+#include <cstddef>
 #include <cstdint>
 
 namespace desktopsticker::wallpaper {
@@ -128,8 +129,23 @@ inline bool relay_swallows(RelayEventKind kind, bool capturing) {
     return true;
 }
 
+// 同一批里"后面还有按键/滚轮"的移动是否会晚于那个按钮执行（见文件头注释）：
+// 是则丢弃。kinds 是这一批事件按到达顺序排列的种类。
+inline bool relay_move_superseded(const RelayEventKind* kinds, std::size_t count,
+                                  std::size_t index) {
+    if (index >= count || kinds[index] != RelayEventKind::Move) return false;
+    for (std::size_t j = index + 1; j < count; ++j) {
+        if (kinds[j] != RelayEventKind::Move) return true;
+    }
+    return false;
+}
+
 // 交互状态机：谁抢到了这一点、要不要转发、按下是否已被转发。
 //
+// 另附一条"引擎泵语义"规则：Godot 的 process_events() 每帧先把离散消息（按键 / 滚轮 /
+// 系统消息）派发完，最后才派发一条 WM_MOUSEMOVE。所以同一批事件里"后面还有按键/滚轮"
+// 的移动会被排到那个按钮之后执行 —— 位置比按钮更旧，按下或抬起的那一帧画面会往回跳
+// （用户实测症状："点一下同时移动就抽搐"）。这类移动必须丢弃。//
 // Leave 的时机只有"光标离开壁纸矩形"一种：命中被拒（图标、分区卡片、任务栏）时
 // 只是"这条不转发"，绝不下发 Leave —— 否则光标在画面里移动时会在
 // "移动 / 离开" 之间抖动，后端的悬停与拖动状态跟着抽搐（实测症状）。

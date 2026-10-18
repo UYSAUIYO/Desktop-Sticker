@@ -3,6 +3,8 @@
 
 #include <commctrl.h>
 
+#include <vector>
+
 #include "Log.h"
 
 namespace desktopsticker::wallpaper {
@@ -97,15 +99,6 @@ void MouseRelay::Drain(bool paused) {
         statMoves_ = statButtons_ = statWheels_ = statLeaves_ = statRejected_ = statReleases_ = 0;
     }
 
-    // 后端已经握着系统捕获（按下期间）：真实的鼠标消息由系统直接送给它，
-    // 我们既不转发也不拦截。只把队列清掉，避免松开后补投一批过期事件。
-    const bool nativeCapture = sink_ && sink_->OwnsCapture();
-    nativeCapture_.store(nativeCapture);
-    if (nativeCapture) {
-        clear_queue();
-        return;
-    }
-
     std::deque<MouseRelayEvent> pending;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -117,7 +110,19 @@ void MouseRelay::Drain(bool paused) {
 
     // 诊断：前 12 条事件写日志。"壁纸点了没反应"时先确认事件到底有没有到渲染线程。
     static int traced = 0;   // 只有渲染线程进这里，不需要同步
-    for (const auto& event : pending) {
+    std::vector<RelayEventKind> kinds;
+    kinds.reserve(pending.size());
+    for (const auto& e : pending) kinds.push_back(e.kind);
+
+    for (size_t i = 0; i < pending.size(); ++i) {
+        const MouseRelayEvent& event = pending[i];
+        // 引擎泵每帧先派发按键/滚轮、最后才派发一条移动，所以"后面还有按钮"的移动实际会
+        // 晚于按钮执行，位置更旧 → 按下/抬起那一帧画面往回跳。这类移动直接丢弃
+        // （按钮自带最新坐标），顺序语义就与真实窗口一致了。
+        if (relay_move_superseded(kinds.data(), kinds.size(), i)) {
+            ++statRejected_;
+            continue;
+        }
         if (traced < 12) {
             ++traced;
             wp_log(std::string("mouse relay: ") + kind_name(event.kind) + " x=" +
@@ -232,13 +237,6 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
         return;
     }
     was_active_ = true;
-
-    // 后端握着系统捕获：这一段时间的鼠标消息由系统直接投递给它（真实消息流），
-    // 钩子必须完全让开 —— 既不再转发（会重复），也不拦截（会把它自己的消息吃掉）。
-    if (nativeCapture_.load()) {
-        policy_.reset();
-        return;
-    }
 
     RelayEventKind kind = RelayEventKind::Move;
     int wheelDelta = 0;

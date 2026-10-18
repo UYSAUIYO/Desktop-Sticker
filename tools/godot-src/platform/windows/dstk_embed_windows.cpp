@@ -50,11 +50,20 @@ static bool is_mouse_message(UINT p_msg) {
 
 // 薄壳过程：鼠标消息走引擎原生处理，其余消息回交给宿主原来的窗口过程
 // （宿主自己的 WM_NCHITTEST=HTTRANSPARENT / WM_MOUSEACTIVATE 等语义一字不改）。
+//
+// 捕获必须立刻交还：交互壁纸的鼠标流**只有一条**（宿主低级钩子转发过来的），
+// 引擎一旦握着系统捕获，Windows 就会把**真实**的鼠标消息也投给它 —— 与转发流重复，
+// 按住拖动时表现为抽搐。引擎的按钮状态 / pressrc 在 WndProc 里已经记下，
+// 后续移动照旧从转发流进来，所以释放捕获不影响它的拖动判定。
 static LRESULT CALLBACK dstk_input_wnd_proc(HWND p_hwnd, UINT p_msg, WPARAM p_wparam, LPARAM p_lparam) {
 	if (is_mouse_message(p_msg)) {
 		DisplayServerWindows *ds = Object::cast_to<DisplayServerWindows>(DisplayServer::get_singleton());
 		if (ds) {
-			return ds->WndProc(p_hwnd, p_msg, p_wparam, p_lparam);
+			LRESULT result = ds->WndProc(p_hwnd, p_msg, p_wparam, p_lparam);
+			if (GetCapture() == p_hwnd) {
+				ReleaseCapture();
+			}
+			return result;
 		}
 	}
 	if (g_dstk_prev_proc) {

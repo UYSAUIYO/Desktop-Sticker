@@ -103,8 +103,4 @@ void GodotEmbeddedBackend::OnRelayMouse(const MouseRelayEvent& event) {
     GodotEngineHost::instance().send_mouse(event);
 }
 
-bool GodotEmbeddedBackend::OwnsCapture() const {
-    return GodotEngineHost::instance().owns_capture();
-}
-
 } // namespace desktopsticker::wallpaper

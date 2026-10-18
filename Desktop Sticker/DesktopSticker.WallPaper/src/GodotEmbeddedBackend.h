@@ -26,8 +26,6 @@ public:
     uint32_t FrameSerial() const override { return serial_; }
 
     void OnRelayMouse(const MouseRelayEvent& event) override;
-    // 引擎按下时自己 SetCapture：此后真实鼠标消息直接送给它，宿主必须让开
-    bool OwnsCapture() const override;
 
 private:
     uint32_t serial_ = 0;
