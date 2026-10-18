@@ -40,6 +40,18 @@ TEST(MouseRelay_OnlyBlankDesktopIsInteractive) {
     ASSERT_FALSE(relay_accepts(otherApp()));  // 全屏应用、任务栏、开始菜单
 }
 
+// 键盘焦点只在"空白桌面左键按下"这一下补一次移交：右键 / 移动 / 滚轮 / 图标 / 自家窗口都不动焦点。
+// （点击被我们吞掉之后系统不会自己把焦点交给桌面；移交本身是"能拿就拿"，按键由钩子转发保证。）
+TEST(MouseRelay_FocusHandoffOnlyOnBlankDesktopLeftDown) {
+    ASSERT_TRUE(relay_should_request_focus(RelayEventKind::LeftDown, blank()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::LeftDown, icon()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::LeftDown, own()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::LeftDown, otherApp()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::RightDown, blank()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::Move, blank()));
+    ASSERT_FALSE(relay_should_request_focus(RelayEventKind::Wheel, blank()));
+}
+
 TEST(MouseRelay_ScreenToClientAndClamp) {
     RelayViewport vp;
     vp.width = 1920;
@@ -169,12 +181,14 @@ TEST(MouseRelay_DisableDropsHeldButtons) {
 }
 
 TEST(MouseRelay_SwallowRules) {
-    // 按键/滚轮一律吞（否则桌面同时拖选择框、弹右键菜单）；移动只在拖动时吞
+    // 点击/滚轮一律吞（否则桌面同时拖选择框、弹右键菜单）；
+    // 移动**永远不吞**：桌面的按下已被吞，不会开始框选；而拦截移动消息在某些
+    // 输入路径上会让光标卡住（实测拖动时光标停在原地 ±1 抖动）。
     ASSERT_TRUE(relay_swallows(RelayEventKind::LeftDown, false));
     ASSERT_TRUE(relay_swallows(RelayEventKind::LeftUp, true));
     ASSERT_TRUE(relay_swallows(RelayEventKind::Wheel, false));
     ASSERT_FALSE(relay_swallows(RelayEventKind::Move, false));
-    ASSERT_TRUE(relay_swallows(RelayEventKind::Move, true));
+    ASSERT_FALSE(relay_swallows(RelayEventKind::Move, true));
 }
 
 TEST(MouseRelay_ReportsOnlyButtonsItActuallyDelivered) {

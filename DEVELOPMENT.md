@@ -113,7 +113,8 @@ Desktop Sticker\bin\x64\Release\Tests\DesktopSticker.Tests.exe
 - **桌面嵌入**：分区与时钟窗口通过 `Progman / WorkerW / SHELLDLL_DefView` 嵌入桌面层（与 Wallpaper Engine 同思路的未文档化行为），失败时自动降级为置底普通窗口。
 - **渲染**：分区与时钟使用「内存 DIB + Direct2D + UpdateLayeredWindow」管线实现半透明圆角卡片与逐帧动画。
 - **动态壁纸**：`IWallpaperBackend` 背后五类后端（视频 / 图片序列 / 网页 / Vulkan 着色器 / Godot 场景）；几何与策略逻辑放在 header-only 纯函数里以便 `dtest` 覆盖，OS 适配放 `src/`。场景壁纸以内嵌 Godot 运行库在进程内渲染（libgodot 为进程级单例）。
-- **鼠标输入**：低级鼠标钩子负责降级模式下的输入转发与"双击桌面空白"检测；嵌入模式下由系统直接命中子窗口。
+- **鼠标输入**：低级鼠标钩子负责把"空白桌面"上的点击/移动/滚轮转发给壁纸后端（并吞掉桌面侧响应），同时承担"双击桌面空白"检测；图标命中用跨进程 `LVM_HITTEST` 判定。
+- **键盘输入**：壁纸窗口在图标层之下、命中测试透明，系统永远不会把焦点给它（`SetFocus` 实测返回 `ERROR_INVALID_PARAMETER` 87），所以键盘与鼠标同路 —— 低级键盘钩子只在**桌面是前台**时把按键 PostMessage 给引擎窗口（钩子线程置位、渲染线程投递），由 fork 的薄壳窗口过程交给 `DisplayServerWindows::WndProc`，修饰键、扫描码与 `WM_CHAR` 都由 Windows 自己解释。普通按键转发后**吞掉**（否则输入法会在壁纸上弹候选窗、引擎也会收到两份），`Win`/`PrintScreen` 与任何 `Ctrl`/`Alt` 组合放行。空白桌面左键按下时另有一次焦点移交尝试（`AttachThreadInput` + `SetForegroundWindow` + `SetFocus`），这是"能拿就拿"的补充路径，失败不影响键盘。网页壁纸没有可聚焦 HWND，只支持鼠标。
 - **线程模型**：UI 线程持有全部窗口与布局数据；热键钩子线程、目录监视线程、天气后台线程通过消息投递或加锁快照与 UI 线程交互。
 
 ## 已知限制与排查

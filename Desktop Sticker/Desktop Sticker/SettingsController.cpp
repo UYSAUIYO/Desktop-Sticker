@@ -816,9 +816,9 @@ void SettingsController::EnsureWindow() {
     wallPaperPauseLockSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
 
     wallPaperInputSwitch_ = ToggleSwitch();
-    placeProp(makePropCard(wallPaperGroup, L"\uE962", L"鼠标交互",
-                           L"场景/网页壁纸可以接收鼠标（开关、拖动、滚轮）。开启时点击桌面不再拖出选择框，"
-                           L"双击桌面空白也不再切换干净桌面"),
+    placeProp(makePropCard(wallPaperGroup, L"\uE962", L"鼠标与键盘交互",
+                           L"场景壁纸可以接收鼠标与键盘：在空白桌面上点一下，按键才进入壁纸（网页壁纸只支持鼠标）。"
+                           L"开启时点击桌面不再拖出选择框，双击桌面空白也不再切换干净桌面"),
               wallPaperInputSwitch_);
     wallPaperInputSwitch_.Toggled([this](winrt::Windows::Foundation::IInspectable const&, RoutedEventArgs const&) { SaveWallPaper(); });
 

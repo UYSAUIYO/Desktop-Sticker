@@ -6,8 +6,10 @@ namespace desktopsticker::wallpaper {
 
 // .dswall 场景壁纸：由进程内嵌的 Godot 运行库渲染（无外部 Godot 程序、无独立渲染窗口）。
 // 自呈现型：引擎在自己的交换链上呈现到宿主提供的壁纸窗口，D3dContext 让位。
-// 鼠标：引擎嵌入时窗口过程被 fork 换成了薄壳（见 dstk_embed_windows.cpp），
-//       宿主把鼠标消息 PostMessage 过去，引擎按原生输入路径处理（含 SetCapture）。
+// 鼠标/键盘：引擎嵌入时窗口过程被 fork 换成了薄壳（见 dstk_embed_windows.cpp），
+//       宿主把鼠标消息和键盘消息都 PostMessage 过去（键盘只在桌面是前台时转发；
+//       壁纸窗口在 WorkerW 下拿不到焦点，SetFocus 返回 87），由薄壳交给引擎自己的
+//       原生输入处理，和真实窗口完全一致。空白桌面左键按下时另有一次焦点移交尝试。
 class GodotEmbeddedBackend final : public IWallpaperBackend, public IMouseSink {
 public:
     ~GodotEmbeddedBackend() override { Close(); }
@@ -26,6 +28,8 @@ public:
     uint32_t FrameSerial() const override { return serial_; }
 
     void OnRelayMouse(const MouseRelayEvent& event) override;
+    void OnRelayKey(const MouseRelayEvent& event) override;
+    void OnRelayFocusRequest() override;
 
 private:
     uint32_t serial_ = 0;

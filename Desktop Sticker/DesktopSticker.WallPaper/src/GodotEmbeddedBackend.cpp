@@ -103,4 +103,16 @@ void GodotEmbeddedBackend::OnRelayMouse(const MouseRelayEvent& event) {
     GodotEngineHost::instance().send_mouse(event);
 }
 
+// 键盘（低级键盘钩子转发的按键）→ 引擎窗口，和鼠标同一条投递路径。
+// 不依赖窗口焦点：壁纸窗口在 WorkerW 下拿不到焦点，这正是键盘由钩子转发的理由。
+void GodotEmbeddedBackend::OnRelayKey(const MouseRelayEvent& event) {
+    GodotEngineHost::instance().post_key(event.vk, event.scan, event.sys, event.extended,
+                                         event.down, event.repeat);
+}
+
+// 空白桌面被左键按下：把键盘焦点交给引擎窗口（能拿就拿的补充路径；失败也不影响键盘）。
+void GodotEmbeddedBackend::OnRelayFocusRequest() {
+    GodotEngineHost::instance().focus_keyboard();
+}
+
 } // namespace desktopsticker::wallpaper

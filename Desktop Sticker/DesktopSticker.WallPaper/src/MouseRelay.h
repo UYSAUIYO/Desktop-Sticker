@@ -16,6 +16,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 
 #include "desktopsticker/wallpaper/MouseRelay.h"
 
@@ -35,6 +36,19 @@ struct MouseRelayEvent {
     bool ctrl = false;
     bool shift = false;
     bool alt = false;
+
+    // 键盘事件（isKey = true 时下面几个字段有效）。
+    // 键盘走的是和鼠标同一条路：低级钩子看到按键 → 桌面是前台就投给后端窗口。
+    // 为什么不靠焦点移交：壁纸窗口挂在 explorer 的 WorkerW 下，SetFocus 会被
+    // Windows 拒绝（本机实测返回 87 / ERROR_INVALID_PARAMETER），原生键盘流永远
+    // 到不了壁纸。钩子转发不依赖焦点，和鼠标保持同一套模型。
+    bool isKey = false;
+    int vk = 0;         // 虚拟键码（VK_*）
+    int scan = 0;       // 扫描码（引擎据此生成 physical_keycode）
+    bool extended = false;
+    bool sys = false;   // WM_SYSKEYDOWN / WM_SYSKEYUP（Alt 组合键）
+    bool down = false;
+    bool repeat = false; // 自动重复（按住不放的第二条及以后）
 };
 
 // 接收方（WebView2 / 内嵌 Godot）。只在渲染线程上被调用。
@@ -46,6 +60,15 @@ class IMouseSink {
 public:
     virtual ~IMouseSink() = default;
     virtual void OnRelayMouse(const MouseRelayEvent& event) = 0;
+
+    // 键盘（低级键盘钩子转发过来的按键；只在渲染线程调用）。
+    // 默认实现为空 —— WebView2 视觉宿主没有可聚焦的 HWND，网页壁纸的键盘交互
+    // 在其 API 里本来就不成立（它只接受 SendMouseInput）。
+    virtual void OnRelayKey(const MouseRelayEvent&) {}
+
+    // 空白桌面被左键按下：把键盘焦点交给后端窗口（只在渲染线程调用）。
+    // 现在只是"能拿就拿"的补充：拿不到也不影响键盘 —— 键盘由转发保证。
+    virtual void OnRelayFocusRequest() {}
 };
 
 class MouseRelay {
@@ -71,11 +94,16 @@ public:
 
 private:
     static LRESULT CALLBACK hook_proc(int code, WPARAM wparam, LPARAM lparam);
+    static LRESULT CALLBACK key_proc(int code, WPARAM wparam, LPARAM lparam);
 
     void start_thread();
     void stop_thread();
     void thread_main();
     void handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swallow);
+    void handle_key(WPARAM msg, const KBDLLHOOKSTRUCT& info, bool& swallow);
+    // 桌面（Progman / WorkerW）或壁纸窗口自己是前台吗 —— 键盘只在此时转发，
+    // 别的应用是前台时一个键都不碰（否则会从记事本/浏览器手里抢按键）。
+    bool desktop_foreground() const;
     void classify(const POINT& pt, bool need_icon, RelayHit& hit);
     bool icon_at(const POINT& pt);
     HWND find_desktop_list_view();
@@ -89,6 +117,8 @@ private:
     IMouseSink* sink_ = nullptr;
     std::atomic<bool> enabled_{true};
     std::atomic<bool> active_{true};
+    // 钩子线程置位、渲染线程消费：空白桌面左键按下 → 需要把键盘焦点交给后端窗口
+    std::atomic<bool> focus_request_{false};
 
     std::thread thread_;
     DWORD thread_id_ = 0;
@@ -103,13 +133,16 @@ private:
     int lastClientX_ = 0;
     int lastClientY_ = 0;
     HWND list_view_ = nullptr;    // 桌面图标列表（LVM_HITTEST 用）
-    // 诊断计数（5 秒一行日志）：转发 / 因命中被拒 / 离开 / 补发的抬起
+    // 诊断计数（5 秒一行日志）：转发 / 因命中被拒 / 离开 / 补发的抬起 / 转发的按键
     uint32_t statMoves_ = 0;
     uint32_t statButtons_ = 0;
     uint32_t statWheels_ = 0;
     uint32_t statLeaves_ = 0;
     uint32_t statRejected_ = 0;
     uint32_t statReleases_ = 0;
+    uint32_t statKeys_ = 0;
+    uint32_t keyRejectLogs_ = 0;   // 钩子线程：键盘被拒的诊断日志只打前 8 次
+    std::unordered_set<int> keys_down_;   // 钩子线程：区分自动重复（按住不放）
     DWORD lastStatTick_ = 0;
 
     std::mutex queue_mutex_;

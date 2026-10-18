@@ -71,9 +71,14 @@ struct WallPaperSettings {
     float audioVolume = 1.0f;
     // 解码/渲染路径（自动 / FFmpeg+Vulkan 硬解 / MF+D3D11 硬解 / 纯 CPU）
     DecodePath decodePath = DecodePath::Auto;
-    // 允许鼠标与壁纸交互（场景 / 网页壁纸有效，其它类型无所谓）。
+    // 允许鼠标与键盘和壁纸交互（场景 / 网页壁纸有效，其它类型无所谓）。
     // 开：空白桌面上的点击/移动/滚轮转发给壁纸，并吞掉桌面侧的响应
     //（代价：双击桌面空白切换"干净桌面"的手势会被壁纸吃掉）。
+    // 键盘：与鼠标同一条路 —— WH_KEYBOARD_LL 钩子在"桌面是前台"时把按键转给场景壁纸
+    //（转发后吞掉，避免输入法在壁纸上弹候选窗）；Win / Ctrl / Alt 组合与 PrintScreen
+    // 一律放行。不依赖窗口焦点：壁纸窗口挂在 explorer 的 WorkerW 下，SetFocus 会被
+    // 系统拒绝（实测 ERROR_INVALID_PARAMETER 87），原生键盘流永远到不了它。
+    // 网页壁纸没有可聚焦的 HWND，键盘交互在 WebView2 组合宿主里不成立（只支持鼠标）。
     bool interactiveInput = true;
 };
 

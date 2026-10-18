@@ -43,6 +43,18 @@ public:
     // "宿主转发"这一条，不会和真实消息叠在一起。
     bool send_mouse(const MouseRelayEvent& event);
 
+    // 键盘交互：把一条按键 PostMessage 给引擎窗口（钩子转发的那条路）。
+    //
+    // 为什么不是只靠焦点：壁纸窗口挂在 explorer 的 WorkerW 下，SetFocus 会被系统
+    // 拒绝（本机实测返回 87 / ERROR_INVALID_PARAMETER），原生键盘流到不了壁纸。
+    // 所以键盘和鼠标一样由低级钩子转发 —— 引擎的薄壳窗口过程把 WM_KEYDOWN/UP
+    // 交给 DisplayServerWindows::WndProc，修饰键与扫描码由 Windows 自己解释，
+    // 和真实窗口收到的按键完全同一条处理路径。窗口是否持有焦点无所谓。
+    bool post_key(int vk, int scan, bool sys, bool extended, bool down, bool repeat = false);
+
+    // 焦点移交（能拿就拿的补充路径；失败不影响键盘，见 post_key）。
+    void focus_keyboard();
+
     bool active() const { return active_; }
 
     // 进程退出前调用：销毁实例与窗口，恢复桌面壁纸（Explorer 的壁纸 WorkerW 空置会露白）。

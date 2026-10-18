@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "Log.h"
+#include "Utf8.h"
 
 namespace desktopsticker::wallpaper {
 
@@ -29,6 +30,8 @@ const char* kind_name(RelayEventKind kind) {
         case RelayEventKind::MiddleUp: return "middle-up";
         case RelayEventKind::Wheel: return "wheel";
         case RelayEventKind::HorizontalWheel: return "hwheel";
+        case RelayEventKind::KeyDown: return "key-down";
+        case RelayEventKind::KeyUp: return "key-up";
     }
     return "?";
 }
@@ -65,6 +68,7 @@ void MouseRelay::Attach(HWND window, IMouseSink* sink) {
     window_ = window;
     clear_queue();
     policy_.reset();
+    focus_request_.store(false);
     inside_ = false;
     was_active_ = false;
     lastClientX_ = lastClientY_ = 0;
@@ -90,13 +94,15 @@ void MouseRelay::Drain(bool paused) {
     if (nowMs - lastStatTick_ >= 5000) {
         lastStatTick_ = nowMs;
         if (statMoves_ || statButtons_ || statWheels_ || statLeaves_ || statRejected_ ||
-            statReleases_) {
+            statReleases_ || statKeys_) {
             wp_log("mouse relay: 5s moves=" + std::to_string(statMoves_) + " buttons=" +
                    std::to_string(statButtons_) + " wheels=" + std::to_string(statWheels_) +
                    " leaves=" + std::to_string(statLeaves_) + " rejected=" +
-                   std::to_string(statRejected_) + " releases=" + std::to_string(statReleases_));
+                   std::to_string(statRejected_) + " releases=" + std::to_string(statReleases_) +
+                   " keys=" + std::to_string(statKeys_));
         }
-        statMoves_ = statButtons_ = statWheels_ = statLeaves_ = statRejected_ = statReleases_ = 0;
+        statMoves_ = statButtons_ = statWheels_ = statLeaves_ = statRejected_ = statReleases_ =
+            statKeys_ = 0;
     }
 
     std::deque<MouseRelayEvent> pending;
@@ -106,7 +112,16 @@ void MouseRelay::Drain(bool paused) {
         pending.swap(queue_);
     }
     // 暂停/关闭/没有接收者：事件丢弃即可（下次交互会重新对齐悬停态）
-    if (paused || !enabled_.load() || !sink_) return;
+    if (paused || !enabled_.load() || !sink_) {
+        focus_request_.store(false);
+        return;
+    }
+
+    // 空白桌面左键按下：先把键盘焦点交给后端窗口，再把事件交出去。
+    // 焦点必须在渲染线程上移交（窗口归这条线程所有），所以由钩子置位、这里执行。
+    if (focus_request_.exchange(false)) {
+        sink_->OnRelayFocusRequest();
+    }
 
     // 诊断：前 12 条事件写日志。"壁纸点了没反应"时先确认事件到底有没有到渲染线程。
     static int traced = 0;   // 只有渲染线程进这里，不需要同步
@@ -116,6 +131,11 @@ void MouseRelay::Drain(bool paused) {
 
     for (size_t i = 0; i < pending.size(); ++i) {
         const MouseRelayEvent& event = pending[i];
+        // 键盘不参与鼠标的"移动被按钮挤后"的排序规则，直接按到达顺序交出去
+        if (event.isKey) {
+            sink_->OnRelayKey(event);
+            continue;
+        }
         // 引擎泵每帧先派发按键/滚轮、最后才派发一条移动，所以"后面还有按钮"的移动实际会
         // 晚于按钮执行，位置更旧 → 按下/抬起那一帧画面往回跳。这类移动直接丢弃
         // （按钮自带最新坐标），顺序语义就与真实窗口一致了。
@@ -171,16 +191,23 @@ void MouseRelay::thread_main() {
     if (!hook) {
         wp_log("mouse relay: SetWindowsHookExW failed: " + std::to_string(GetLastError()));
     }
+    // 键盘与鼠标同一个钩子线程、同一套开关：桌面是前台时把按键投给引擎窗口，
+    // 普通按键转发后吞掉（见 handle_key / key_proc）。
+    HHOOK key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, key_proc, module, 0);
+    if (!key_hook) {
+        wp_log("mouse relay: keyboard hook failed: " + std::to_string(GetLastError()));
+    }
 
     if (ready_event_) SetEvent(ready_event_);
 
-    if (hook) {
+    if (hook || key_hook) {
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        UnhookWindowsHookEx(hook);
+        if (hook) UnhookWindowsHookEx(hook);
+        if (key_hook) UnhookWindowsHookEx(key_hook);
     }
 
     g_relay.store(nullptr);
@@ -198,6 +225,110 @@ LRESULT CALLBACK MouseRelay::hook_proc(int code, WPARAM wparam, LPARAM lparam) {
         }
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+LRESULT CALLBACK MouseRelay::key_proc(int code, WPARAM wparam, LPARAM lparam) {
+    bool swallow = false;
+    if (code == HC_ACTION) {
+        MouseRelay* self = g_relay.load();
+        const auto* info = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lparam);
+        if (self && info) {
+            self->handle_key(wparam, *info, swallow);
+        }
+    }
+    // 转发过的普通按键要吞掉：否则桌面/输入法也会拿到同一份 —— 中文输入法会在
+    // 壁纸上弹出候选窗，真实按键和 IME 注入的 VK_PROCESSKEY 还会让引擎收到两份。
+    // 系统组合键（Win / Ctrl / Alt 组合、PrintScreen）一律放行，见 handle_key。
+    if (swallow) return 1;
+    return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+// 桌面是前台吗？失败时返回 false（宁可不转发，也不从别的应用手里抢键）。
+bool MouseRelay::desktop_foreground() const {
+    const HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+
+    // 壁纸窗口自己（极端情况下引擎窗口会成为前台）
+    if (window_ && IsWindow(window_) && (fg == window_ || IsChild(window_, fg))) return true;
+
+    wchar_t cls[64]{};
+    if (GetClassNameW(fg, cls, static_cast<int>(std::size(cls))) == 0) return false;
+    return wcscmp(cls, L"Progman") == 0 || wcscmp(cls, L"WorkerW") == 0;
+}
+
+void MouseRelay::handle_key(WPARAM msg, const KBDLLHOOKSTRUCT& info, bool& swallow) {
+    swallow = false;
+    if (msg != WM_KEYDOWN && msg != WM_KEYUP && msg != WM_SYSKEYDOWN && msg != WM_SYSKEYUP) {
+        return;
+    }
+    if (!enabled_.load() || !active_.load() || !sink_) return;
+    if (!desktop_foreground()) {
+        // 诊断（前 8 次）：键盘没转发时先看"谁在前台"——别在记事本里试按键
+        if (keyRejectLogs_ < 8) {
+            ++keyRejectLogs_;
+            const HWND fg = GetForegroundWindow();
+            wchar_t cls[64]{};
+            if (fg) GetClassNameW(fg, cls, static_cast<int>(std::size(cls)));
+            GUITHREADINFO info{};
+            info.cbSize = sizeof(info);
+            GetGUIThreadInfo(0, &info);
+            wp_log(std::string("key relay: fg is not desktop (fg=") +
+                   std::to_string(reinterpret_cast<uintptr_t>(fg)) + ", cls=" +
+                   to_utf8(std::wstring(cls)) + ", focus=" +
+                   std::to_string(reinterpret_cast<uintptr_t>(info.hwndFocus)) + ")");
+        }
+        return;
+    }
+
+    // 引擎窗口已经持有焦点（某些系统上 SetFocus 能成功）：原生键盘流在工作，
+    // 再转发一份就会出现"按一下收到两次"。
+    GUITHREADINFO gti{};
+    gti.cbSize = sizeof(gti);
+    if (window_ && IsWindow(window_) && GetGUIThreadInfo(0, &gti) && gti.hwndFocus &&
+        (gti.hwndFocus == window_ || IsChild(window_, gti.hwndFocus))) {
+        if (keyRejectLogs_ < 8) {
+            ++keyRejectLogs_;
+            wp_log("key relay: engine window already has focus, native keys are used");
+        }
+        return;
+    }
+
+    MouseRelayEvent event;
+    event.isKey = true;
+    event.kind = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) ? RelayEventKind::KeyDown
+                                                             : RelayEventKind::KeyUp;
+    event.vk = static_cast<int>(info.vkCode);
+    event.scan = static_cast<int>(info.scanCode);
+    event.extended = (info.flags & LLKHF_EXTENDED) != 0;
+    event.sys = (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP);
+    event.down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+    // 自动重复（按住不放）在低级钩子里和第一次按下长得一样，只能自己记：
+    // 引擎的窗口过程按 lParam 的 bit30 标记 echo，这里补上，场景才能区分
+    // "按住重复"与"按了几次"。
+    const bool repeat = event.down && keys_down_.count(event.vk) != 0;
+    if (event.down) {
+        keys_down_.insert(event.vk);
+    } else {
+        keys_down_.erase(event.vk);
+    }
+    event.repeat = repeat;
+    event.ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    event.shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    event.alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+
+    // 放行规则（不吞 = 同时也交给系统）：
+    //   · Win 组合键（开始菜单、Win+D 等）、PrintScreen 属于系统；
+    //   · 任何 Ctrl / Alt 组合（Alt+Tab、Alt+F4、Ctrl+C……）必须留给前台生效。
+    // 其余按键转发后吞掉：桌面没有文本输入（图标列表被藏了），吞掉之后输入法不会
+    // 在壁纸上弹候选窗，引擎也只收到这一份。
+    const bool with_mod = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 ||
+                          (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const int vk = static_cast<int>(info.vkCode);
+    const bool keep_system = vk == VK_LWIN || vk == VK_RWIN || vk == VK_SNAPSHOT;
+    swallow = !(with_mod || keep_system);
+
+    ++statKeys_;
+    push(event);
 }
 
 RelayViewport MouseRelay::viewport() const {
@@ -335,6 +466,13 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
 
     policy_.note_forwarded(kind, now);
     inside_ = true;
+
+    // 空白桌面被左键按下：请求把键盘焦点交给后端窗口（渲染线程执行）。
+    // 与 Wallpaper Engine 同一条路线：点击吞掉之后必须主动移交焦点，
+    // 否则真实按键仍然落在桌面上，壁纸永远收不到键盘。
+    if (relay_should_request_focus(kind, hit)) {
+        focus_request_.store(true);
+    }
 
     switch (kind) {
         case RelayEventKind::Move: ++statMoves_; break;

@@ -6,6 +6,8 @@
 // HTTRANSPARENT —— 系统永远不会把鼠标点击交给它。所以"壁纸能交互"只能靠
 // 低级鼠标钩子：钩子看到事件后判断这个点是不是**空白桌面**，是就转发给后端，
 // 并吞掉原事件（否则点击会同时在桌面上拖出选择框 / 弹出右键菜单）。
+// 键盘同理：低级键盘钩子在"桌面是前台"时把按键转给后端（转发后吞掉），
+// 详见 src/MouseRelay.cpp 的 handle_key。
 //
 // 本文件只放"该不该转发 / 该不该吞掉 / 谁抢到了这一点"的判断；
 // 钩子线程、窗口命中测试、图标命中测试都在 src/MouseRelay.cpp。
@@ -27,6 +29,9 @@ enum class RelayEventKind {
     MiddleUp,
     Wheel,
     HorizontalWheel,
+    // 键盘：走同一条转发队列，但不参与鼠标的命中/捕获状态机
+    KeyDown,
+    KeyUp,
 };
 
 // 鼠标按钮位（与上述 kind 对应）
@@ -68,6 +73,20 @@ struct RelayHit {
 // 可交互 = 空白桌面。图标归图标，自家窗口归自家窗口。
 inline bool relay_accepts(const RelayHit& hit) {
     return hit.desktopLayer && !hit.overIcon && !hit.ownSurface;
+}
+
+// 这次点击要不要尝试把键盘焦点交给壁纸窗口？
+//
+// Wallpaper Engine 走的是焦点移交（AttachThreadInput + SetForegroundWindow + SetFocus）。
+// 我们试过同一条路，但壁纸窗口挂在 explorer 的 WorkerW 下，Windows 直接拒绝 SetFocus
+// （实测 ERROR_INVALID_PARAMETER 87），原生键盘流到不了壁纸。因此键盘改由
+// WH_KEYBOARD_LL 钩子转发（见 src/MouseRelay.cpp 的 handle_key），焦点移交退化为
+// "能拿就拿"的补充：拿得到就切回原生键盘流，拿不到也不影响功能。
+//
+// 只对"空白桌面上的左键按下"尝试移交：右键（桌面菜单）、滚轮、移动都不能改焦点，
+// 压到图标/分区卡片上时焦点归它们。
+inline bool relay_should_request_focus(RelayEventKind kind, const RelayHit& hit) {
+    return kind == RelayEventKind::LeftDown && relay_accepts(hit);
 }
 
 // 壁纸可交互区域（屏幕坐标）。桌面壁纸只铺主显示器，所以这就是那块矩形。
@@ -122,10 +141,13 @@ inline int relay_reported_buttons(int physical, int delivered, RelayEventKind ki
     return reported;
 }
 
-// 系统事件要不要吞掉：按键与滚轮一律吞（否则桌面会同时响应），
-// 移动只在"按住按钮"时吞（未按住时让桌面维持自己的悬停/光标状态）。
+// 系统事件要不要吞掉：点击与滚轮一律吞（否则桌面会同时拖出选择框 / 弹右键菜单）。
+// 移动**永远不吞**：桌面根本没有收到那次按下（已被吞），不会开始框选或拖动；
+// 而且低级钩子里拦截移动消息在某些输入路径上会把光标"按住不动"（实测：拖动时
+// 光标卡在原地并 ±1 抖动），转发语义不需要它。
 inline bool relay_swallows(RelayEventKind kind, bool capturing) {
-    if (kind == RelayEventKind::Move) return capturing;
+    (void)capturing;
+    if (kind == RelayEventKind::Move) return false;
     return true;
 }
 

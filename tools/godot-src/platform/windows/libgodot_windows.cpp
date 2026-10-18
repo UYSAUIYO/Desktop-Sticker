@@ -33,11 +33,14 @@
 #include "core/config/project_settings.h"
 #include "core/extension/godot_instance.h"
 #include "core/extension/libgodot.h"
+#include "core/io/resource_loader.h"
 #include "core/object/object.h"
 #include "core/os/main_loop.h"
 #include "core/os/os.h"
 #include "main/main.h"
+#include "modules/gdscript/gdscript_cache.h"
 #include "scene/main/scene_tree.h"
+#include "scene/resources/packed_scene.h"
 
 static OS_Windows *os = nullptr;
 
@@ -138,7 +141,22 @@ LIBGODOT_API bool dstk_godot_load_pack(void *p_instance, const char *p_pack_path
 	if (tree == nullptr) {
 		return false;
 	}
-	return tree->change_scene_to_file(String::utf8(p_main_scene)) == OK;
+	// 换包必须绕过资源缓存：所有 .dswall 的主场景都叫 res://main.tscn，
+	// ResourceLoader::load() 默认是 CACHE_MODE_REUSE，会把上一包已经缓存的
+	// PackedScene 原样返回 —— 新包的文件确实换上了，画面却还是旧场景。
+	// REPLACE_DEEP 让主场景和它的外部依赖都重新从新包读取并替换缓存项。
+	//
+	// 只清 ResourceCache 还不够：GDScript 有自己的一层缓存（GDScriptCache），
+	// 主场景引用的 res://main.gd 会从那里拿回**旧包编译好的脚本**，于是场景换了、
+	// 脚本没换（实测：新包标题不生效、user:// 下新脚本写的文件不出现）。
+	// 先清脚本缓存，再按 REPLACE_DEEP 载入主场景。
+	GDScriptCache::clear();
+	Ref<PackedScene> scene = ResourceLoader::load(String::utf8(p_main_scene), "PackedScene",
+			ResourceLoader::CACHE_MODE_REPLACE_DEEP);
+	if (scene.is_null()) {
+		return false;
+	}
+	return tree->change_scene_to_packed(scene) == OK;
 }
 
 } // extern "C"
