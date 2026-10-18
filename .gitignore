@@ -45,6 +45,8 @@ bin/
 obj/
 out/
 build/
+# 临时探针/手工试跑的构建产物（如 probe 用的 .pck、样例工程）
+build_tmp/
 *.exe
 *.dll
 *.pdb
