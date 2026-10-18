@@ -317,5 +317,9 @@ int wmain(int argc, wchar_t **argv) {
     // Studio 是专用宿主进程，退出即结束：窗口由系统关闭，文件都是同步写完的，
     // 没有任何需要在进程内收尾的状态。让系统回收比在进程里慢慢拆更快也更稳。
     // （--self-test 那条路仍然走完整 destroy，那里要的是干净退出。）
-    ::ExitProcess(0);
+    //
+    // 用 TerminateProcess 而不是 ExitProcess：后者会挨个给已加载的 DLL 发
+    // DLL_PROCESS_DETACH，libgodot 的 detach 会碰 WinRT/合成层的收尾，实测就是
+    // 那条 CoreMessaging 崩溃的来源。TerminateProcess 不做 detach，直接由系统回收。
+    ::TerminateProcess(::GetCurrentProcess(), 0);
 }
