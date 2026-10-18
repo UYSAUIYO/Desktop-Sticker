@@ -63,8 +63,8 @@ LIBGODOT_API void dstk_embed_input_mouse(const DstkMouseInput *p_input) {
 		const Vector2 relative((real_t)p_input->relX, (real_t)p_input->relY);
 		mm->set_relative(relative);
 		mm->set_relative_screen_position(relative);
-		mm->set_velocity(relative);
-		mm->set_screen_velocity(relative);
+		// 不设 velocity：引擎自己的鼠标速度是从真实光标采样出来的 px/s，
+		// 我们塞 px/帧 进去只会让用 velocity 做平滑的场景看起来一顿一顿的。
 		input->parse_input_event(mm);
 		return;
 	}

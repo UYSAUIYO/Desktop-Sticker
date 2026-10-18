@@ -82,6 +82,21 @@ void MouseRelay::Detach(IMouseSink* sink) {
 void MouseRelay::Drain(bool paused) {
     active_.store(!paused);
 
+    // 诊断：5 秒一行的计数。"拖动抽搐"这类问题看 moves/rejected/leaves 的比例就能判断
+    // 是命中在抖（被拒很多）、还是我们在造 Leave（leaves 很多）。
+    const DWORD nowMs = GetTickCount();
+    if (nowMs - lastStatTick_ >= 5000) {
+        lastStatTick_ = nowMs;
+        if (statMoves_ || statButtons_ || statWheels_ || statLeaves_ || statRejected_ ||
+            statReleases_) {
+            wp_log("mouse relay: 5s moves=" + std::to_string(statMoves_) + " buttons=" +
+                   std::to_string(statButtons_) + " wheels=" + std::to_string(statWheels_) +
+                   " leaves=" + std::to_string(statLeaves_) + " rejected=" +
+                   std::to_string(statRejected_) + " releases=" + std::to_string(statReleases_));
+        }
+        statMoves_ = statButtons_ = statWheels_ = statLeaves_ = statRejected_ = statReleases_ = 0;
+    }
+
     std::deque<MouseRelayEvent> pending;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -189,15 +204,19 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
     const bool active = enabled_.load() && active_.load();
     if (!active) {
         // 暂停/关闭设置时，钩子仍在（省得反复装卸），但一条都不拦
-        if (was_active_ && inside_) {
-            MouseRelayEvent leave;
-            leave.kind = RelayEventKind::Leave;
-            leave.x = lastClientX_;
-            leave.y = lastClientY_;
-            leave.screenX = lastScreenX_;
-            leave.screenY = lastScreenY_;
-            push(leave);
-            inside_ = false;
+        if (was_active_) {
+            release_all_buttons();
+            if (inside_) {
+                MouseRelayEvent leave;
+                leave.kind = RelayEventKind::Leave;
+                leave.x = lastClientX_;
+                leave.y = lastClientY_;
+                leave.screenX = lastScreenX_;
+                leave.screenY = lastScreenY_;
+                push(leave);
+                ++statLeaves_;
+                inside_ = false;
+            }
         }
         was_active_ = false;
         policy_.reset();
@@ -234,6 +253,7 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
 
     // 拖动中即使光标拖出画面也要继续转发（和真实窗口的鼠标捕获一致）
     if (!inside && !captured) {
+        release_all_buttons();   // 离开画面时把"按着"的状态交还给后端，别留一个一直按下的键
         if (inside_) {
             MouseRelayEvent leave;
             leave.kind = RelayEventKind::Leave;
@@ -242,6 +262,7 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
             leave.screenX = lastScreenX_;
             leave.screenY = lastScreenY_;
             push(leave);
+            ++statLeaves_;
             inside_ = false;
         }
         return;
@@ -257,16 +278,10 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
 
     const int64_t now = static_cast<int64_t>(GetTickCount64());
     if (!policy_.should_forward(hit, kind, now)) {
-        if (inside_) {
-            MouseRelayEvent leave;
-            leave.kind = RelayEventKind::Leave;
-            leave.x = cx;
-            leave.y = cy;
-            leave.screenX = pt.x;
-            leave.screenY = pt.y;
-            push(leave);
-            inside_ = false;
-        }
+        // 命中不归壁纸（图标 / 分区卡片 / 任务栏 / 别的应用）：这一条不转发就够了。
+        // **不要**在这里下发 Leave —— 光标还在画面里，只是压在了别的东西上；
+        // 一发 Leave 就会让后端在"移动 / 离开"之间抖动（拖动时表现为抽搐）。
+        ++statRejected_;
         return;
     }
 
@@ -281,18 +296,17 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
     event.shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     event.alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 
-    int buttons = 0;
-    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) buttons |= kRelayLeft;
-    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) buttons |= kRelayRight;
-    if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) buttons |= kRelayMiddle;
-    // 钩子先于系统投递，GetAsyncKeyState 还是"上一条事件"的状态，这里按本事件修正
-    if (relay_is_down(kind)) buttons |= relay_button_of(kind);
-    if (relay_is_up(kind)) buttons &= ~relay_button_of(kind);
-    event.buttons = buttons;
+    int physical = 0;
+    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) physical |= kRelayLeft;
+    if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) physical |= kRelayRight;
+    if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) physical |= kRelayMiddle;
+    event.buttons = relay_reported_buttons(physical, policy_.forwarded_buttons(), kind);
 
     if (kind == RelayEventKind::Move) {
-        event.relX = cx - lastClientX_;
-        event.relY = cy - lastClientY_;
+        // 重新进入画面后的第一条移动不带相对位移：否则会拿"上一次离开前的位置"做差，
+        // 后端会收到一个几百像素的瞬移（用 relative 做视差/拖动的场景直接跳一下）。
+        event.relX = inside_ ? (cx - lastClientX_) : 0;
+        event.relY = inside_ ? (cy - lastClientY_) : 0;
     }
     lastClientX_ = cx;
     lastClientY_ = cy;
@@ -301,6 +315,14 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
 
     policy_.note_forwarded(kind, now);
     inside_ = true;
+
+    switch (kind) {
+        case RelayEventKind::Move: ++statMoves_; break;
+        case RelayEventKind::Wheel:
+        case RelayEventKind::HorizontalWheel: ++statWheels_; break;
+        case RelayEventKind::Leave: break;
+        default: ++statButtons_; break;
+    }
     push(event);
 
     // 按下/抬起/滚轮一律吞掉；移动只在按住按钮时吞（否则桌面的悬停与光标会僵住）
@@ -340,6 +362,11 @@ bool MouseRelay::icon_at(const POINT& pt) {
     }
     if (!list_view_) return false;
 
+    // 图标列表**看不见**时它不占任何东西：桌面贴纸在正常模式下把整个列表 (SW_HIDE) 藏了，
+    // 图标由分区卡片展示。此时若仍按 LVM_HITTEST 判"压在图标上"，整个桌面会变成一片
+    // 看不见的雷区 —— 光标每经过一个原图标格子就被拒一次，拖动直接抽搐（用户实测症状）。
+    if (!IsWindowVisible(list_view_)) return false;
+
     DWORD pid = 0;
     GetWindowThreadProcessId(list_view_, &pid);
     if (!pid || pid == GetCurrentProcessId()) return false;
@@ -373,6 +400,25 @@ bool MouseRelay::icon_at(const POINT& pt) {
 
 void MouseRelay::push(MouseRelayEvent event) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
+
+    // 同一帧里排着好几条移动，后端会在同一帧内反复改位置（画面看着像抖动）；
+    // 只保留最新位置，把相对位移累加起来，一次 Drain 最多交一条移动给后端。
+    if (event.kind == RelayEventKind::Move && !queue_.empty() &&
+        queue_.back().kind == RelayEventKind::Move) {
+        MouseRelayEvent& last = queue_.back();
+        last.x = event.x;
+        last.y = event.y;
+        last.screenX = event.screenX;
+        last.screenY = event.screenY;
+        last.relX += event.relX;
+        last.relY += event.relY;
+        last.buttons = event.buttons;
+        last.ctrl = event.ctrl;
+        last.shift = event.shift;
+        last.alt = event.alt;
+        return;
+    }
+
     if (queue_.size() >= kMaxQueuedEvents) {
         // 满了先丢最老的一条移动事件：位置可以丢，按键/滚轮不能丢
         const auto it = std::find_if(queue_.begin(), queue_.end(),
@@ -386,6 +432,28 @@ void MouseRelay::push(MouseRelayEvent event) {
         }
     }
     queue_.push_back(event);
+}
+
+void MouseRelay::release_all_buttons() {
+    const int held = policy_.forwarded_buttons();
+    if (!held) return;
+
+    const RelayEventKind kinds[3] = { RelayEventKind::LeftUp, RelayEventKind::RightUp,
+                                      RelayEventKind::MiddleUp };
+    const int bits[3] = { kRelayLeft, kRelayRight, kRelayMiddle };
+    for (int i = 0; i < 3; ++i) {
+        if (!(held & bits[i])) continue;
+        MouseRelayEvent up;
+        up.kind = kinds[i];
+        up.x = lastClientX_;
+        up.y = lastClientY_;
+        up.screenX = lastScreenX_;
+        up.screenY = lastScreenY_;
+        up.buttons = held & ~bits[i];
+        push(up);
+        ++statReleases_;
+    }
+    policy_.reset();
 }
 
 void MouseRelay::clear_queue() {

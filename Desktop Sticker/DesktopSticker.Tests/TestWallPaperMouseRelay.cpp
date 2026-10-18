@@ -163,6 +163,25 @@ TEST(MouseRelay_SwallowRules) {
     ASSERT_TRUE(relay_swallows(RelayEventKind::Move, true));
 }
 
+TEST(MouseRelay_ReportsOnlyButtonsItActuallyDelivered) {
+    // 在图标 / 分区卡片上按下：后端没收到 down，之后的移动绝不能带"按着左键"
+    // （Godot 会把它当成一次没有按下的拖动，表现就是抽搐）
+    ASSERT_EQ(0, relay_reported_buttons(kRelayLeft, 0, RelayEventKind::Move));
+
+    // 转发过的按下：移动要一直带着，后端才能连贯地拖动
+    ASSERT_EQ(kRelayLeft, relay_reported_buttons(kRelayLeft, kRelayLeft, RelayEventKind::Move));
+
+    // 按下事件本身要带上这个键（note_forwarded 在这之后才更新状态）
+    ASSERT_EQ(kRelayLeft, relay_reported_buttons(kRelayLeft, 0, RelayEventKind::LeftDown));
+
+    // 抬起事件里不再带它
+    ASSERT_EQ(0, relay_reported_buttons(kRelayLeft, kRelayLeft, RelayEventKind::LeftUp));
+
+    // 右键没转发过、左键转发过：只报左键
+    ASSERT_EQ(kRelayLeft, relay_reported_buttons(kRelayLeft | kRelayRight, kRelayLeft,
+                                                 RelayEventKind::Move));
+}
+
 TEST(MouseRelay_ButtonBitsMatchKinds) {
     ASSERT_EQ(kRelayLeft, relay_button_of(RelayEventKind::LeftDown));
     ASSERT_EQ(kRelayLeft, relay_button_of(RelayEventKind::LeftUp));

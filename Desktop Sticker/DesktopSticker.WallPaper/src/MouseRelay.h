@@ -77,6 +77,8 @@ private:
     HWND find_desktop_list_view();
     RelayViewport viewport() const;
     void push(MouseRelayEvent event);
+    // 给后端补发"抬起"，并清空捕获状态（离开画面 / 暂停 / 关闭交互时）
+    void release_all_buttons();
     void clear_queue();
 
     HWND window_ = nullptr;
@@ -97,6 +99,14 @@ private:
     int lastClientX_ = 0;
     int lastClientY_ = 0;
     HWND list_view_ = nullptr;    // 桌面图标列表（LVM_HITTEST 用）
+    // 诊断计数（5 秒一行日志）：转发 / 因命中被拒 / 离开 / 补发的抬起
+    uint32_t statMoves_ = 0;
+    uint32_t statButtons_ = 0;
+    uint32_t statWheels_ = 0;
+    uint32_t statLeaves_ = 0;
+    uint32_t statRejected_ = 0;
+    uint32_t statReleases_ = 0;
+    DWORD lastStatTick_ = 0;
 
     std::mutex queue_mutex_;
     std::deque<MouseRelayEvent> queue_;

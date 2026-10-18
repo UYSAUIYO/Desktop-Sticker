@@ -108,6 +108,19 @@ inline int64_t relay_move_interval_ms(bool capturing) {
     return capturing ? 0 : 8;
 }
 
+// 报告给后端的按钮位：
+//   · 只报告"我们真正转发过、还没抬起"的按钮 —— 在图标/分区上按下时后端根本没收到
+//     按下，若仍把物理按键状态写进 buttonMask，后端会看到"按着左键的移动"却没有按下，
+//     Godot 这类引擎会把这种事件当成拖动，表现为抽搐；
+//   · 本事件正在按下的那个按钮要补上（note_forwarded 在之后才更新状态）。
+inline int relay_reported_buttons(int physical, int delivered, RelayEventKind kind) {
+    int reported = physical & delivered;
+    const int bit = relay_button_of(kind);
+    if (relay_is_down(kind)) reported |= bit;
+    if (relay_is_up(kind)) reported &= ~bit;
+    return reported;
+}
+
 // 系统事件要不要吞掉：按键与滚轮一律吞（否则桌面会同时响应），
 // 移动只在"按住按钮"时吞（未按住时让桌面维持自己的悬停/光标状态）。
 inline bool relay_swallows(RelayEventKind kind, bool capturing) {
@@ -116,6 +129,10 @@ inline bool relay_swallows(RelayEventKind kind, bool capturing) {
 }
 
 // 交互状态机：谁抢到了这一点、要不要转发、按下是否已被转发。
+//
+// Leave 的时机只有"光标离开壁纸矩形"一种：命中被拒（图标、分区卡片、任务栏）时
+// 只是"这条不转发"，绝不下发 Leave —— 否则光标在画面里移动时会在
+// "移动 / 离开" 之间抖动，后端的悬停与拖动状态跟着抽搐（实测症状）。
 class RelayPolicy {
 public:
     void set_enabled(bool on) {
