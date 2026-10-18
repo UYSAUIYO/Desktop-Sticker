@@ -10,6 +10,7 @@ extends Control
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Filters = preload("res://src/doc/filters.gd")
 const SelectionOverlay = preload("res://src/ui/selection_overlay.gd")
 
 const PADDING := 28.0
@@ -247,9 +248,10 @@ func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vect
 		var layer: Dictionary = arr[i]
 		if not bool(layer.get("visible", true)):
 			continue
-		if Layer.is_filter(layer):
-			# 滤镜层没有自己的框（它只调色/模糊下方被覆盖的层），画布上点不到它，
+		if Layer.is_filter(layer) and not Filters.region_enabled(layer):
+			# 没开作用区域的滤镜层没有自己的框（它只调色/模糊被覆盖的层），画布上点不到它，
 			# 要改就从左侧列表里选 —— 否则它会一直挡着内容层的点击。
+			# 开了作用区域就有了明确的框，这时该像普通元素一样可以直接点中。
 			continue
 		var path := parent_path.duplicate()
 		path.append(i)

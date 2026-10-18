@@ -363,6 +363,29 @@ func covered_names(path: PackedInt32Array) -> Array:
 	return out
 
 
+## 被覆盖内容在**父级像素**里的包围盒。打开「限制作用区域」时用它给框一个初始值：
+## 画面上先不变（框正好等于现在被处理的那块），用户再往小/往别处拖。
+## 没有可覆盖内容时退化成整个父级（= 不限制，和 Frame.of 对 w/h = 0 的语义一致）。
+func covered_bounds(path: PackedInt32Array) -> Rect2:
+	if path.is_empty():
+		return Rect2()
+	var parent_size := parent_size_of(parent_path_of(path))
+	var items := []
+	var target := cover_target_path(path)
+	if not target.is_empty():
+		items.append({"layer": layer_at(target)})
+	else:
+		var arr := siblings_at(parent_path_of(path))
+		var span := cover_span(path)
+		for i in range(span.x, span.y):
+			if i >= 0 and i < arr.size() and (arr[i] is Dictionary):
+				items.append({"layer": arr[i]})
+	var r := Layer.bounds_of(items, parent_size)
+	if r.size.x <= 0.0 or r.size.y <= 0.0:
+		return Rect2(Vector2.ZERO, parent_size)
+	return r
+
+
 ## 这一层是不是"绑定到指定图层"的效果层（不管目标还在不在）。
 func _is_bound(path: PackedInt32Array) -> bool:
 	if path.is_empty():

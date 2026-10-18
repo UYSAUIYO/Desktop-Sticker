@@ -362,8 +362,8 @@ func _build_cover(layer: Dictionary) -> void:
 			+ "目标上下移动、中间插进别的图层都不影响。"
 			+ "前三种模式按\"离这一层多远\"算：序号 1 = 紧挨着它的下一层，没被盖到的层照常画在它上面。")
 	_hint("效果覆盖的区域 = 被覆盖图层自己的框。目标铺满整张画布（没设过宽高）时，"
-			+ "滤镜自然就是全屏的 —— 想只做局部，先把目标拖小，或把它放进容器、"
-			+ "把效果层加进那个容器里。")
+			+ "滤镜自然就是全屏的 —— 想只做局部有三种办法：把目标拖小、把它放进容器，"
+			+ "或者（滤镜层）打开上面的「限制作用区域」直接框出一块。")
 
 
 ## 可绑定的图层：**同一组兄弟**里的内容图层（和 doc.cover_target_path 的规则一致）。
@@ -454,7 +454,82 @@ func _build_mask_layer(layer: Dictionary) -> void:
 
 # ---------------------------------------------------------------- 滤镜层
 
+## 作用区域的分段（滤镜层专属）。默认关闭 = 作用在被覆盖图层的整个区域上；
+## 打开之后这一层在画布上就有了自己的框（绿框），拖/缩放/Shift 等比和其他元素一样。
+## 形状只有矩形/圆角矩形/椭圆 —— 区域是"哪儿生效"，不需要图片 alpha。
+func _build_filter_region(layer: Dictionary) -> void:
+	_section("作用区域")
+	var rg: Dictionary = Filters.normalize_region(layer.get("region"))
+	layer["region"] = rg
+	var on := CheckButton.new()
+	on.text = "只在框内应用（限制作用区域）"
+	on.button_pressed = bool(rg.get("enabled", false))
+	on.toggled.connect(func(v: bool) -> void:
+		rg["enabled"] = v
+		if v:
+			# 打开时把框落成"现在被处理的那块内容"的包围盒：画面先不变，但画布上
+			# 立刻有框可拖 —— 否则还得去别处猜该填什么位置。
+			var b: Rect2 = main.doc.covered_bounds(main.sel)
+			var tr: Dictionary = layer["transform"]
+			tr["x"] = b.position.x
+			tr["y"] = b.position.y
+			tr["w"] = maxf(Frame.MIN_SIZE, b.size.x)
+			tr["h"] = maxf(Frame.MIN_SIZE, b.size.y)
+		main.apply_change(true)
+	)
+	_box.add_child(on)
+
+	if not bool(rg.get("enabled", false)):
+		_hint("现在作用在被覆盖图层的整个区域上（区域 = 它们的包围盒）。"
+				+ "想只处理画面的一块（比如只糊右下角、只给一段文字调色），"
+				+ "勾上上面的开关，然后在画布上拖动/缩放这个框。")
+		return
+
+	var shapes: Array = Filters.REGION_SHAPES
+	var shape_names := ["矩形", "圆角矩形", "椭圆"]
+	var shape := _option(shapes, shape_names, String(rg.get("shape", "rect")))
+	shape.item_selected.connect(func(i: int) -> void:
+		rg["shape"] = String(shapes[i])
+		main.apply_change(true)
+	)
+	_row("形状", shape)
+
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	_frame_row("X", "x", layer, parent_size, -20000.0, 20000.0, 1.0)
+	_frame_row("Y", "y", layer, parent_size, -20000.0, 20000.0, 1.0)
+	_frame_row("宽", "w", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0)
+	_frame_row("高", "h", layer, parent_size, Frame.MIN_SIZE, 20000.0, 1.0)
+
+	var radius := _spin(float(rg.get("radius", 0.0)), 0.0, 4000.0, 1.0)
+	radius.value_changed.connect(func(v: float) -> void:
+		rg["radius"] = v
+		main.apply_change()
+	)
+	_row("圆角", radius)
+
+	var feather := _spin(float(rg.get("feather", 0.0)), 0.0, 2000.0, 1.0)
+	feather.value_changed.connect(func(v: float) -> void:
+		rg["feather"] = v
+		main.apply_change()
+	)
+	_row("羽化", feather)
+
+	var invert := CheckButton.new()
+	invert.text = "反相（只在框**外**应用滤镜）"
+	invert.button_pressed = bool(rg.get("invert", false))
+	invert.toggled.connect(func(v: bool) -> void:
+		rg["invert"] = v
+		main.apply_change()
+	)
+	_box.add_child(invert)
+
+	_hint("框内是滤镜后的样子，框外是原图（对模糊/调色/暗角/色调分离都成立）；"
+			+ "阴影/发光/描边这些副本也只在框内出现。")
+	_hint("画布上拖绿框即可改位置/大小（角点按住 Shift 等比），和拖动普通元素是同一样手感。")
+
+
 func _build_filter_layer(layer: Dictionary) -> void:
+	_build_filter_region(layer)
 	_section("滤镜")
 	var f: Dictionary = layer["filters"]
 
@@ -493,7 +568,8 @@ func _build_filter_layer(layer: Dictionary) -> void:
 	_hint("这一层对下方被覆盖的图层**合成后**整体生效："
 			+ "色彩 / 暗角 / 色调分离是逐像素着色器（几乎零开销）；模糊每层多两趟渲染；"
 			+ "阴影 / 发光 / 描边是把被覆盖的内容染色复制一份垫在下面（粒子与更内层的效果层不复制）。"
-			+ "勾选任意一组才会生效 —— 没勾的组在着色器里就是恒等运算。")
+			+ "勾选任意一组才会生效 —— 没勾的组在着色器里就是恒等运算。"
+			+ "只想让滤镜作用在画面的一块上，用上面的「作用区域」。")
 
 
 # ---------------------------------------------------------------- 内容图层：类型专属

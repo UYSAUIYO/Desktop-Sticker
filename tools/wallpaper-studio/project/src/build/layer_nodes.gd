@@ -310,6 +310,76 @@ static func _blur_material(radius: float, size: Vector2, horizontal: bool) -> Sh
 	return mat
 
 
+# ---------------------------------------------------------------- 作用区域
+
+## 视口像素尺寸：至少 1x1，避免 0 尺寸的渲染目标。
+static func _viewport_px(size: Vector2) -> Vector2i:
+	return Vector2i(maxi(1, int(size.x)), maxi(1, int(size.y)))
+
+
+## 把控件铺满它所在的 viewport（锚点 + 偏移都归零，见 AGENTS 里那条踩过的坑）。
+static func _fill(node: Control) -> void:
+	node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	node.offset_left = 0.0
+	node.offset_top = 0.0
+	node.offset_right = 0.0
+	node.offset_bottom = 0.0
+
+
+## 造一个"容器 + 视口"，内容铺满视口；material 挂在容器上（= 作用于整张合成图）。
+static func _viewport_box(content: Control, size: Vector2, material: Material,
+		box_name: String) -> Dictionary:
+	var vp := SubViewport.new()
+	vp.name = box_name + "_viewport"
+	vp.size = _viewport_px(size)
+	vp.transparent_bg = true
+	vp.disable_3d = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+
+	var cont := SubViewportContainer.new()
+	cont.name = box_name
+	cont.stretch = true
+	cont.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cont.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cont.add_child(vp)
+	cont.material = material
+
+	_fill(content)
+	vp.add_child(content)
+	return {"node": cont, "viewport": vp}
+
+
+## 把内容单独渲进一张贴图（不挂材质），返回 {node, texture}。
+## 滤镜同时开了「作用区域」和「模糊」时用它：模糊链最后一步拿到的是糊过的贴图，
+## 想把"框外保持原样"做对，必须另外留一份没动过的原图。
+static func wrap_content_viewport(content: Control, size: Vector2) -> Dictionary:
+	var box := _viewport_box(content, size, null, "base")
+	return {"node": box["node"], "texture": (box["viewport"] as SubViewport).get_texture()}
+
+
+## 作用区域混合：把已经滤镜过的节点和原图按区域形状混合，框外恢复成原图。
+##
+## 渲染顺序是有讲究的（踩不起）：消费 base_tex 的材质挂在**再往外一层**的
+## SubViewportContainer 上 —— 容器只在自己那份 viewport 渲染完之后才画，而原图那个
+## viewport 就在被渲进这份 viewport 的子树里，所以当帧就绪。
+## 反过来把材质挂到更外层的祖先上，祖先比孩子先画，拿到的是上一帧（甚至首帧空白）。
+static func wrap_region_mix(filtered: Control, base_tex: Texture2D, uniforms: Dictionary,
+		size: Vector2, effect_id: String = "") -> Control:
+	var shader := Shader.new()
+	shader.code = Filters.region_mix_shader()
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	for key in uniforms.keys():
+		mat.set_shader_parameter(key, uniforms[key])
+	mat.set_shader_parameter("base_tex", base_tex)
+	# 拖动作用区域时只刷这类材质的 uniform，不重建节点（见 scene_builder.refresh_effect）；
+	# effect_id 让刷新只落到**这一个效果层**的材质上（嵌套效果层各有各的框）。
+	mat.set_meta("dstk_effect_style", true)
+	mat.set_meta("dstk_effect_id", effect_id)
+	return _viewport_box(filtered, size, mat, "region")["node"]
+
+
 ## 把一段源码常量编译成 GDScript。编译失败返回 null，调用方退回"内联纹理"路径。
 static func _compile(source: String):
 	var script := GDScript.new()

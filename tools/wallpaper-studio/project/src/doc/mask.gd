@@ -42,7 +42,13 @@ static func normalize(raw) -> Dictionary:
 
 ## 形状编号，直接进着色器。
 static func shape_code(mask_layer: Dictionary) -> int:
-	match String(mask_layer.get("shape", "rect")):
+	return code_of(String(mask_layer.get("shape", "rect")))
+
+
+## 形状字符串 -> 着色器里的形状编号。
+## 滤镜层的「作用区域」也走这一份：两边共用 shape_alpha，编号必须一致。
+static func code_of(shape: String) -> int:
+	match shape:
 		"rounded":
 			return 1
 		"ellipse":

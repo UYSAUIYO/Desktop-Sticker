@@ -130,3 +130,42 @@ func register(t) -> void:
 		t.ok(code.contains("render_mode blend_mix;"), "混合模式仍在 render_mode 里")
 		t.ok(Filters.blur_shader().contains("blur_step"), "模糊着色器有步长 uniform")
 	)
+
+	# ---------------------------------------------------------------- 作用区域
+
+	t.case("filter_region_defaults_off", func() -> void:
+		# 默认不限制作用区域：老工程、以及"选中元素再加滤镜层"的常见用法都是全区域生效。
+		var fl := Layer.make_filter("滤镜")
+		t.eq(Filters.region_enabled(fl), false, "默认关闭")
+		t.eq(String(Filters.region(fl)["shape"]), "rect", "默认矩形")
+		t.eq(Filters.region_enabled({"type": "mask"}), false, "遮罩层没有作用区域")
+	)
+
+	t.case("filter_region_normalizes", func() -> void:
+		var rg := Filters.normalize_region({"enabled": true, "shape": "image",
+				"radius": -3.0, "feather": -1.0})
+		t.eq(String(rg["shape"]), "rect", "区域没有图片 alpha，退回矩形")
+		t.eq(float(rg["radius"]), 0.0, "圆角不能为负")
+		t.eq(float(rg["feather"]), 0.0, "羽化不能为负")
+		t.eq(bool(rg["enabled"]), true, "开关保留")
+		var shown := Filters.region({"region": {"enabled": true, "shape": "ellipse"}})
+		t.eq(String(shown["shape"]), "ellipse", "从图层读回来")
+	)
+
+	t.case("filter_region_shares_mask_shape_codes", func() -> void:
+		# 区域和遮罩共用同一段 SDF（shape_alpha）：编号不一致的话选椭圆会画成矩形。
+		t.eq(Mask.code_of("rect"), 0, "矩形 0")
+		t.eq(Mask.code_of("rounded"), 1, "圆角 1")
+		t.eq(Mask.code_of("ellipse"), 2, "椭圆 2")
+		t.eq(Filters.REGION_SHAPES.size(), 3, "区域只有三种形状")
+	)
+
+	t.case("layer_shader_has_region_branches", func() -> void:
+		var code := Filters.layer_shader("mix")
+		t.ok(code.contains("region_alpha("), "逐像素着色器认识作用区域")
+		t.ok(code.contains("mix(c, outc, ra)"), "框外混回原图（不是变透明）")
+		t.ok(code.contains("outc.a *= ra"), "复制类副本按区域裁 alpha")
+		var mix_code := Filters.region_mix_shader()
+		t.ok(mix_code.contains("base_tex"), "模糊链另有区域混合着色器")
+		t.ok(mix_code.contains("region_rect"), "混合着色器吃同一套区域 uniform")
+	)

@@ -20,6 +20,10 @@ const SHADOW := "shadow"
 const GLOW := "glow"
 const STROKE := "stroke"
 
+## 滤镜层的**作用区域**形状。和遮罩层同一套 SDF（见着色器里的 shape_alpha），
+## 但不提供"图片 alpha" —— 区域只是"哪儿生效"的框，没必要再引一张贴图。
+const REGION_SHAPES := ["rect", "rounded", "ellipse"]
+
 ## 参数默认值。enabled=false 的那组在着色器里就是"恒等运算"。
 static func defaults() -> Dictionary:
 	return {
@@ -69,6 +73,42 @@ static func normalize(raw) -> Dictionary:
 				out[key]["width"] = maxf(0.0, float(src.get("width", 4.0)))
 				out[key]["color"] = _to_color(src.get("color"), Color.WHITE)
 	return out
+
+
+# ---------------------------------------------------------------- 作用区域
+##
+## 滤镜层的**作用区域**：框 + 形状，几何存在图层自己的 `transform` 里（和遮罩层、
+## 和普通元素的选区框是同一个模型），所以画布上可以直接拖/缩放、角点 Shift 等比。
+##   · enabled = false（默认）—— 作用在被覆盖图层的整个区域上（老行为）；
+##   · enabled = true        —— 只有框内是滤镜后的样子，框外保持原样。
+## 形状只有矩形/圆角矩形/椭圆：区域是"哪儿生效"，不需要图片 alpha。
+static func region_defaults() -> Dictionary:
+	return {"enabled": false, "shape": "rect", "radius": 24.0, "feather": 0.0,
+			"invert": false}
+
+
+static func normalize_region(raw) -> Dictionary:
+	var out := region_defaults()
+	if not (raw is Dictionary):
+		return out
+	out["enabled"] = bool(raw.get("enabled", false))
+	var shape := String(raw.get("shape", "rect"))
+	out["shape"] = shape if shape in REGION_SHAPES else "rect"
+	out["radius"] = maxf(0.0, float(raw.get("radius", out["radius"])))
+	out["feather"] = maxf(0.0, float(raw.get("feather", out["feather"])))
+	out["invert"] = bool(raw.get("invert", false))
+	return out
+
+
+## 滤镜层的作用区域参数（缺字段按默认；不是滤镜层时也返回默认值）。
+## 返回的是**新字典**：要改就写回 layer["region"]（属性面板就是这么做的）。
+static func region(layer: Dictionary) -> Dictionary:
+	return normalize_region(layer.get("region"))
+
+
+## 这一层有没有"限制作用区域"（只有滤镜层可能为 true）。
+static func region_enabled(layer: Dictionary) -> bool:
+	return bool(region(layer).get("enabled", false))
 
 
 static func _to_color(v, fallback: Color) -> Color:
@@ -140,6 +180,42 @@ static func grade_uniforms(f: Dictionary, layer_uv: Rect2) -> Dictionary:
 	return out
 
 
+## 形状 SDF（矩形 0 / 圆角 1 / 椭圆 2）+ 滤镜的**作用区域**。
+##
+## 遮罩层和"滤镜作用区域"共用这一份：两处的圆角/羽化算法必须一模一样，否则
+## 同一个框套上遮罩与套上滤镜区域会差一点点，用户没法对齐。
+## 坐标 p 是**形状框自己归一化后的比例**（0..1），所以窗口尺寸、容器嵌套都不影响。
+## region_shape < 0 = 不限制区域。
+const REGION_BODY := """
+uniform int region_shape = -1;
+uniform vec4 region_rect = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec2 region_radii = vec2(0.0, 0.0);
+uniform vec2 region_feather = vec2(0.0, 0.0);
+uniform bool region_invert = false;
+
+float shape_alpha(vec2 p, int shape, vec2 radii, vec2 feather) {
+	float d;
+	if (shape == 2) {
+		vec2 q = (p - 0.5) * 2.0;
+		d = (length(q) - 1.0) * 0.5;
+	} else {
+		vec2 q = abs(p - 0.5) - (vec2(0.5) - radii);
+		d = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - min(radii.x, radii.y);
+	}
+	float e = max(max(feather.x, feather.y), 0.0005);
+	return 1.0 - smoothstep(-e, e, d);
+}
+
+float region_alpha(vec2 cuv) {
+	if (region_shape < 0) {
+		return 1.0;
+	}
+	vec2 p = (cuv - region_rect.xy) / max(region_rect.zw, vec2(0.000001));
+	float a = shape_alpha(p, region_shape, region_radii, region_feather);
+	return region_invert ? 1.0 - a : a;
+}
+"""
+
 const LAYER_BODY := """
 uniform int mask_shape = -1;
 uniform vec4 mask_rect = vec4(0.0, 0.0, 1.0, 1.0);
@@ -147,6 +223,10 @@ uniform vec2 mask_radii = vec2(0.0, 0.0);
 uniform vec2 mask_feather = vec2(0.0, 0.0);
 uniform bool mask_invert = false;
 uniform sampler2D mask_tex : filter_linear, repeat_disable;
+
+// region_blend = true：区域外是**原图**（逐像素滤镜/模糊的语义，看到的是"没处理的样子"）；
+// false：只按区域裁剪 alpha（复制类滤镜的副本用它，副本不该画到框外）。
+uniform bool region_blend = true;
 
 uniform float brightness = 0.0;
 uniform float contrast = 1.0;
@@ -158,6 +238,7 @@ uniform float vignette_amount = 0.0;
 uniform float vignette_radius = 0.65;
 uniform float vignette_softness = 0.45;
 uniform float posterize_levels = 0.0;
+""" + REGION_BODY + """
 
 vec3 hue_rotate(vec3 c, float a) {
 	vec3 k = vec3(0.57735026919);
@@ -171,19 +252,11 @@ float mask_alpha(vec2 cuv) {
 	}
 	vec2 p = (cuv - mask_rect.xy) / max(mask_rect.zw, vec2(0.000001));
 	if (mask_shape == 3) {
+		// 图片 alpha：和形状共用同一套框，只是 alpha 来自贴图。
 		float a = texture(mask_tex, p).a;
 		return mask_invert ? 1.0 - a : a;
 	}
-	float d;
-	if (mask_shape == 2) {
-		vec2 q = (p - 0.5) * 2.0;
-		d = (length(q) - 1.0) * 0.5;
-	} else {
-		vec2 q = abs(p - 0.5) - (vec2(0.5) - mask_radii);
-		d = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - min(mask_radii.x, mask_radii.y);
-	}
-	float e = max(max(mask_feather.x, mask_feather.y), 0.0005);
-	float a = 1.0 - smoothstep(-e, e, d);
+	float a = shape_alpha(p, mask_shape, mask_radii, mask_feather);
 	return mask_invert ? 1.0 - a : a;
 }
 
@@ -211,7 +284,17 @@ void fragment() {
 		float v = smoothstep(vignette_radius, vignette_radius + vignette_softness, d);
 		a *= 1.0 - v * vignette_amount;
 	}
-	COLOR = vec4(clamp(rgb, 0.0, 1.0), c.a * clamp(a, 0.0, 1.0));
+	vec4 outc = vec4(clamp(rgb, 0.0, 1.0), c.a * clamp(a, 0.0, 1.0));
+	// 作用区域：框外显示**原图**（region_blend）或直接裁掉（复制类副本）。
+	if (region_shape >= 0) {
+		float ra = clamp(region_alpha(cuv), 0.0, 1.0);
+		if (region_blend) {
+			outc = mix(c, outc, ra);
+		} else {
+			outc.a *= ra;
+		}
+	}
+	COLOR = outc;
 }
 """
 
@@ -257,3 +340,27 @@ static func layer_shader(blend: String) -> String:
 ## 半径按图层宽高的比例给，所以窗口放大时模糊的视觉强度不变。
 static func blur_shader() -> String:
 	return "shader_type canvas_item;\n" + BLUR_BODY
+
+
+## 作用区域的"混合"着色器：模糊那一套没法在单趟 fragment 里把原图拿回来
+## （最后一步拿到的贴图已经是糊的了），所以模糊 + 区域时在整条链外面再包一层，
+## 把**滤镜结果**（TEXTURE）和**原图**（base_tex）按区域形状混合。
+## base_tex 必须是同一个 viewport 里先渲染好的那张（见 layer_nodes.wrap_content_viewport
+## 的注释：跨 viewport 采样只有这种"先渲后取"的顺序才是当帧正确的）。
+const REGION_MIX_BODY := """
+uniform sampler2D base_tex : filter_linear, repeat_disable;
+""" + REGION_BODY + """
+void fragment() {
+	vec4 f = texture(TEXTURE, UV);
+	vec4 b = texture(base_tex, UV);
+	// 先在预乘空间混合，否则半透明边缘会渗出黑边（和模糊着色器同一处理）。
+	f.rgb *= f.a;
+	b.rgb *= b.a;
+	vec4 o = mix(b, f, clamp(region_alpha(UV), 0.0, 1.0));
+	COLOR = vec4(o.a > 0.0001 ? o.rgb / o.a : o.rgb, o.a);
+}
+"""
+
+
+static func region_mix_shader() -> String:
+	return "shader_type canvas_item;\n" + REGION_MIX_BODY

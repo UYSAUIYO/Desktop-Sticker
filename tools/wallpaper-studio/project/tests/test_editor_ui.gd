@@ -255,12 +255,83 @@ func register(t) -> void:
 		editor.free()
 	)
 
+	t.case("editor_filter_region_toggle_makes_canvas_frame", func() -> void:
+		# 滤镜层的「作用区域」：勾上之后这一层就有了画布上的框，能像图片一样拖/缩放，
+		# 画布上也点得中（没开区域时点不到，见上一个用例）。
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+
+		editor.doc.canvas = Vector2i(1280, 720)
+		var base := Layer.make_color("底", Color.BLACK)
+		base["transform"]["x"] = 320.0
+		base["transform"]["y"] = 180.0
+		base["transform"]["w"] = 640.0
+		base["transform"]["h"] = 360.0
+		editor.doc.add_layer(base)
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		editor.doc.add_layer(fl)
+		editor.apply_change(true)
+		editor._canvas.size = Vector2(800, 600)
+		editor._canvas._fit()
+		editor.select_layer(1)
+
+		var center: Vector2 = editor._canvas._container.position \
+				+ Vector2(editor.doc.canvas) * 0.5 * editor._canvas._scale
+		t.eq(editor._canvas.layer_at_screen(center), PackedInt32Array([0]),
+				"区域没开时点不到滤镜层，选到下面的内容")
+
+		var cb := _find_check(editor._inspector._box, "只在框内应用")
+		t.ok(cb != null, "属性面板里有作用区域开关")
+		if cb == null:
+			tree.root.remove_child(editor)
+			editor.free()
+			return
+		cb.button_pressed = true                    # 触发 toggled -> apply_change(true)
+		t.eq(Filters.region_enabled(editor.doc.layers[1]), true, "区域已打开")
+		# 框先落成"被覆盖内容"的包围盒：画面不变，但画布上立刻有框可拖。
+		t.eq(Frame.of(editor.doc.layers[1], editor.doc.canvas),
+				Rect2(Vector2(320, 180), Vector2(640, 360)), "框 = 被覆盖内容的包围盒")
+		t.eq(editor._canvas.layer_at_screen(center), PackedInt32Array([1]),
+				"开了区域之后画布上能直接点中滤镜层")
+
+		# 拖框（等价于在画布上拖）：只刷 uniform，不重建节点。
+		var node := _node_of(editor, editor.doc.layers[1])
+		t.ok(node != null, "滤镜层在画布树里有合成节点")
+		Frame.move(editor.doc.layers[1], editor.doc.canvas, Vector2(100.0, 0.0))
+		editor.apply_live()
+		t.ok(_node_of(editor, editor.doc.layers[1]) == node, "拖动不重建节点")
+		var mat = node.material if node != null else null
+		t.ok(mat is ShaderMaterial, "区域混合材质")
+		if mat is ShaderMaterial:
+			var rect: Vector4 = (mat as ShaderMaterial).get_shader_parameter("region_rect")
+			t.approx(rect.x, 420.0 / 1280.0, 0.0001, "拖动后 region_rect 立刻更新")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+
 ## 在面板里找一个条目数为 count 的 OptionButton（用来点那些会触发面板重建的下拉框）。
 func _find_option(node: Node, count: int) -> OptionButton:
 	for c in node.get_children():
 		if c is OptionButton and (c as OptionButton).item_count == count:
 			return c as OptionButton
 		var found := _find_option(c, count)
+		if found != null:
+			return found
+	return null
+
+
+## 按文字找复选框（作用区域开关）。
+func _find_check(node: Node, fragment: String) -> CheckButton:
+	for c in node.get_children():
+		if c is CheckButton and (c as CheckButton).text.contains(fragment):
+			return c as CheckButton
+		var found := _find_check(c, fragment)
 		if found != null:
 			return found
 	return null

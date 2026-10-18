@@ -11,16 +11,19 @@ extends Control
 ## space 字典统一描述"某个空间 -> 屏幕"：{origin, scale, rotation, rect}。
 ##
 ## 遮罩层同样是普通图层：它的框就是遮罩形状的位置尺寸，所以拖它=改遮罩（画黄框）。
-## 滤镜层没有自己的几何（它作用在下方被覆盖的层上），画布上不给框，从列表里选。
+## 滤镜层平时没有几何（它只作用在被覆盖的层上），但打开「限制作用区域」之后
+## 就有了框（画绿框）：框内是滤镜后的样子，框外保持原样 —— 拖它=改滤镜的作用区域。
 ##
 ## 手感上的要点：拖动过程中**不能**用 event.position 算位移。控件/元素自己的位置
 ## 每帧都在变，局部坐标会跟着跳；统一用 get_global_mouse_position() 的差值。
 
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
 const BORDER_COLOR := Color(0.42, 0.62, 0.95)
 const MASK_COLOR := Color(0.96, 0.72, 0.24)
+const REGION_COLOR := Color(0.36, 0.85, 0.62)
 const HANDLE_SIZE := 9.0
 
 var main = null
@@ -69,7 +72,22 @@ func _space() -> Dictionary:
 
 
 func _box_color(layer: Dictionary) -> Color:
-	return MASK_COLOR if Layer.is_mask(layer) else BORDER_COLOR
+	if Layer.is_mask(layer):
+		return MASK_COLOR
+	if Layer.is_filter(layer):
+		return REGION_COLOR
+	return BORDER_COLOR
+
+
+## 这一层在画布上有没有"可拖的框"：普通图层有，遮罩层有（= 遮罩形状），
+## 滤镜层只有打开了「限制作用区域」才有 —— 否则它在画布上不可点，
+## 免得一个铺满画布的滤镜层把下面所有内容的点击都吃掉。
+func _frameable(layer: Dictionary) -> bool:
+	if layer.is_empty():
+		return false
+	if not Layer.is_filter(layer):
+		return true
+	return Filters.region_enabled(layer)
 
 
 # ---------------------------------------------------------------- 坐标换算
@@ -123,7 +141,7 @@ func _body_at(space: Dictionary, screen_p: Vector2) -> bool:
 
 func _draw() -> void:
 	var layer := _layer()
-	if layer.is_empty() or Layer.is_filter(layer):
+	if not _frameable(layer):
 		return
 	var space := _space()
 	if space.is_empty():
@@ -181,7 +199,7 @@ func _gui_input(event: InputEvent) -> void:
 
 func _update_cursor(screen_p: Vector2) -> void:
 	var layer := _layer()
-	if layer.is_empty() or Layer.is_filter(layer):
+	if not _frameable(layer):
 		mouse_default_cursor_shape = Control.CURSOR_ARROW
 		return
 	var space := _space()
@@ -199,7 +217,7 @@ func _update_cursor(screen_p: Vector2) -> void:
 
 func _try_start_drag(screen_p: Vector2) -> bool:
 	var layer := _layer()
-	if layer.is_empty() or Layer.is_filter(layer):
+	if not _frameable(layer):
 		return false
 	var space := _space()
 	if space.is_empty():

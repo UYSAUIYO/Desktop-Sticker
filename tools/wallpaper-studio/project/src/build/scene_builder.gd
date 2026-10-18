@@ -199,6 +199,12 @@ static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 ## 被覆盖内容 -> 一个合成节点：染色副本垫底 → 原节点 → 模糊链 → 逐像素材质。
 ## 区间模式（"第几层"）和绑定模式（"只包这一层"）都走这里，保证两种覆盖方式
 ## 画出来的东西一模一样。
+##
+## 滤镜的「作用区域」也在这里落地：
+##   · 只开逐像素滤镜 —— 材质里的 region_* 直接把区域外混回原图，不需要额外渲染；
+##   · 开了模糊        —— 先把内容单独渲一张"原图"贴图，在最外面再包一层区域混合
+##                        （模糊链里拿不回原图，见 layer_nodes.wrap_region_mix）；
+##   · 复制类（阴影/发光/描边）—— 副本整组先合成一张图，再按区域裁 alpha（见 _add_copies）。
 static func _compose_effect(effect: Dictionary, covered: Array, project_dir: String,
 		parent_size: Vector2) -> Control:
 	var stack := Control.new()
@@ -206,8 +212,7 @@ static func _compose_effect(effect: Dictionary, covered: Array, project_dir: Str
 	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# 阴影 / 发光 / 描边 = 染色副本垫在下面（滤镜层才可能开这些）。
-	for copy in _copies_of(effect, covered, parent_size):
-		stack.add_child(copy)
+	_add_copies(stack, _copies_of(effect, covered, parent_size), effect, parent_size)
 	for item in covered:
 		stack.add_child(item["node"])
 
@@ -217,11 +222,21 @@ static func _compose_effect(effect: Dictionary, covered: Array, project_dir: Str
 	var blur := 0.0
 	if Layer.is_filter(effect):
 		blur = Filters.blur_radius(effect.get("filters", {}))
+	var limited := Filters.region_enabled(effect)
 	if blur > 0.0:
 		# 先模糊再调色（和老的单层滤镜同一顺序），材质挂在最外层。
-		node = LayerNodes.wrap_blur(stack, blur, parent_size)
-		if mat != null:
-			node.material = mat
+		if limited:
+			var base := LayerNodes.wrap_content_viewport(stack, parent_size)
+			node = LayerNodes.wrap_blur(base["node"], blur, parent_size)
+			if mat != null:
+				node.material = mat
+			node = LayerNodes.wrap_region_mix(node, base["texture"],
+					_region_uniforms(effect, parent_size), parent_size,
+					String(effect.get("id", "")))
+		else:
+			node = LayerNodes.wrap_blur(stack, blur, parent_size)
+			if mat != null:
+				node.material = mat
 	elif mat != null:
 		node = _wrap_viewport(stack, parent_size, mat)
 
@@ -236,17 +251,8 @@ static func _compose_effect(effect: Dictionary, covered: Array, project_dir: Str
 ## 暗角是相对那个元素而不是整张画布 —— 否则"只盖一个元素"看起来像没生效。
 ## 旋转不参与包围盒（按未旋转的框算），和选区框一致。
 static func content_uv(covered: Array, parent_size: Vector2) -> Rect2:
-	var r := Rect2()
-	var first := true
-	for item in covered:
-		var layer: Dictionary = item["layer"]
-		if Layer.is_effect(layer):
-			# 效果层没有"自己的内容框"（遮罩框是形状、滤镜层根本没有几何），不参与包围盒。
-			continue
-		var fr := Frame.of(layer, parent_size)
-		r = fr if first else r.merge(fr)
-		first = false
-	if first:
+	var r := Layer.bounds_of(covered, parent_size)
+	if r.size.x <= 0.0 or r.size.y <= 0.0:
 		return FULL_UV
 	var pw := maxf(1.0, parent_size.x)
 	var ph := maxf(1.0, parent_size.y)
@@ -293,6 +299,29 @@ static func _copies_of(effect: Dictionary, covered: Array, parent_size: Vector2)
 	return out
 
 
+## 把副本垫到合成栈的底部。开了「作用区域」时，副本要**整组**先合成一张图，
+## 再按合成区域的 UV 裁 alpha —— 不能给每个副本单独挂着色器：着色器拿到的 UV 是
+## 那个元素自己的 0..1，和画布空间的区域框对不上（实测：区域会缩到元素里）。
+static func _add_copies(stack: Control, copies: Array, effect: Dictionary,
+		parent_size: Vector2) -> void:
+	if copies.is_empty():
+		return
+	if not Filters.region_enabled(effect):
+		for copy in copies:
+			stack.add_child(copy)
+		return
+	var box := Control.new()
+	box.name = "copies"
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for copy in copies:
+		box.add_child(copy)
+	var clip_uniforms := _region_uniforms(effect, parent_size)
+	clip_uniforms["region_blend"] = false
+	stack.add_child(_wrap_viewport(box, parent_size,
+			_material(clip_uniforms, String(effect.get("id", "")))))
+
+
 static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2) -> Control:
 	var dup: Control = content.duplicate()
 	var c := Layer.to_color(color, Color.BLACK)
@@ -311,16 +340,55 @@ static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2)
 ## 返回 null 表示这一层不需要着色器（比如只开了模糊，或者什么都没勾）。
 static func effect_material(effect: Dictionary, parent_size: Vector2,
 		project_dir: String, region: Rect2 = FULL_UV) -> Material:
+	var id := String(effect.get("id", ""))
 	if Layer.is_mask(effect):
-		return _material(_mask_uniforms(effect, parent_size, project_dir, true))
+		return _material(_mask_uniforms(effect, parent_size, project_dir, true), id)
 	var f: Dictionary = effect.get("filters", {})
 	if not Filters.needs_material(f):
 		return null
-	return _material(_grade_uniforms(f, region))
+	var uniforms := _grade_uniforms(f, region)
+	# 作用区域只在有逐像素滤镜时才有意义（只开副本类滤镜时由副本自己裁剪 alpha）。
+	uniforms.merge(_region_uniforms(effect, parent_size))
+	uniforms["region_blend"] = true
+	return _material(uniforms, id)
 
 
 static func _grade_uniforms(f: Dictionary, region: Rect2 = FULL_UV) -> Dictionary:
 	return Filters.grade_uniforms(f, region)
+
+
+## 遮罩层 / 滤镜作用区域共用的形状几何：UV 矩形 + 圆角 + 羽化（都已归一化）。
+## frame_layer 提供框（transform，父级像素）；圆角/羽化按**框**的宽高归一化，
+## 所以同一个框套遮罩与套滤镜区域，圆角看起来一样大。
+static func _frame_shape_uv(frame_layer: Dictionary, radius: float, feather: float,
+		parent_size: Vector2) -> Dictionary:
+	var fr := Frame.of(frame_layer, parent_size)
+	var uv := Mask.uv_rect(frame_layer, parent_size)
+	return {
+		"uv": Vector4(uv.position.x, uv.position.y, uv.size.x, uv.size.y),
+		"radii": Vector2(clampf(radius / maxf(1.0, fr.size.x), 0.0, 0.5),
+				clampf(radius / maxf(1.0, fr.size.y), 0.0, 0.5)),
+		"feather": Vector2(feather / maxf(1.0, fr.size.x),
+				feather / maxf(1.0, fr.size.y)),
+	}
+
+
+## 滤镜层「作用区域」的 uniform。region_shape = -1 表示不限制
+## （合成节点照旧铺满父级，这一层在画布上也就没有框）。
+## 区域框就是这一层自己的 transform，坐标空间和遮罩、和合成区域的 UV 完全一致。
+static func _region_uniforms(effect: Dictionary, parent_size: Vector2) -> Dictionary:
+	var out := {"region_shape": -1}
+	var rg := Filters.region(effect)
+	if not bool(rg.get("enabled", false)):
+		return out
+	var geo := _frame_shape_uv(effect, float(rg.get("radius", 0.0)),
+			float(rg.get("feather", 0.0)), parent_size)
+	out["region_shape"] = Mask.code_of(String(rg.get("shape", "rect")))
+	out["region_rect"] = geo["uv"]
+	out["region_radii"] = geo["radii"]
+	out["region_feather"] = geo["feather"]
+	out["region_invert"] = bool(rg.get("invert", false))
+	return out
 
 
 ## 遮罩层的 uniform。遮罩矩形按**合成区域自己的 UV 比例**给（0..1），
@@ -330,18 +398,13 @@ static func _mask_uniforms(mask_layer: Dictionary, parent_size: Vector2,
 	# 恒等色彩：同一个着色器兼遮罩与调色，遮罩层只要遮罩那一段。
 	var uniforms := _grade_uniforms({}, FULL_UV)
 	var code := Mask.shape_code(mask_layer)
-	var fr := Frame.of(mask_layer, parent_size)
-	var r := Mask.uv_rect(mask_layer, parent_size)
-	var radius := float(mask_layer.get("radius", 0.0))
-	var feather := float(mask_layer.get("feather", 0.0))
+	var geo := _frame_shape_uv(mask_layer, float(mask_layer.get("radius", 0.0)),
+			float(mask_layer.get("feather", 0.0)), parent_size)
 	uniforms["mask_shape"] = code
 	# 几何一律压成 Vector4：set_shader_parameter 收到 Rect2 会直接把进程打挂。
-	uniforms["mask_rect"] = Vector4(r.position.x, r.position.y, r.size.x, r.size.y)
-	uniforms["mask_radii"] = Vector2(
-			clampf(radius / maxf(1.0, fr.size.x), 0.0, 0.5),
-			clampf(radius / maxf(1.0, fr.size.y), 0.0, 0.5))
-	uniforms["mask_feather"] = Vector2(
-			feather / maxf(1.0, fr.size.x), feather / maxf(1.0, fr.size.y))
+	uniforms["mask_rect"] = geo["uv"]
+	uniforms["mask_radii"] = geo["radii"]
+	uniforms["mask_feather"] = geo["feather"]
 	uniforms["mask_invert"] = bool(mask_layer.get("invert", false))
 	if code == 3 and with_texture:
 		var tex := Mask.load_texture(mask_layer, project_dir)
@@ -355,20 +418,28 @@ static func _mask_uniforms(mask_layer: Dictionary, parent_size: Vector2,
 
 
 ## 按混合模式生成图层着色器（引擎按源码哈希复用已编译结果，所以每层新建对象没问题）。
-static func _material(uniforms: Dictionary) -> ShaderMaterial:
+## effect_id 记在材质上：拖动时按 id 找到**这一个效果层**的全部材质
+## （逐像素材质、模糊链、区域混合、副本裁剪各是一份，不能只改最外层那一份）。
+static func _material(uniforms: Dictionary, effect_id: String = "") -> ShaderMaterial:
 	var shader := Shader.new()
 	shader.code = Filters.layer_shader("mix")
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
 	for key in uniforms.keys():
 		mat.set_shader_parameter(key, uniforms[key])
-	# 打个标记：拖动遮罩时只更新这类材质的 uniform，不重建节点（见 refresh_effect）。
+	# 打个标记：拖动遮罩/作用区域时只更新这类材质的 uniform，不重建节点（见 refresh_effect）。
 	mat.set_meta("dstk_effect_style", true)
+	mat.set_meta("dstk_effect_id", effect_id)
 	return mat
 
 
-## 拖动遮罩层时**不重建节点**：只把新的 uniform 写进已有的材质。
+## 拖动遮罩层 / 滤镜作用区域时**不重建节点**：只把新的 uniform 写进已有的材质。
 ## path 指向效果层；找不到节点/材质时静默返回（比如它下面没层、被隐藏了、绑定失效）。
+##
+## 一个效果层可能有不止一份材质（模糊链最外层一份、区域混合一份、副本裁剪若干份），
+## 所以按 `dstk_effect_id` 扫这棵子树，而不是只改最外层节点的 material。
+## 只写"几何类"的 uniform（遮罩框 / 区域框 / 逐像素参数）：嵌套在里面的其它效果层
+## 如果也被写进同名 uniform，遮罩框会互相串 —— 这就是按 id 过滤的原因。
 static func refresh_effect(root: Node, doc, path: PackedInt32Array,
 		project_dir: String) -> void:
 	if root == null or path.is_empty():
@@ -376,13 +447,9 @@ static func refresh_effect(root: Node, doc, path: PackedInt32Array,
 	var layer: Dictionary = doc.layer_at(path)
 	if layer.is_empty() or not Layer.is_effect(layer):
 		return
-	var node := root.find_child(NODE_PREFIX + String(layer.get("id", "")), true, false)
+	var id := String(layer.get("id", ""))
+	var node := root.find_child(NODE_PREFIX + id, true, false)
 	if node == null or not node.has_meta("dstk_effect"):
-		return
-	if not (node is CanvasItem):
-		return
-	var mat: Material = (node as CanvasItem).material
-	if not (mat is ShaderMaterial) or not mat.has_meta("dstk_effect_style"):
 		return
 	# 坐标空间是"被覆盖内容所在的父级"：绑定模式下目标可能在别的容器里。
 	var space: PackedInt32Array = doc.effect_space_path(path)
@@ -395,8 +462,21 @@ static func refresh_effect(root: Node, doc, path: PackedInt32Array,
 	else:
 		uniforms = _grade_uniforms(layer.get("filters", {}),
 				content_uv(covered_items_of(doc, path), parent_size))
-	for key in uniforms.keys():
-		(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
+		uniforms.merge(_region_uniforms(layer, parent_size))
+	_apply_uniforms(node, id, uniforms, project_dir)
+
+
+## 把 uniforms 写进这棵子树里属于 effect_id 的所有效果材质。
+static func _apply_uniforms(node: Node, effect_id: String, uniforms: Dictionary,
+		project_dir: String) -> void:
+	if node is CanvasItem:
+		var mat: Material = (node as CanvasItem).material
+		if mat is ShaderMaterial and mat.has_meta("dstk_effect_style") \
+				and String(mat.get_meta("dstk_effect_id", "")) == effect_id:
+			for key in uniforms.keys():
+				(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
+	for child in node.get_children():
+		_apply_uniforms(child, effect_id, uniforms, project_dir)
 
 
 ## 文档侧的"被覆盖图层"（拖动时算包围盒用；不建节点）。
@@ -464,8 +544,8 @@ static func uv_of(fr: Rect2, parent_size: Vector2, parent_uv: Rect2) -> Rect2:
 ## 位置/尺寸/旋转/不透明度/可见性。显式框用**锚点**表达（像素 / 父级尺寸），
 ## 于是导出的场景在任意窗口尺寸下都等比伸缩；没有显式框的图层保持"铺满父级"的老语义。
 ##
-## 效果图层没有自己的几何：遮罩框只是着色器 uniform，合成节点永远铺满父级，
-## 所以这里对它们直接返回（拖动遮罩时由 refresh_effect 更新 uniform）。
+## 效果图层没有自己的**节点**几何：遮罩框 / 作用区域都只是着色器 uniform，
+## 合成节点永远铺满父级，所以这里对它们直接返回（拖动时由 refresh_effect 更新 uniform）。
 static func apply_layer_node(node: Control, layer: Dictionary, parent_size: Vector2) -> void:
 	if Layer.is_effect(layer):
 		node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

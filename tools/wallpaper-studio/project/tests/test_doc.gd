@@ -3,6 +3,8 @@ extends RefCounted
 
 const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Frame = preload("res://src/doc/frame.gd")
+const Filters = preload("res://src/doc/filters.gd")
 
 
 func register(t) -> void:
@@ -427,5 +429,62 @@ func register(t) -> void:
 		t.eq(String(parsed.doc.layers[1]["cover"]["mode"]), "layer", "模式保留")
 		t.eq(String(parsed.doc.layers[1]["cover"]["target"]), String(b["id"]), "目标 id 保留")
 		t.eq(parsed.doc.covered_count(PackedInt32Array([1])), 1, "读回后仍然覆盖 B")
+	)
+
+	t.case("doc_filter_region_roundtrip", func() -> void:
+		# 作用区域是滤镜层自己的持久字段：存盘/读回不能丢（丢了就等于"框白拖了"）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		doc.add_layer(a)
+		var fl := Layer.make_filter("滤镜")
+		fl["region"] = {"enabled": true, "shape": "ellipse", "radius": 12.0,
+				"feather": 6.0, "invert": true}
+		fl["transform"]["x"] = 40.0
+		fl["transform"]["y"] = 20.0
+		fl["transform"]["w"] = 200.0
+		fl["transform"]["h"] = 100.0
+		doc.add_layer(fl)
+		var parsed: Dictionary = StudioDoc.parse(doc.to_text())
+		t.eq(parsed.ok, true, "读回: " + String(parsed.error))
+		var back: Dictionary = parsed.doc.layers[1]
+		t.eq(Filters.region_enabled(back), true, "区域开关保留")
+		t.eq(String(back["region"]["shape"]), "ellipse", "区域形状保留")
+		t.approx(float(back["region"]["radius"]), 12.0, 0.0001, "圆角保留")
+		t.eq(bool(back["region"]["invert"]), true, "反相保留")
+		t.eq(Frame.of(back, Vector2(1280, 720)),
+				Rect2(Vector2(40, 20), Vector2(200, 100)), "区域框保留")
+	)
+
+	t.case("doc_covered_bounds_uses_content_frames", func() -> void:
+		# 「限制作用区域」打开时拿它当框的初始值：必须是**被覆盖内容**的包围盒，
+		# 而不是整张画布（否则一打开就全屏，等于没限制）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		a["transform"]["x"] = 100.0
+		a["transform"]["y"] = 50.0
+		a["transform"]["w"] = 200.0
+		a["transform"]["h"] = 100.0
+		doc.add_layer(a)
+		var b := Layer.make_color("B", Color.GREEN)
+		b["transform"]["x"] = 400.0
+		b["transform"]["y"] = 300.0
+		b["transform"]["w"] = 100.0
+		b["transform"]["h"] = 50.0
+		doc.add_layer(b)
+		var fl := Layer.make_filter("滤镜")
+		doc.add_layer(fl)
+		t.eq(doc.covered_bounds(PackedInt32Array([2])),
+				Rect2(Vector2(100, 50), Vector2(400, 300)), "两层内容的包围盒")
+
+		fl["cover"] = {"mode": "layer", "target": String(b["id"])}
+		doc.layers[2]["cover"] = {"mode": "layer", "target": String(b["id"])}
+		t.eq(doc.covered_bounds(PackedInt32Array([2])),
+				Rect2(Vector2(400, 300), Vector2(100, 50)), "绑定模式只看目标那一层")
+
+		# 没有可覆盖内容时退化成整个父级（= 不限制，和 Frame.of 对 w/h = 0 的语义一致）。
+		var lonely = StudioDoc.create_empty("空", Vector2i(1280, 720))
+		lonely.add_layer(Layer.make_filter("孤零零的滤镜"))
+		t.eq(lonely.covered_bounds(PackedInt32Array([0])),
+				Rect2(Vector2.ZERO, Vector2(1280, 720)), "没有可覆盖内容 = 整个父级")
 	)
 

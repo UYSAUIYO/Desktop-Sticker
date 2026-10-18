@@ -472,3 +472,112 @@ func register(t) -> void:
 		t.eq((root.get_child(1) as Control).material, null, "没被卷进合成")
 		root.free()
 	)
+
+	# ---------------------------------------------------------------- 滤镜的作用区域
+
+	t.case("builder_filter_region_sets_uniforms", func() -> void:
+		# 开了作用区域：框写成 region_rect（父级 UV），框外由着色器混回原图。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("只在框内调色")
+		fl["filters"][Filters.COLOR]["enabled"] = true
+		fl["region"] = {"enabled": true, "shape": "rounded", "radius": 32.0, "feather": 8.0}
+		fl["transform"]["x"] = 320.0
+		fl["transform"]["y"] = 180.0
+		fl["transform"]["w"] = 640.0
+		fl["transform"]["h"] = 360.0
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var comp := root.get_child(1) as Control
+		t.ok(comp.material is ShaderMaterial, "区域 + 调色 => 有材质")
+		var mat := comp.material as ShaderMaterial
+		t.eq(int(mat.get_shader_parameter("region_shape")), 1, "圆角 = 1")
+		var rect: Vector4 = mat.get_shader_parameter("region_rect")
+		t.approx(rect.x, 0.25, 0.0001, "区域左边界在父级 UV 里")
+		t.approx(rect.y, 0.25, 0.0001, "区域上边界在父级 UV 里")
+		t.approx(rect.z, 0.5, 0.0001, "区域宽在父级 UV 里")
+		t.approx(rect.w, 0.5, 0.0001, "区域高在父级 UV 里")
+		var radii: Vector2 = mat.get_shader_parameter("region_radii")
+		t.approx(radii.x, 32.0 / 640.0, 0.0001, "圆角按框宽归一化")
+		var feather: Vector2 = mat.get_shader_parameter("region_feather")
+		t.approx(feather.y, 8.0 / 360.0, 0.0001, "羽化按框高归一化")
+		t.eq(bool(mat.get_shader_parameter("region_blend")), true, "逐像素滤镜：框外混回原图")
+		root.free()
+	)
+
+	t.case("builder_filter_region_off_leaves_no_region", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("调色")
+		fl["filters"][Filters.COLOR]["enabled"] = true
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var mat := (root.get_child(1) as Control).material as ShaderMaterial
+		t.eq(int(mat.get_shader_parameter("region_shape")), -1, "没开区域 = 不限制")
+		root.free()
+	)
+
+	t.case("builder_filter_region_blur_mixes_with_original", func() -> void:
+		# 模糊 + 区域：模糊链里拿不回原图，所以在最外面再包一层区域混合，
+		# 原图 viewport 必须在同一个子树里先渲好（顺序见 layer_nodes.wrap_region_mix）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("只在框内模糊")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		fl["filters"][Filters.BLUR]["radius"] = 16.0
+		fl["region"] = {"enabled": true, "shape": "ellipse"}
+		fl["transform"]["w"] = 640.0
+		fl["transform"]["h"] = 360.0
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var comp := root.get_child(1) as Control
+		t.ok(comp is SubViewportContainer, "最外层是区域混合容器")
+		t.ok(comp.material is ShaderMaterial, "区域混合有材质")
+		if comp.material is ShaderMaterial:
+			t.ok((comp.material as ShaderMaterial).shader.code.contains("base_tex"),
+					"挂的是区域混合着色器")
+			t.eq(int((comp.material as ShaderMaterial).get_shader_parameter("region_shape")), 2,
+					"椭圆 = 2")
+		t.ok(comp.find_child("base_viewport", true, false) != null,
+				"原图 viewport 在被渲进的那棵子树里")
+		root.free()
+	)
+
+	t.case("builder_filter_region_clips_copies", func() -> void:
+		# 只开阴影时没有逐像素材质；副本整组先合成一张图，再按**画布空间**的区域裁 alpha。
+		# （不给每个副本单独挂着色器：那边拿到的 UV 是元素自己的 0..1，区域框会对不上。）
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("框内阴影")
+		fl["filters"][Filters.SHADOW]["enabled"] = true
+		fl["region"] = {"enabled": true}
+		fl["transform"]["w"] = 320.0
+		fl["transform"]["h"] = 180.0
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var comp := root.get_child(1) as Control
+		t.eq(comp.get_child_count(), 2, "副本合成节点 + 内容")
+		var copies := comp.get_child(0) as Control
+		t.ok(copies is SubViewportContainer, "副本整组先合成一张图")
+		t.ok(copies.material is ShaderMaterial, "区域裁剪材质挂在合成容器上")
+		if copies.material is ShaderMaterial:
+			var mat := copies.material as ShaderMaterial
+			t.eq(bool(mat.get_shader_parameter("region_blend")), false, "副本只裁 alpha")
+			t.eq(int(mat.get_shader_parameter("region_shape")), 0, "矩形区域")
+		t.ok(copies.find_child("copies", true, false) != null, "阴影副本在合成图里")
+		root.free()
+	)
+
+	t.case("builder_filter_region_off_keeps_copies_flat", func() -> void:
+		# 没开区域时不额外套 viewport：副本还是直接垫在内容下面（老结构，省一趟渲染）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("阴影")
+		fl["filters"][Filters.SHADOW]["enabled"] = true
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var comp := root.get_child(1) as Control
+		t.eq(comp.get_child_count(), 2, "一份副本 + 内容")
+		t.ok(not (comp.get_child(0) is SubViewportContainer), "不额外套合成")
+		root.free()
+	)

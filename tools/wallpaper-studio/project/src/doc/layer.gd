@@ -10,10 +10,15 @@ extends RefCounted
 ##   · mask   —— 形状遮罩：把它覆盖的若干层合成后整体乘 alpha；
 ##   · filter —— 滤镜：对覆盖的若干层做调色/模糊/暗角/色调分离/阴影/发光/描边。
 ## 因此同一个元素可以既被遮罩又被调色，也可以被另一个效果层再包一层 —— 顺序就是图层次序。
+##
+## 几何：遮罩层的 `transform` 就是遮罩形状的框；滤镜层平时没有几何，
+## 但可以打开 `region`（作用区域）—— 那时它的 `transform` 就是"滤镜只在框内生效"的框，
+## 形状/圆角和遮罩同一套。两种效果层因此都能在画布上直接拖/缩放。
 
 const StudioPaths = preload("res://src/doc/paths.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const Frame = preload("res://src/doc/frame.gd")
 
 const TYPES := ["color", "image", "text", "particles", "group", "mask", "filter"]
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
@@ -128,11 +133,14 @@ static func make_mask(layer_name: String) -> Dictionary:
 	return l
 
 
-## 滤镜层：7 组滤镜参数（默认全关；勾选任意一组才生效）。
+## 滤镜层：7 组滤镜参数（默认全关；勾选任意一组才生效）+ 作用区域。
+## 作用区域默认关闭 = 作用在被覆盖图层的整个区域上；打开后这一层就有了自己的框
+## （位置/尺寸/形状），只有框内是滤镜后的样子 —— 框的几何同样存在 transform 里。
 static func make_filter(layer_name: String) -> Dictionary:
 	var l := _base("filter", layer_name)
 	l["cover"] = normalize_cover(null)
 	l["filters"] = Filters.defaults()
+	l["region"] = Filters.region_defaults()
 	return l
 
 
@@ -200,6 +208,25 @@ static func cover_target(layer: Dictionary) -> String:
 	return String(cover.get("target", ""))
 
 
+## 一组图层（`[{layer: …}, …]`）在**父级像素**里的包围盒。
+## 效果层没有自己的内容框（遮罩框是形状、滤镜层只有可选的作用区域），跳过；
+## 一个能算的都没有时返回 Rect2()（size 为 0），调用方自己决定退化成什么。
+## 暗角的坐标空间、打开「限制作用区域」时框的初始值都走这一份，别各算各的。
+static func bounds_of(items: Array, parent_size: Vector2) -> Rect2:
+	var r := Rect2()
+	var first := true
+	for item in items:
+		if not (item is Dictionary):
+			continue
+		var layer: Dictionary = item.get("layer", {})
+		if layer.is_empty() or is_effect(layer):
+			continue
+		var fr := Frame.of(layer, parent_size)
+		r = fr if first else r.merge(fr)
+		first = false
+	return r
+
+
 ## 把字典里缺失/类型不对的字段补成默认值。纯函数，返回新字典。
 static func normalize(raw: Dictionary) -> Dictionary:
 	var type := String(raw.get("type", "color"))
@@ -261,6 +288,7 @@ static func normalize(raw: Dictionary) -> Dictionary:
 		"filter":
 			out["cover"] = normalize_cover(raw.get("cover"))
 			out["filters"] = Filters.normalize(raw.get("filters"))
+			out["region"] = Filters.normalize_region(raw.get("region"))
 	return out
 
 
