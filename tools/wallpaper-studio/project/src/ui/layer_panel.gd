@@ -171,8 +171,20 @@ func _label_for(layer: Dictionary, path: PackedInt32Array) -> String:
 	var out := "%s    ·    %s" % [String(layer.get("name", "图层")), type_name]
 	if not Layer.is_effect(layer):
 		return out
-	var n: int = main.doc.covered_count(path) if main != null and main.doc != null else 0
-	out += "    ·    覆盖%s（共 %d 层）" % [Layer.cover_label(layer), n]
+	var target_id := Layer.cover_target(layer)
+	if not target_id.is_empty():
+		var target: Dictionary = {}
+		if main != null and main.doc != null:
+			target = main.doc.layer_at(main.doc.path_of_id(target_id))
+		if target.is_empty():
+			out += "    ·    绑定（目标已删除）"
+		else:
+			out += "    ·    绑定「%s」" % String(target.get("name", "图层"))
+	elif String(layer.get("cover", {}).get("mode", "all")) == "layer":
+		out += "    ·    绑定（未选择目标）"
+	else:
+		var n: int = main.doc.covered_count(path) if main != null and main.doc != null else 0
+		out += "    ·    覆盖%s（共 %d 层）" % [Layer.cover_label(layer), n]
 	if Layer.is_filter(layer) and not Filters.any(layer.get("filters", {})):
 		out += "    ·    未启用"
 	return out
@@ -265,9 +277,10 @@ func _add_layer(layer: Dictionary) -> void:
 	main.apply_change(true)
 
 
-## 效果层紧贴在当前图层**上面**插入，覆盖层数默认 = 1（正好盖住刚选中的那层）；
-## 没选中任何图层时加到最上层、覆盖下方全部 —— 两种默认都立刻能看出效果。
-## 选中的是容器时，效果层加进容器里（覆盖容器里的内容）。
+## 效果层紧贴在当前图层**上面**插入，并**绑定**到刚选中的那一层（只作用在它身上）。
+## 绑定与位置无关：目标以后怎么上下移动、中间插进多少图层，效果范围都不变。
+## 选中的是容器时，效果层加进容器里、覆盖容器里的全部内容 —— 一个滤镜管一组元素。
+## 没选中任何图层时加到最上层、覆盖下方全部。
 func _add_effect(layer: Dictionary) -> void:
 	var parent := PackedInt32Array()
 	var index := -1
@@ -276,10 +289,10 @@ func _add_effect(layer: Dictionary) -> void:
 		var current: Dictionary = main.selected_layer()
 		if not current.is_empty() and Layer.is_group(current):
 			parent = main.sel.duplicate()
-		else:
+		elif not current.is_empty():
 			parent = main.doc.parent_path_of(main.sel)
 			index = main.sel[main.sel.size() - 1] + 1
-			cover = {"mode": "count", "count": 1}
+			cover = {"mode": "layer", "target": String(current.get("id", ""))}
 	layer["cover"] = cover
 	var path: PackedInt32Array = main.doc.insert_layer(parent, layer, index)
 	main.select_layer_path(path)

@@ -1,4 +1,4 @@
-﻿extends RefCounted
+extends RefCounted
 ## 编辑器整体装配的冒烟用例：真的把 main.tscn 挂进树，选中图层、走一遍
 ## "改框 -> apply_live -> 重建 -> 点选"的路径。
 ##
@@ -143,11 +143,46 @@ func register(t) -> void:
 		editor.apply_change(true)
 		editor.select_layer(0)
 		editor._layers._add_effect(Layer.make_mask("遮罩层"))
-		# 新层紧贴在选中层上面，且只覆盖那一层。
+		# 新层紧贴在选中层上面，并**绑定**到那一层（不是"按离我多远"数层数）。
 		t.eq(editor.doc.layers.size(), 3, "多了一个图层")
 		t.eq(String(editor.doc.layers[1]["type"]), "mask", "遮罩层插在底图上方")
-		t.eq(Layer.cover_count(editor.doc.layers[1]), 1, "只覆盖紧邻的下面那层")
+		t.eq(Layer.cover_target(editor.doc.layers[1]), String(editor.doc.layers[0]["id"]),
+				"绑定到刚选中的图层")
 		t.eq(editor.doc.covered_count(PackedInt32Array([1])), 1, "实际覆盖 1 层")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+
+	t.case("editor_cover_target_picker_binds_layer", func() -> void:
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+
+		editor.doc.add_layer(Layer.make_color("A", Color.RED))
+		editor.doc.add_layer(Layer.make_color("B", Color.GREEN))
+		var fl := Layer.make_filter("滤镜")
+		fl["filters"][Filters.COLOR]["enabled"] = true
+		editor.doc.add_layer(fl)
+		editor.apply_change(true)
+		editor.select_layer(2)
+
+		# 「绑定图层」下拉框：条目 = 未选择 + 可绑定的图层（这里 A、B 两层）。
+		var pick := _find_option(editor._inspector._box, 3)
+		t.ok(pick != null, "属性面板里有「绑定图层」下拉框")
+		if pick == null:
+			tree.root.remove_child(editor)
+			editor.free()
+			return
+		pick.item_selected.emit(1)                 # 列表自上而下：B 排在前面
+		var cover: Dictionary = editor.doc.layers[2]["cover"]
+		t.eq(String(cover["mode"]), "layer", "自动切成绑定模式")
+		t.eq(String(cover["target"]), String(editor.doc.layers[1]["id"]), "绑到 B")
+		t.eq(editor.doc.covered_count(PackedInt32Array([2])), 1, "只覆盖 B 一层")
+		t.ok(is_instance_valid(pick), "重建面板时不能当场释放发信号的控件")
 
 		tree.root.remove_child(editor)
 		editor.free()
@@ -172,7 +207,7 @@ func register(t) -> void:
 		editor.apply_change(true)
 		editor.select_layer(2)
 
-		var option := _find_option(editor._inspector._box, 3)
+		var option := _find_option(editor._inspector._box, 4)
 		t.ok(option != null, "属性面板里有「覆盖」下拉框")
 		if option == null:
 			tree.root.remove_child(editor)

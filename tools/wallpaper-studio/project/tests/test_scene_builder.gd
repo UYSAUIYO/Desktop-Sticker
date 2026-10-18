@@ -386,3 +386,89 @@ func register(t) -> void:
 			t.eq(comp.get_index(), 1, "合成节点停在覆盖区间原来的位置")
 		root.free()
 	)
+
+	# ---------------------------------------------------------------- 绑定到指定图层
+
+	t.case("builder_bound_effect_wraps_only_its_target", func() -> void:
+		# 绑定模式的关键性质：效果层在自己位置上**不生成任何东西**，
+		# 目标那一层就地被包起来，其他图层一点不受影响（不是"整屏套滤镜"）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		doc.add_layer(a)
+		var b := Layer.make_color("B", Color.GREEN)
+		doc.add_layer(b)
+		var fl := Layer.make_filter("只作用于 A")
+		fl["filters"][Filters.VIGNETTE]["enabled"] = true
+		fl["cover"] = {"mode": "layer", "target": String(a["id"])}
+		doc.add_layer(fl)                    # 加在 B 上面（位置对绑定没有意义）
+		var root = _build(doc)
+		t.eq(root.get_child_count(), 3, "背景 + A 的合成节点 + B")
+		var comp: Control = root.find_child("L_" + String(fl["id"]), true, false)
+		t.ok(comp != null, "合成节点用滤镜层的 id 命名")
+		if comp != null:
+			t.eq(comp.get_index(), 1, "合成节点停在 A 原来的位置")
+			var covered: Control = comp.find_child("covered", true, false)
+			t.eq(covered.get_child_count() if covered != null else 0, 1, "只包了 A 一层")
+		var top: Control = root.get_child(2) as Control
+		t.eq(String(top.name), "L_" + String(b["id"]), "B 没被卷进合成")
+		root.free()
+	)
+
+	t.case("builder_bound_effect_region_follows_target_frame", func() -> void:
+		# 暗角这类"按区域算"的滤镜用被覆盖内容的包围盒：绑到右下角一个小块时，
+		# layer_uv 应该是那个小块的 UV，而不是整张画布（否则看起来像没生效）。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("小块", Color.WHITE)
+		a["transform"]["x"] = 640.0
+		a["transform"]["y"] = 360.0
+		a["transform"]["w"] = 320.0
+		a["transform"]["h"] = 180.0
+		doc.add_layer(a)
+		var fl := Layer.make_filter("暗角")
+		fl["filters"][Filters.VIGNETTE]["enabled"] = true
+		fl["cover"] = {"mode": "layer", "target": String(a["id"])}
+		doc.add_layer(fl)
+		var root = _build(doc)
+		var comp: Control = root.find_child("L_" + String(fl["id"]), true, false)
+		t.ok(comp != null and comp.material is ShaderMaterial, "暗角要材质")
+		if comp != null and comp.material is ShaderMaterial:
+			var uv: Vector4 = (comp.material as ShaderMaterial).get_shader_parameter("layer_uv")
+			t.approx(uv.x, 0.5, 0.0001, "区域左边界 = 元素位置")
+			t.approx(uv.y, 0.5, 0.0001, "区域上边界 = 元素位置")
+			t.approx(uv.z, 0.25, 0.0001, "区域宽 = 元素宽")
+			t.approx(uv.w, 0.25, 0.0001, "区域高 = 元素高")
+		root.free()
+	)
+
+	t.case("builder_bound_effect_inside_group_wraps_child", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		var b := Layer.make_color("B", Color.WHITE)
+		var group := Layer.make_group("容器", 640.0, 360.0)
+		group["children"] = [a, b]
+		doc.add_layer(group)
+		var fl := Layer.make_filter("只作用于 A")
+		fl["filters"][Filters.POSTERIZE]["enabled"] = true
+		fl["cover"] = {"mode": "layer", "target": String(a["id"])}
+		doc.insert_layer(PackedInt32Array([0]), fl, 2)      # 容器最上层
+		var root = _build(doc)
+		var holder: Control = _box(root, 0).find_child("group", true, false)
+		t.eq(holder.get_child_count(), 2, "容器里：A 的合成节点 + B")
+		t.eq(String(holder.get_child(0).name), "L_" + String(fl["id"]), "A 被就地合成")
+		t.eq(String(holder.get_child(1).name), "L_" + String(b["id"]), "B 原样留在容器里")
+		root.free()
+	)
+
+	t.case("builder_bound_effect_without_target_does_nothing", func() -> void:
+		# 绑定的图层被删掉 / 从没选过：效果层什么都不做，也不留材质、不崩。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("底", Color.WHITE))
+		var fl := Layer.make_filter("孤儿滤镜")
+		fl["filters"][Filters.BLUR]["enabled"] = true
+		fl["cover"] = {"mode": "layer", "target": "l_missing"}
+		doc.add_layer(fl)
+		var root = _build(doc)
+		t.eq(root.get_child_count(), 2, "背景 + 原图层（没有合成节点）")
+		t.eq((root.get_child(1) as Control).material, null, "没被卷进合成")
+		root.free()
+	)

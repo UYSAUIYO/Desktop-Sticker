@@ -344,3 +344,88 @@ func register(t) -> void:
 		t.eq(parsed.doc.covered_count(PackedInt32Array([2])), 1, "覆盖 1 层")
 	)
 
+	# ---------------------------------------------------------------- 绑定到指定图层
+
+	t.case("doc_cover_bind_follows_target_when_layers_move", func() -> void:
+		# 绑定模式的意义就是"只挂在这一层上"：目标上下移动、中间插进别的图层，
+		# 覆盖的始终是它 —— 这正是"别整屏套滤镜"最稳的用法。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		doc.add_layer(Layer.make_color("A", Color.RED))
+		var b := Layer.make_color("B", Color.GREEN)
+		doc.add_layer(b)
+		var fl := Layer.make_filter("只作用于 B")
+		fl["cover"] = {"mode": "layer", "target": String(b["id"])}
+		doc.add_layer(fl)                        # 下标 2，紧挨着 B 上方
+		var path := PackedInt32Array([2])
+		t.eq(Layer.cover_target(doc.layers[2]), String(b["id"]), "cover.target 存的是 B 的 id")
+		t.eq(doc.cover_target_path(path), PackedInt32Array([1]), "目标路径 = B")
+		t.eq(doc.covered_count(path), 1, "只覆盖 B 一层")
+		t.eq(doc.covered_names(path), ["B"], "覆盖的是 B")
+
+		# 在 A 和 B 之间插一层：B 变成下标 2，效果层变成下标 3，绑定仍在 B 上。
+		doc.insert_layer(PackedInt32Array(), Layer.make_color("C", Color.BLUE), 1)
+		t.eq(doc.covered_names(PackedInt32Array([3])), ["B"], "插入图层后仍绑 B")
+		t.eq(doc.covered_count(PackedInt32Array([3])), 1, "还是只要 B 一层")
+		# 把效果层挪到最下面（位置无关）——覆盖的仍然只有 B。
+		doc.move_within(PackedInt32Array([3]), -3)
+		t.eq(doc.covered_names(PackedInt32Array([0])), ["B"], "效果层换位置也不变")
+		t.eq(doc.covered_count(PackedInt32Array([0])), 1, "仍只覆盖 1 层")
+	)
+
+	t.case("doc_cover_bind_rejects_bad_targets", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		doc.add_layer(a)
+		var other := Layer.make_mask("别的遮罩")
+		doc.add_layer(other)
+		var fl := Layer.make_filter("滤镜")
+		fl["cover"] = {"mode": "layer", "target": String(other["id"])}
+		doc.add_layer(fl)
+		# 下标 2 的滤镜绑到了下标 1 的遮罩层：效果层没有内容可包，不生效。
+		t.eq(doc.cover_target_path(PackedInt32Array([2])).is_empty(), true, "不能绑到效果层")
+		t.eq(doc.covered_count(PackedInt32Array([2])), 0, "覆盖 0 层")
+
+		doc.layers[2]["cover"] = {"mode": "layer", "target": String(a["id"])}
+		t.eq(doc.covered_count(PackedInt32Array([2])), 1, "改成正常目标后生效")
+		# 目标被删掉：不生效、不崩。
+		doc.remove_at(PackedInt32Array([0]))
+		t.eq(doc.covered_count(PackedInt32Array([1])), 0, "目标删除后覆盖 0 层")
+		t.eq(doc.covered_names(PackedInt32Array([1])).size(), 0, "没有覆盖名字")
+	)
+
+	t.case("doc_cover_bind_is_same_parent_only", func() -> void:
+		# 效果层的坐标空间是它所在父级的，跨容器绑定会让遮罩框对不上 —— 所以不允许，
+		# 想给容器里的元素加效果就把效果层加进那个容器。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var a := Layer.make_color("A", Color.RED)
+		var b := Layer.make_color("B", Color.GREEN)
+		var group := Layer.make_group("容器", 640.0, 360.0)
+		group["children"] = [a, b]
+		doc.add_layer(group)
+		var outside := Layer.make_filter("外面的滤镜")
+		outside["cover"] = {"mode": "layer", "target": String(a["id"])}
+		doc.add_layer(outside)
+		t.eq(doc.cover_target_path(PackedInt32Array([1])).is_empty(), true, "跨容器绑定被拒绝")
+		t.eq(doc.covered_count(PackedInt32Array([1])), 0, "外面的滤镜不生效")
+
+		var inside := Layer.make_filter("容器内滤镜")
+		inside["cover"] = {"mode": "layer", "target": String(a["id"])}
+		doc.insert_layer(PackedInt32Array([0]), inside, 2)     # 容器最上层
+		t.eq(doc.covered_names(PackedInt32Array([0, 2])), ["A"], "同父级可以绑定")
+		t.eq(doc.covered_count(PackedInt32Array([0, 2])), 1, "覆盖容器里的 A")
+	)
+
+	t.case("doc_cover_bind_survives_roundtrip", func() -> void:
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var b := Layer.make_color("B", Color.GREEN)
+		doc.add_layer(b)
+		var fl := Layer.make_filter("滤镜")
+		fl["cover"] = {"mode": "layer", "target": String(b["id"])}
+		doc.add_layer(fl)
+		var parsed: Dictionary = StudioDoc.parse(doc.to_text())
+		t.eq(parsed.ok, true, "读回: " + String(parsed.error))
+		t.eq(String(parsed.doc.layers[1]["cover"]["mode"]), "layer", "模式保留")
+		t.eq(String(parsed.doc.layers[1]["cover"]["target"]), String(b["id"]), "目标 id 保留")
+		t.eq(parsed.doc.covered_count(PackedInt32Array([1])), 1, "读回后仍然覆盖 B")
+	)
+

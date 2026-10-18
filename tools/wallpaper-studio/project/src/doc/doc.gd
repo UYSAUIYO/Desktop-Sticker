@@ -222,6 +222,7 @@ func walk(parent_path = null, depth: int = 0, out = null) -> Array:
 ## 语义与场景构造完全一致：只看**它下方**真正生成过节点的兄弟 —— 隐藏的效果层不算，
 ## 「覆盖不到任何图层的效果层」也不算（它在场景里根本不出现），所以位置编号和
 ## SceneBuilder 里那张 `built` 列表一一对应。cover.mode = "all" 时 from = 0。
+## 绑定模式（"layer"）没有兄弟区间，返回空区间；用 cover_target_path 解析。
 func cover_span(path: PackedInt32Array) -> Vector2i:
 	if path.is_empty():
 		return Vector2i.ZERO
@@ -232,6 +233,9 @@ func cover_span(path: PackedInt32Array) -> Vector2i:
 		return Vector2i.ZERO
 	var effect: Dictionary = arr[idx]
 	if not Layer.is_effect(effect):
+		return Vector2i(idx, idx)
+	if not Layer.cover_target(effect).is_empty() \
+			or String(effect.get("cover", {}).get("mode", "")) == "layer":
 		return Vector2i(idx, idx)
 	var slots := []          # 可覆盖兄弟的下标，自下而上
 	var m := 0
@@ -248,8 +252,67 @@ func cover_span(path: PackedInt32Array) -> Vector2i:
 	return Vector2i(lo, hi + 1)
 
 
+## 绑定模式的目标图层路径（"这一层只作用在哪一层上"）。
+##
+## 只能绑**同一组兄弟里的内容图层**：效果层的坐标空间就是它所在父级的，
+## 跨容器绑定会让遮罩框（按本层父级存）和画面对不上，所以直接禁止；
+## 想给容器里的元素加效果，就把效果层加进那个容器（选中元素再「＋ 添加」即可）。
+## 不合法的绑定一律返回空（= 效果层不生效，界面上会写"目标已删除/未选择"）。
+func cover_target_path(path: PackedInt32Array) -> PackedInt32Array:
+	if path.is_empty():
+		return PackedInt32Array()
+	var effect: Dictionary = layer_at(path)
+	if effect.is_empty() or not Layer.is_effect(effect):
+		return PackedInt32Array()
+	var want := Layer.cover_target(effect)
+	if want.is_empty():
+		return PackedInt32Array()
+	var parent := parent_path_of(path)
+	var arr := siblings_at(parent)
+	for i in arr.size():
+		var l = arr[i]
+		if not (l is Dictionary):
+			continue
+		if String((l as Dictionary).get("id", "")) != want:
+			continue
+		if Layer.is_effect(l):
+			return PackedInt32Array()      # 效果层没有内容可包
+		var out := parent.duplicate()
+		out.append(i)
+		return out
+	return PackedInt32Array()
+
+
+## 按 id 找图层路径（id 全局唯一；找不到返回空路径）。
+func path_of_id(id: String) -> PackedInt32Array:
+	if id.is_empty():
+		return PackedInt32Array()
+	for item in walk():
+		if String((item["layer"] as Dictionary).get("id", "")) == id:
+			return item["path"]
+	return PackedInt32Array()
+
+
+## 效果层占用的坐标空间 = 被覆盖内容所在的父级。绑定模式下是**目标层的父级**
+## （绑定限同一组兄弟，所以两者其实相同；保留成函数是为了让调用方不必关心模式）。
+## 遮罩框、合成区域的 UV 都按这个尺寸换算；返回空路径表示这一层此刻不生效。
+func effect_space_path(path: PackedInt32Array) -> PackedInt32Array:
+	if path.is_empty():
+		return path
+	var layer: Dictionary = layer_at(path)
+	if layer.is_empty():
+		return PackedInt32Array()
+	if not Layer.is_effect(layer):
+		return path
+	if String(layer.get("cover", {}).get("mode", "")) == "layer":
+		return cover_target_path(path)
+	return path
+
+
 ## 第 i 个兄弟在场景里是否占一个"可被覆盖"的位置（1 = 占，0 = 不占）。
 ## m = 它下方已经占了多少个位置（效果层要按这个数算自己的覆盖区间）。
+## 绑定模式的效果层在自己位置上不生成节点（它包的是目标那一层），所以不占位置 ——
+## 这一点由 Layer.cover_range("layer") 返回空区间保证，下面的"第 N 层"才数得对。
 func _built_weight(arr: Array, i: int, m: int) -> int:
 	var s = arr[i]
 	if not (s is Dictionary):
@@ -276,21 +339,36 @@ func cover_capacity(path: PackedInt32Array) -> int:
 	return m
 
 
-## 覆盖了多少层（给界面显示"覆盖下方 N 层"）。
+## 覆盖了多少层（给界面显示"覆盖下方 N 层"）。绑定模式恒为 1（目标在才算）。
 func covered_count(path: PackedInt32Array) -> int:
+	if _is_bound(path):
+		return 0 if cover_target_path(path).is_empty() else 1
 	var span := cover_span(path)
 	return maxi(0, span.y - span.x)
 
 
 ## 被覆盖图层的名字，自上而下（属性面板里让用户确认"覆盖的到底是哪几层"）。
 func covered_names(path: PackedInt32Array) -> Array:
+	var out := []
+	if _is_bound(path):
+		var target := cover_target_path(path)
+		if not target.is_empty():
+			out.append(String(layer_at(target).get("name", "图层")))
+		return out
 	var arr := siblings_at(parent_path_of(path))
 	var span := cover_span(path)
-	var out := []
 	for i in range(span.y - 1, span.x - 1, -1):
 		if i >= 0 and i < arr.size() and (arr[i] is Dictionary):
 			out.append(String(arr[i].get("name", "图层")))
 	return out
+
+
+## 这一层是不是"绑定到指定图层"的效果层（不管目标还在不在）。
+func _is_bound(path: PackedInt32Array) -> bool:
+	if path.is_empty():
+		return false
+	var layer: Dictionary = layer_at(path)
+	return Layer.is_effect(layer) and String(layer.get("cover", {}).get("mode", "")) == "layer"
 
 
 # ---------------------------------------------------------------- 结构编辑
@@ -492,6 +570,9 @@ func validate(project_dir: String) -> PackedStringArray:
 			rel = String(l.get("src", ""))
 			if rel.is_empty():
 				problems.append("遮罩层「%s」没有选择遮罩图。" % l["name"])
+		if Layer.is_effect(l) and not Layer.cover_target(l).is_empty() \
+				and cover_target_path(item["path"]).is_empty():
+			problems.append("效果层「%s」绑定的图层已经不存在（或不是可绑定的图层），这一层不会生效。" % l["name"])
 		if not rel.is_empty() and not FileAccess.file_exists(project_dir.path_join(rel)):
 			problems.append("图层「%s」的资源不存在：%s" % [l["name"], rel])
 		if int(l.get("amount", 1)) < 1:

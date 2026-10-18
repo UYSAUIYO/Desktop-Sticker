@@ -22,9 +22,11 @@ const EFFECT_TYPES := ["mask", "filter"]
 ## cover.mode：
 ##   "all"   —— 下方全部图层；
 ##   "count" —— 只覆盖下方紧邻的 count 层；
-##   "range" —— 覆盖"从效果层往下数"的第 from ~ to 层（1 = 紧邻它的下一层，闭区间）。
-## 位置一律用"离效果层多远"表达，所以移动效果层时覆盖的是同样的那几层。
-const COVER_MODES := ["all", "count", "range"]
+##   "range" —— 覆盖"从效果层往下数"的第 from ~ to 层（1 = 紧邻它的下一层，闭区间）；
+##   "layer" —— **只覆盖指定的那一层**（按图层 id 绑定，`cover.target`，限同一组兄弟）。
+## 前三种用"离效果层多远"表达，效果层移动时覆盖的是同样的那几层；"layer" 与位置无关：
+## 目标层上下移动、中间插入别的图层都不影响绑定，效果层自己放在哪儿都一样。
+const COVER_MODES := ["all", "count", "range", "layer"]
 ## cover.count 的上限。只是防手滑，实际覆盖层数受兄弟数量限制。
 const MAX_COVER := 256
 
@@ -156,6 +158,9 @@ static func cover_range(layer: Dictionary, below: int) -> Vector2i:
 	if not (cover is Dictionary):
 		return Vector2i(1, n)
 	match String(cover.get("mode", "all")):
+		"layer":
+			# 绑定模式不走"离我多远"这套编号，覆盖哪一层由 cover_target_path 解析。
+			return Vector2i(1, 0)
 		"count":
 			return Vector2i(1, clampi(int(cover.get("count", 1)), 1, n))
 		"range":
@@ -173,6 +178,8 @@ static func cover_label(layer: Dictionary) -> String:
 	if not (cover is Dictionary):
 		return "下方全部"
 	match String(cover.get("mode", "all")):
+		"layer":
+			return "指定图层"
 		"count":
 			return "下方 %d 层" % clampi(int(cover.get("count", 1)), 1, MAX_COVER)
 		"range":
@@ -181,6 +188,16 @@ static func cover_label(layer: Dictionary) -> String:
 			return "第 %d~%d 层" % [a, b]
 		_:
 			return "下方全部"
+
+
+## 绑定模式的目标图层 id（不是绑定模式 / 没设目标时为空串）。
+static func cover_target(layer: Dictionary) -> String:
+	var cover = layer.get("cover")
+	if not (cover is Dictionary):
+		return ""
+	if String(cover.get("mode", "all")) != "layer":
+		return ""
+	return String(cover.get("target", ""))
 
 
 ## 把字典里缺失/类型不对的字段补成默认值。纯函数，返回新字典。
@@ -248,7 +265,7 @@ static func normalize(raw: Dictionary) -> Dictionary:
 
 
 static func normalize_cover(raw) -> Dictionary:
-	var out := {"mode": "all", "count": 1, "from": 1, "to": 1}
+	var out := {"mode": "all", "count": 1, "from": 1, "to": 1, "target": ""}
 	if not (raw is Dictionary):
 		return out
 	var mode := String(raw.get("mode", "all"))
@@ -256,6 +273,7 @@ static func normalize_cover(raw) -> Dictionary:
 	out["count"] = clampi(int(raw.get("count", 1)), 1, MAX_COVER)
 	out["from"] = clampi(int(raw.get("from", 1)), 1, MAX_COVER)
 	out["to"] = maxi(int(out["from"]), clampi(int(raw.get("to", out["from"])), 1, MAX_COVER))
+	out["target"] = String(raw.get("target", ""))
 	return out
 
 

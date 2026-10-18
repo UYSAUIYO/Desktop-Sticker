@@ -31,8 +31,9 @@ const ALIGN_NAMES := ["左对齐", "居中", "右对齐"]
 const DYNAMIC_KEYS := ["none", "clock", "date"]
 const DYNAMIC_NAMES := ["静态文本", "时钟", "日期"]
 const SHAPE_NAMES := ["矩形", "圆角矩形", "椭圆", "图片 alpha"]
-const COVER_MODES := ["all", "count", "range"]
-const COVER_MODE_NAMES := ["下方全部图层", "下方紧邻 N 层", "指定区间（第几层到第几层）"]
+const COVER_MODES := ["all", "count", "range", "layer"]
+const COVER_MODE_NAMES := ["下方全部图层", "下方紧邻 N 层", "指定区间（第几层到第几层）",
+		"绑定到指定图层"]
 const PRESETS := [
 	{"name": "1920 × 1080（1080p）", "size": Vector2i(1920, 1080)},
 	{"name": "2560 × 1440（2K）", "size": Vector2i(2560, 1440)},
@@ -263,6 +264,23 @@ func _build_cover(layer: Dictionary) -> void:
 	var mode := _option(COVER_MODES, COVER_MODE_NAMES, mode_value)
 	_row("覆盖", mode)
 
+	# 绑定模式：从这棵树里挑一层，效果只作用在它身上（和图层顺序无关）。
+	var candidates := _cover_candidates()
+	var target_pick := OptionButton.new()
+	target_pick.add_item("（未选择）", -1)
+	for i in candidates.size():
+		var item: Dictionary = candidates[i]
+		var l: Dictionary = item["layer"]
+		var depth := int(item["depth"])
+		target_pick.add_item("　".repeat(depth) + String(l.get("name", "图层"))
+				+ "    ·    " + String(TYPE_NAMES.get(String(l.get("type", "")), "图层")), i)
+	var current_id := Layer.cover_target(layer)
+	for i in candidates.size():
+		if String((candidates[i]["layer"] as Dictionary).get("id", "")) == current_id:
+			target_pick.select(i + 1)
+			break
+	_row("绑定图层", target_pick)
+
 	var count := _spin(float(int(cover.get("count", 1))), 1.0, top, 1.0)
 	count.editable = mode_value == "count"
 	count.tooltip_text = "紧挨着效果层下面的 N 层"
@@ -289,7 +307,22 @@ func _build_cover(layer: Dictionary) -> void:
 			# 画面不变，再让用户往上/往下微调 —— 否则一点进来就被缩成 1 层，很吓人。
 			cover["from"] = 1
 			cover["to"] = maxi(1, main.doc.covered_count(main.sel))
+		if next_mode == "layer":
+			# 切到「绑定」时先把目标定成"现在看起来被盖住的最上面那一层"，
+			# 画面不变，再让用户改绑定对象。
+			if main.doc.cover_target_path(main.sel).is_empty():
+				cover["target"] = _top_covered_id()
 		cover["mode"] = next_mode
+		main.apply_change(true)
+	)
+	target_pick.item_selected.connect(func(i: int) -> void:
+		# i 是**条目位置**：0 = 「未选择」，1..n 对应 candidates[0..n-1]。
+		if i <= 0 or i > candidates.size():
+			cover["mode"] = "layer"
+			cover["target"] = ""
+		else:
+			cover["mode"] = "layer"
+			cover["target"] = String((candidates[i - 1]["layer"] as Dictionary).get("id", ""))
 		main.apply_change(true)
 	)
 	count.value_changed.connect(func(v: float) -> void:
@@ -312,8 +345,12 @@ func _build_cover(layer: Dictionary) -> void:
 
 	var names := PackedStringArray(main.doc.covered_names(main.sel))
 	var info := Label.new()
+	var bound := not Layer.cover_target(layer).is_empty()
 	if names.is_empty():
-		info.text = "当前没有覆盖任何图层 —— 这一层暂时不生效。"
+		if bound:
+			info.text = "绑定的图层已经不存在（或绑到了自己身上）—— 这一层暂时不生效。"
+		else:
+			info.text = "当前没有覆盖任何图层 —— 这一层暂时不生效。"
 		info.modulate = Color(0.9, 0.72, 0.5)
 	else:
 		info.text = "当前覆盖 %d 层：%s" % [names.size(), "、".join(names)]
@@ -321,8 +358,41 @@ func _build_cover(layer: Dictionary) -> void:
 	info.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	info.add_theme_font_size_override("font_size", 11)
 	_box.add_child(info)
-	_hint("效果层只作用在**同一父级、它下方**的图层上。用「指定区间」可以只盖中间某几层："
-			+ "序号 1 = 紧挨着它的下一层，序号越大离它越远；没被盖到的层照常画在它上面。")
+	_hint("「绑定到指定图层」= 只作用在那一个图层上，跟它在列表里的位置无关："
+			+ "目标上下移动、中间插进别的图层都不影响。"
+			+ "前三种模式按\"离这一层多远\"算：序号 1 = 紧挨着它的下一层，没被盖到的层照常画在它上面。")
+	_hint("效果覆盖的区域 = 被覆盖图层自己的框。目标铺满整张画布（没设过宽高）时，"
+			+ "滤镜自然就是全屏的 —— 想只做局部，先把目标拖小，或把它放进容器、"
+			+ "把效果层加进那个容器里。")
+
+
+## 可绑定的图层：**同一组兄弟**里的内容图层（和 doc.cover_target_path 的规则一致）。
+## 绑定不跨容器 —— 效果层的坐标空间就是它所在父级的，跨容器会让遮罩框对不上；
+## 想给容器里的元素加效果，选中那个元素再「＋ 添加」，效果层会自动加进同一个容器。
+func _cover_candidates() -> Array:
+	var out := []
+	if main == null or main.doc == null or main.sel.is_empty():
+		return out
+	var parent: PackedInt32Array = main.doc.parent_path_of(main.sel)
+	var arr: Array = main.doc.siblings_at(parent)
+	for i in range(arr.size() - 1, -1, -1):
+		var layer: Dictionary = arr[i]
+		if Layer.is_effect(layer):
+			continue
+		var path := parent.duplicate()
+		path.append(i)
+		out.append({"path": path, "layer": layer, "depth": 0})
+	return out
+
+
+## 当前"看起来被盖住"的最上面那一层的 id（切到绑定模式时用它保持画面不变）。
+func _top_covered_id() -> String:
+	var span: Vector2i = main.doc.cover_span(main.sel)
+	var arr: Array = main.doc.siblings_at(main.doc.parent_path_of(main.sel))
+	var idx := span.y - 1
+	if idx >= 0 and idx < arr.size() and arr[idx] is Dictionary:
+		return String((arr[idx] as Dictionary).get("id", ""))
+	return ""
 
 
 # ---------------------------------------------------------------- 遮罩层

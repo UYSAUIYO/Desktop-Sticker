@@ -10,6 +10,10 @@ extends RefCounted
 ## 的若干节点收进一个合成节点（Stack），再整体套遮罩着色器 / 模糊链，合成节点本身
 ## 顶替这批图层的位置继续往后排。
 ##
+## 效果层还可以**绑定到指定图层**（cover.mode = "layer"）：这时它不在自己位置上生成任何
+## 东西，而是就地包住目标那一层（目标可以在这棵树的任何地方）。绑定表在 build() 里
+## 一次算好，往下传给每个兄弟列表，见 add_children。
+##
 ## 合成节点的着色器吃的是**自己贴图的 UV**（0..1 铺满父级），不是 SCREEN_UV ——
 ## 嵌套容器/嵌套效果时 SCREEN_UV 会跟着外层 viewport 跑，遮罩会错位（见 filters.gd）。
 
@@ -50,7 +54,7 @@ static func build(doc, project_dir: String) -> Control:
 	root.add_child(bg)
 
 	# 列表顶部 = 最上层 = 最后 add_child；文档 index 0 是最底层，所以正序累加即可。
-	add_children(root, doc.layers, project_dir, FULL_UV, Vector2(doc.canvas))
+	add_children(root, doc.layers, project_dir, FULL_UV, Vector2(doc.canvas), bindings_of(doc))
 
 	# 阶段 2 的接缝：这里会调用 AnimationBuilder.compile(doc, root) 生成 AnimationPlayer。
 
@@ -62,12 +66,36 @@ static func build(doc, project_dir: String) -> Control:
 	return root
 
 
+## 绑定表：目标图层 id -> 绑定在它身上的效果层（按文档顺序，先包的内层）。
+## 只收合法的绑定（目标存在、不是效果层、不是自己的祖先），规则集中在
+## doc.cover_target_path；这里不重复判断，免得两处规则走偏。
+static func bindings_of(doc) -> Dictionary:
+	var out := {}
+	for item in doc.walk():
+		var layer: Dictionary = item["layer"]
+		if not Layer.is_effect(layer) or not bool(layer.get("visible", true)):
+			continue
+		if String(layer.get("cover", {}).get("mode", "all")) != "layer":
+			continue
+		var target: PackedInt32Array = doc.cover_target_path(item["path"])
+		if target.is_empty():
+			continue
+		var key := String(doc.layer_at(target).get("id", ""))
+		if key.is_empty():
+			continue
+		if not out.has(key):
+			out[key] = []
+		out[key].append(layer)
+	return out
+
+
 ## 把一串兄弟图层建成节点并按顺序挂到 parent 下。
 ##
 ## `built` 里一项 = 一个会进场景的兄弟（普通图层或已合成的效果层）。
 ## 效果层只往前看：它覆盖的是**它下方**已经建好的节点，所以这里是"折叠"而不是递归。
+## bindings = 目标图层 id -> 绑定在它身上的效果层（没有绑定就是空字典）。
 static func add_children(parent: Node, children: Array, project_dir: String,
-		parent_uv: Rect2, parent_size: Vector2) -> void:
+		parent_uv: Rect2, parent_size: Vector2, bindings: Dictionary = {}) -> void:
 	var built := []
 	for raw in children:
 		if not (raw is Dictionary):
@@ -77,11 +105,20 @@ static func add_children(parent: Node, children: Array, project_dir: String,
 			# 隐藏的效果层 = 不生效：被它覆盖的图层保持原样，一个节点都不动。
 			if not bool(layer.get("visible", true)):
 				continue
+			# 绑定模式：不在自己位置上生成节点，目标那一层会就地被包起来（见下）。
+			if not Layer.cover_target(layer).is_empty() \
+					or String(layer.get("cover", {}).get("mode", "")) == "layer":
+				continue
 			# build_effect 会自己把合成节点插回被覆盖区间原来的位置（保持叠放次序）。
 			build_effect(layer, built, project_dir, parent_size)
 			continue
-		built.append({"layer": layer,
-				"node": build_layer(layer, project_dir, parent_uv, parent_size)})
+		var node: Control = build_layer(layer, project_dir, parent_uv, parent_size, bindings)
+		# 绑定在这一层上的效果层：就地把它包起来。目标的叠放位置不变，
+		# 所以"上面的图层"仍然是上面的图层。
+		for eff in bindings.get(String(layer.get("id", "")), []):
+			node = _compose_effect(eff, [{"layer": layer, "node": node}], project_dir,
+					parent_size)
+		built.append({"layer": layer, "node": node})
 	for item in built:
 		parent.add_child(item["node"])
 
@@ -89,7 +126,7 @@ static func add_children(parent: Node, children: Array, project_dir: String,
 ## 单个内容图层 -> 节点。parent_uv 是父级（画布或容器）在画布里的比例矩形，
 ## parent_size 是父级的设计像素尺寸。两者用来把本层的框换算成锚点与 UV。
 static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2,
-		parent_size: Vector2) -> Control:
+		parent_size: Vector2, bindings: Dictionary = {}) -> Control:
 	var box := Control.new()
 	box.name = NODE_PREFIX + String(layer.get("id", "layer"))
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -98,7 +135,8 @@ static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2
 	var fr := Frame.of(layer, parent_size)
 	var content: Control
 	if Layer.is_group(layer):
-		content = _build_group(layer, project_dir, uv_of(fr, parent_size, parent_uv), fr.size)
+		content = _build_group(layer, project_dir, uv_of(fr, parent_size, parent_uv), fr.size,
+				bindings)
 	else:
 		content = LayerNodes.build_content(layer, project_dir)
 		content.name = "content"
@@ -118,7 +156,7 @@ static func build_layer(layer: Dictionary, project_dir: String, parent_uv: Rect2
 
 
 static func _build_group(layer: Dictionary, project_dir: String, group_uv: Rect2,
-		group_size: Vector2) -> Control:
+		group_size: Vector2, bindings: Dictionary = {}) -> Control:
 	var box := Control.new()
 	box.name = "group"
 	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -126,7 +164,7 @@ static func _build_group(layer: Dictionary, project_dir: String, group_uv: Rect2
 	box.clip_contents = bool(layer.get("clip", true))
 	var kids = layer.get("children")
 	if kids is Array:
-		add_children(box, kids, project_dir, group_uv, group_size)
+		add_children(box, kids, project_dir, group_uv, group_size, bindings)
 	return box
 
 
@@ -153,6 +191,16 @@ static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 	for i in range(hi, lo - 1, -1):
 		built.remove_at(i)
 
+	var node := _compose_effect(effect, covered, project_dir, parent_size)
+	built.insert(lo, {"layer": effect, "node": node})
+	return node
+
+
+## 被覆盖内容 -> 一个合成节点：染色副本垫底 → 原节点 → 模糊链 → 逐像素材质。
+## 区间模式（"第几层"）和绑定模式（"只包这一层"）都走这里，保证两种覆盖方式
+## 画出来的东西一模一样。
+static func _compose_effect(effect: Dictionary, covered: Array, project_dir: String,
+		parent_size: Vector2) -> Control:
 	var stack := Control.new()
 	stack.name = "covered"
 	stack.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -164,7 +212,8 @@ static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 		stack.add_child(item["node"])
 
 	var node: Control = stack
-	var mat := effect_material(effect, parent_size, project_dir)
+	var mat := effect_material(effect, parent_size, project_dir,
+			content_uv(covered, parent_size))
 	var blur := 0.0
 	if Layer.is_filter(effect):
 		blur = Filters.blur_radius(effect.get("filters", {}))
@@ -179,8 +228,30 @@ static func build_effect(effect: Dictionary, built: Array, project_dir: String,
 	node.name = NODE_PREFIX + String(effect.get("id", "effect"))
 	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	node.set_meta("dstk_effect", true)
-	built.insert(lo, {"layer": effect, "node": node})
 	return node
+
+
+## 被覆盖内容的包围盒，换算成父级的 UV 比例（0..1）。
+## 暗角这类"按区域算"的滤镜拿它当坐标空间，所以滤镜**绑定到一个小元素**时，
+## 暗角是相对那个元素而不是整张画布 —— 否则"只盖一个元素"看起来像没生效。
+## 旋转不参与包围盒（按未旋转的框算），和选区框一致。
+static func content_uv(covered: Array, parent_size: Vector2) -> Rect2:
+	var r := Rect2()
+	var first := true
+	for item in covered:
+		var layer: Dictionary = item["layer"]
+		if Layer.is_effect(layer):
+			# 效果层没有"自己的内容框"（遮罩框是形状、滤镜层根本没有几何），不参与包围盒。
+			continue
+		var fr := Frame.of(layer, parent_size)
+		r = fr if first else r.merge(fr)
+		first = false
+	if first:
+		return FULL_UV
+	var pw := maxf(1.0, parent_size.x)
+	var ph := maxf(1.0, parent_size.y)
+	return Rect2(Vector2(r.position.x / pw, r.position.y / ph),
+			Vector2(r.size.x / pw, r.size.y / ph))
 
 
 ## 滤镜层的"副本"类效果（阴影 / 描边 / 发光）。
@@ -236,19 +307,20 @@ static func _copy_tinted(content: Control, color, alpha: float, offset: Vector2)
 
 
 ## 效果层需要的材质：遮罩层 -> 遮罩着色器；滤镜层 -> 逐像素调色（色彩/暗角/色调分离）。
+## region 是被覆盖内容的包围盒（父级 UV），只有暗角用得到。
 ## 返回 null 表示这一层不需要着色器（比如只开了模糊，或者什么都没勾）。
 static func effect_material(effect: Dictionary, parent_size: Vector2,
-		project_dir: String) -> Material:
+		project_dir: String, region: Rect2 = FULL_UV) -> Material:
 	if Layer.is_mask(effect):
 		return _material(_mask_uniforms(effect, parent_size, project_dir, true))
 	var f: Dictionary = effect.get("filters", {})
 	if not Filters.needs_material(f):
 		return null
-	return _material(_grade_uniforms(f))
+	return _material(_grade_uniforms(f, region))
 
 
-static func _grade_uniforms(f: Dictionary) -> Dictionary:
-	return Filters.grade_uniforms(f, FULL_UV)
+static func _grade_uniforms(f: Dictionary, region: Rect2 = FULL_UV) -> Dictionary:
+	return Filters.grade_uniforms(f, region)
 
 
 ## 遮罩层的 uniform。遮罩矩形按**合成区域自己的 UV 比例**给（0..1），
@@ -256,7 +328,7 @@ static func _grade_uniforms(f: Dictionary) -> Dictionary:
 static func _mask_uniforms(mask_layer: Dictionary, parent_size: Vector2,
 		project_dir: String, with_texture: bool) -> Dictionary:
 	# 恒等色彩：同一个着色器兼遮罩与调色，遮罩层只要遮罩那一段。
-	var uniforms := _grade_uniforms({})
+	var uniforms := _grade_uniforms({}, FULL_UV)
 	var code := Mask.shape_code(mask_layer)
 	var fr := Frame.of(mask_layer, parent_size)
 	var r := Mask.uv_rect(mask_layer, parent_size)
@@ -296,7 +368,7 @@ static func _material(uniforms: Dictionary) -> ShaderMaterial:
 
 
 ## 拖动遮罩层时**不重建节点**：只把新的 uniform 写进已有的材质。
-## path 指向效果层；找不到节点/材质时静默返回（比如它下面没层、被隐藏了）。
+## path 指向效果层；找不到节点/材质时静默返回（比如它下面没层、被隐藏了、绑定失效）。
 static func refresh_effect(root: Node, doc, path: PackedInt32Array,
 		project_dir: String) -> void:
 	if root == null or path.is_empty():
@@ -312,13 +384,37 @@ static func refresh_effect(root: Node, doc, path: PackedInt32Array,
 	var mat: Material = (node as CanvasItem).material
 	if not (mat is ShaderMaterial) or not mat.has_meta("dstk_effect_style"):
 		return
+	# 坐标空间是"被覆盖内容所在的父级"：绑定模式下目标可能在别的容器里。
+	var space: PackedInt32Array = doc.effect_space_path(path)
+	if space.is_empty():
+		return
+	var parent_size: Vector2 = doc.parent_size(space)
 	var uniforms := {}
 	if Layer.is_mask(layer):
-		uniforms = _mask_uniforms(layer, doc.parent_size(path), project_dir, false)
+		uniforms = _mask_uniforms(layer, parent_size, project_dir, false)
 	else:
-		uniforms = _grade_uniforms(layer.get("filters", {}))
+		uniforms = _grade_uniforms(layer.get("filters", {}),
+				content_uv(covered_items_of(doc, path), parent_size))
 	for key in uniforms.keys():
 		(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
+
+
+## 文档侧的"被覆盖图层"（拖动时算包围盒用；不建节点）。
+## 绑定模式 = 目标那一层，其余模式 = 同父级里 span 覆盖的那几层。
+static func covered_items_of(doc, path: PackedInt32Array) -> Array:
+	var out := []
+	if path.is_empty():
+		return out
+	var target: PackedInt32Array = doc.cover_target_path(path)
+	if not target.is_empty():
+		out.append({"layer": doc.layer_at(target)})
+		return out
+	var span: Vector2i = doc.cover_span(path)
+	var arr: Array = doc.siblings_at(doc.parent_path_of(path))
+	for i in range(span.x, span.y):
+		if i >= 0 and i < arr.size() and (arr[i] is Dictionary):
+			out.append({"layer": arr[i]})
+	return out
 
 
 ## 把一段内容渲进 SubViewport，材质挂在最外层的容器上（材质只影响这一个节点，

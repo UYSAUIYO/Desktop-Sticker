@@ -71,6 +71,22 @@ func register(t) -> void:
 		t.eq(Layer.cover_label(m), "第 7~9 层", "列表里显示设置本身，不显示截断结果")
 	)
 
+	t.case("cover_layer_mode_binds_target", func() -> void:
+		# 绑定模式（"只作用在这一个图层上"）：没有"离我多远"的区间概念，
+		# 目标由 cover.target 给，规则全在 doc.cover_target_path。
+		var m := Layer.make_mask("遮罩")
+		m["cover"] = {"mode": "layer", "target": "l_abcd"}
+		t.eq(Layer.cover_target(m), "l_abcd", "读回绑定目标")
+		t.eq(Layer.cover_range(m, 5), Vector2i(1, 0), "绑定模式没有兄弟区间")
+		t.eq(Layer.cover_label(m), "指定图层", "列表里的文案")
+		m["cover"] = {"mode": "count", "count": 2}
+		t.eq(Layer.cover_target(m), "", "非绑定模式没有目标")
+		var normalized := Layer.normalize_cover({"mode": "layer", "target": "l_a"})
+		t.eq(String(normalized["target"]), "l_a", "normalize 保留目标 id")
+		t.eq(String(Layer.normalize_cover({"mode": "wat"})["target"]), "", "非法数据不留垃圾")
+		t.eq(String(Layer.normalize_cover({"mode": "layer"})["mode"]), "layer", "模式本身保留")
+	)
+
 	t.case("filters_defaults_are_identity", func() -> void:
 		var f := Filters.normalize({})
 		t.eq(Filters.on(f, Filters.COLOR), false, "默认全关")
