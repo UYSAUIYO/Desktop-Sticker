@@ -93,6 +93,8 @@ bool WallPaperWindow::Create() {
         const HWND previous = SetParent(hwnd_, parent_);
         if (GetAncestor(hwnd_, GA_PARENT) == parent_) {
             embedded_ = true;
+            // 与 Wallpaper Engine 一致：认领宿主（样式 + 属性标记），让桌面层确认归属
+            DesktopHost::ClaimWorkerW(parent_);
         } else {
             // SetParent 没生效，回滚成独立窗口，走降级路径
             if (previous) SetParent(hwnd_, previous);
