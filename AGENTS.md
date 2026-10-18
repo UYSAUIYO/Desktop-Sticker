@@ -177,6 +177,11 @@ Behavior here can't be unit-tested, so verify by hand with these scripts (they'r
 - **The scene-package signing key is baked into libgodot**: `tools/build_godot.ps1` regenerates `core/script_encryption_key.gen.cpp` from `tools/wallpaper-studio/signing_key.txt`, so changing that file silently breaks every already-shipped runtime and every old `.dswall`. Encryption only stops casual unzip/inspection (the key is recoverable from the DLL, and a `.dswall` may carry GDScript with the full Godot API) — it is **not** a security boundary.
 - **Studio scene nodes must use `set_anchors_and_offsets_preset`, not `set_anchors_preset`**: `set_anchors_preset` keeps a control's current on-screen position, so a never-in-tree 1920×1080 root keeps `offset_right/bottom = 1920/1080` and, once added, layout computes `size = parent + offset` = double canvas — every text/image silently flies off the visible area (symptom: only a corner of one colour layer shows). Guarded by `builder_layers_fill_parent_without_doubling`.
 - **`GPUParticles2D.visibility_rect` defaults to 200×200 around the origin** — particles outside it are culled, so a layer can look completely empty; `LayerNodes` sets a 4096×4096 rect and places the emitter at the canvas bottom centre (direction defaults upward). Particle textures are inlined into the baked scene, so a huge texture bloats the pack.
+- **Studio 卡死的三处现场约定（别一项一项往回改）**：
+  1. 宿主编译期就把第三方 Vulkan 隐式层关掉（`VK_LOADER_LAYERS_DISABLE=~implicit~` + `DISABLE_VULKAN_OBS_CAPTURE=1`，见 `main.cpp` 的 `shield_from_vulkan_overlays`）。本机注册表 `ImplicitLayers` 里有 OBS 的抓帧层，只有 `disable_environment`、没有 `enable_environment`，所以**恒生效**：OBS 没开，`dstk-studio` 里照样加载了 `C:\ProgramData\obs-studio-hook\graphics-hook64.dll`（hang dump 的 `lm` 可查）。这类层在渲染线程做 inline hook，是卡死/掉帧来源；编辑器与壁纸都不需要被抓帧。
+  2. 对话框走内嵌子窗口（`window/subwindows/embed_subwindows=true`）。原生子窗口会给同一进程再建一条 Vulkan 交换链，本机 NVIDIA 驱动在这条路径上出现过"打开文件选择框后整窗未响应"；内嵌之后只有一个 `Engine` 窗口（`EnumWindows` 可验）。
+  3. 宿主自带卡顿自捕获：主循环每帧记开始时间，另有线程盯着，**单帧超过 3 秒**就在 `%LOCALAPPDATA%\DesktopSticker\stalls\` 写 `stall_*.dmp`（dbghelp minidump，栈可完整走通）+ `stalls.log`。下次再卡，先看那里，不要再靠外部 5 秒看门狗（它只在窗口被系统标成"未响应"后才动，且进程一关证据就没了）。
+  另外：`dstk_godot_destroy()`（`Main::cleanup()`）在退出路径上会让窗口"未响应"数秒并偶发 `RaiseFailFastException`，所以正式退出走 `ExitProcess`、不跑引擎收尾；代价是 stderr 会刷一屏 `BUG: Unreferenced static string` / PagedAllocator 泄漏日志，属预期噪音。
 
 ## Conventions
 
