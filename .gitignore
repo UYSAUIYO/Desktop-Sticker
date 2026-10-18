@@ -65,6 +65,8 @@ Desktop.ini
 
 # Scene-wallpaper package exports (user data from the editor plugin / tests)
 *.dswall
+# 例外：仓库自带、供其他开发者复刻的示例 / 测试场景包（samples/README.md）。
+!samples/*.dswall
 
 # Godot editor import cache (regenerated on first open)
 .godot/
@@ -91,6 +93,7 @@ tools/vulkan-sdk/
 tools/shaderc/
 tools/glslang-src/
 
-# Godot ���̻��棨probe / host harness ����ʱ���ɣ����ύ��
+# Godot 工程缓存（probe / host harness 导出时生成，不提交）
 tools/godot-host-test/probe/.godot/
+
 

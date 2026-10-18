@@ -144,7 +144,8 @@ cp DesktopSticker.Features.dll Tests/   # 如已自动复制可跳过
 
 ### 键盘（仅场景壁纸）
 
-> 推荐用「3D 键盘 / 鼠标测试台」这类 `.dswall` 场景包验：键帽实时高亮、HUD 显示按下/松开计数、
+> 推荐用仓库自带的 `samples/3d-keyboard-test.dswall`（「3D 键盘 / 鼠标测试台」，源工程在
+> `samples/keyboard-test-src/`，重建方法见 `samples/README.md`）：键帽实时高亮、HUD 显示按下/松开计数、
 > 滚轮与拖动距离，单键、组合键、左/右/中键、滚轮、拖动一次看全。
 
 - [ ] 在空白桌面**单击**一下：前台切到桌面（`Progman`）、任务栏不出现新窗口；随后的按键才转发进壁纸

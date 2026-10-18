@@ -1,0 +1,3 @@
+﻿# Keep scene-wallpaper packages byte-exact: they are ZIP containers and must never
+# get EOL/encoding normalisation.
+*.dswall binary

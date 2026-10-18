@@ -20,6 +20,7 @@ Windows 11 desktop organizer: groups desktop icons into movable zone cards, plus
 - `tools/godot/` — built Godot **runtime payload** for the scene-wallpaper backend (`godot.windows.template_release.x86_64.dll` + license; collected by `build_godot.ps1` and copied next to the EXE by its `PostBuildEvent`; gitignored).
 - `tools/godot-wallpaper-template/` — the scene-wallpaper editor template (Godot project + `addons/dstk_wallpaper/` plugin: scene validation and `.dswall` export).
 - `tools/godot-host-test/` — standalone host harness for the runtime library (loads a project/`.dswall` into a `WorkerW` child window; `build.ps1`; `--project/--pack/--dswall/--top/--auto-exit`). M1/M2 acceptance tool.
+- `samples/` — tracked scene-wallpaper packages for reproducing acceptance (`.gitignore` whitelists `samples/*.dswall`): the example scene and the 3D keyboard/mouse input test bench, plus the bench's Godot source in `keyboard-test-src/` (rebuild steps in `samples/README.md`).
 - `docs/acceptance.md` — manual acceptance checklist; read before/after touching zone or launcher behavior. `docs/superpowers/` holds the original plan/spec.
 - `THIRD_PARTY_NOTICES.md` — third-party disclosure (FFmpeg LGPL v3, OpenH264 BSD, MotionWallpaper MIT).
 
