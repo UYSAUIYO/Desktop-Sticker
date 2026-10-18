@@ -230,18 +230,28 @@ static func _particle_material(layer: Dictionary) -> ParticleProcessMaterial:
 ## 返回 null 表示"什么都不用挂"。
 static func style_material(layer: Dictionary, uv: Rect2, size: Vector2,
 		project_dir: String) -> Material:
+	var mask_code := Mask.shape_code(layer.get("mask", {}))
+	var grade := Filters.needs_material(layer.get("filters", {}))
+	if mask_code < 0 and not grade:
+		return blend_material(String(layer.get("blend", "mix")))
+
+	var mat := ShaderMaterial.new()
+	mat.shader = _layer_shader(String(layer.get("blend", "mix")))
+	var uniforms := style_uniforms(layer, uv, size, project_dir)
+	for key in uniforms.keys():
+		mat.set_shader_parameter(key, uniforms[key])
+	# 打个标记：拖动遮罩时只更新这类材质的 uniform，不重建节点（见 update_style）。
+	mat.set_meta("dstk_layer_style", true)
+	return mat
+
+
+## 逐像素那套的 uniform（遮罩 + 色彩 + 暗角 + 色调分离）。with_texture=false 时不带
+## 贴图采样（拖动时每帧重设 mask_tex 会把遮罩图重新解码一遍）。
+static func style_uniforms(layer: Dictionary, uv: Rect2, size: Vector2,
+		project_dir: String, with_texture: bool = true) -> Dictionary:
 	var f: Dictionary = layer.get("filters", {})
 	var mask: Dictionary = layer.get("mask", {})
 	var mask_code := Mask.shape_code(mask)
-	var grade := Filters.needs_material(f)
-	var blend := String(layer.get("blend", "mix"))
-	if mask_code < 0 and not grade:
-		return blend_material(blend)
-
-	var shader := Shader.new()
-	shader.code = Filters.layer_shader(blend)
-	var mat := ShaderMaterial.new()
-	mat.shader = shader
 	var uniforms := Filters.grade_uniforms(f, uv)
 	uniforms["screen_origin"] = Vector2.ZERO
 	uniforms["screen_size"] = Vector2.ONE
@@ -259,7 +269,7 @@ static func style_material(layer: Dictionary, uv: Rect2, size: Vector2,
 		uniforms["mask_feather"] = Vector2(
 				feather / maxf(1.0, msize.x), feather / maxf(1.0, msize.y))
 		uniforms["mask_invert"] = bool(mask.get("invert", false))
-		if mask_code == 3:
+		if mask_code == 3 and with_texture:
 			var tex := Mask.load_texture(mask, project_dir)
 			if tex == null:
 				# 遮罩图丢了就整层遮住：明显可见的错误，比"当没设遮罩"更难漏掉。
@@ -267,9 +277,34 @@ static func style_material(layer: Dictionary, uv: Rect2, size: Vector2,
 				blank.fill(Color(0, 0, 0, 0))
 				tex = ImageTexture.create_from_image(blank)
 			uniforms["mask_tex"] = tex
-	for key in uniforms.keys():
-		mat.set_shader_parameter(key, uniforms[key])
-	return mat
+	return uniforms
+
+
+## 拖动中的轻量更新：只改"本图层样式材质"的 uniform（遮罩矩形、滤镜参数），
+## 不重建节点、不重新读遮罩图。找不到对应材质时什么也不做。
+static func update_style(root: Node, layer: Dictionary, uv: Rect2, size: Vector2,
+		project_dir: String) -> void:
+	if root == null:
+		return
+	var uniforms := style_uniforms(layer, uv, size, project_dir, false)
+	_apply_uniforms(root, uniforms)
+
+
+static func _apply_uniforms(node: Node, uniforms: Dictionary) -> void:
+	if node is CanvasItem:
+		var mat = (node as CanvasItem).material
+		if mat is ShaderMaterial and mat.has_meta("dstk_layer_style"):
+			for key in uniforms.keys():
+				(mat as ShaderMaterial).set_shader_parameter(key, uniforms[key])
+	for child in node.get_children():
+		_apply_uniforms(child, uniforms)
+
+
+## 按混合模式生成图层着色器（引擎按源码哈希复用已编译结果，所以每层新建对象没问题）。
+static func _layer_shader(blend: String) -> Shader:
+	var shader := Shader.new()
+	shader.code = Filters.layer_shader(blend)
+	return shader
 
 
 static func blend_material(blend: String) -> Material:

@@ -143,6 +143,29 @@ static func _wrap_viewport(content: Control, size: Vector2, material: Material) 
 	return cont
 
 
+## 拖动中的样式刷新：遮罩/滤镜的参数变了，但**节点树没变** —— 只把新的 uniform
+## 写进已有的材质，不重建节点、不重新解码遮罩图。path 用来逐级累加出画布 UV。
+static func refresh_style(root: Node, doc, path: PackedInt32Array, project_dir: String) -> void:
+	if root == null or path.is_empty():
+		return
+	var parent_uv := Rect2(Vector2.ZERO, Vector2.ONE)
+	var parent_size := Vector2(doc.canvas)
+	for i in path.size() - 1:
+		var anc: Dictionary = doc.layer_at(path.slice(0, i + 1))
+		if anc.is_empty():
+			return
+		var anc_frame := Frame.of(anc, parent_size)
+		parent_uv = uv_of(anc_frame, parent_size, parent_uv)
+		parent_size = anc_frame.size
+	var layer: Dictionary = doc.layer_at(path)
+	if layer.is_empty():
+		return
+	var fr := Frame.of(layer, parent_size)
+	var uv := uv_of(fr, parent_size, parent_uv)
+	var box := root.find_child(NODE_PREFIX + String(layer.get("id", "")), true, false)
+	LayerNodes.update_style(box, layer, uv, fr.size, project_dir)
+
+
 ## 把整棵子树的 owner 指到 scene_root。预览时不需要，导出时是必需的。
 static func set_owner_recursive(node: Node, scene_root: Node) -> void:
 	for c in node.get_children():

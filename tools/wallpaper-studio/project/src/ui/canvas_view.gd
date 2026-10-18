@@ -78,7 +78,7 @@ func _ready() -> void:
 	# 选区框/遮罩手柄层铺满整个画布区（框和手柄都由它自己画），
 	# 放在最上层，鼠标事件也由它统一处理。
 	_selection = SelectionOverlay.new()
-	_selection.visible = false
+	_selection.visible = true    # 不画东西也保持可见：它同时接管画布上的点击
 	if main != null:
 		_selection.setup(main, self)
 	add_child(_selection)
@@ -191,6 +191,8 @@ func apply_live(path: PackedInt32Array) -> void:
 	if layer.is_empty():
 		return
 	_apply_live_subtree(_root, layer, main.doc.parent_size(path))
+	# 遮罩/滤镜的参数也可能同时变了（拖遮罩框）：只刷材质 uniform，不重建节点。
+	SceneBuilder.refresh_style(_root, main.doc, path, main.project_dir)
 	# 静态画面平时是 UPDATE_ONCE（省电），拖动时必须重新开几帧重绘，
 	# 否则预览停在原地、看起来像"拖不动"。
 	_warmup = WARMUP_FRAMES
@@ -217,7 +219,9 @@ func _apply_live_subtree(base: Node, layer: Dictionary, parent_size: Vector2) ->
 func _update_selection() -> void:
 	if _selection == null:
 		return
-	_selection.visible = main != null and not main.sel.is_empty()
+	# 选区层必须**一直可见**：它同时负责画布上的点击（选中 / 取消选中）。
+	# 曾经在"没选中"时把它藏掉，结果点空白取消选择之后再也点不回来了。
+	_selection.visible = true
 	_selection.queue_redraw()
 
 
