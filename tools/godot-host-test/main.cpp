@@ -34,20 +34,8 @@ using CreateFn = void *(*)(int, char **);
 using BoolFn = bool (*)(void *);
 using VoidFn = void (*)(void *);
 
-// 鼠标注入（壁纸交互）：结构与 platform/windows/dstk_embed_windows.h 的 DstkMouseInput 一致
-struct DstkMouseInput {
-	int32_t type;
-	int32_t x;
-	int32_t y;
-	int32_t relX;
-	int32_t relY;
-	int32_t button;
-	int32_t pressed;
-	int32_t wheelDelta;
-	int32_t buttonMask;
-	int32_t mods;
-};
-using InputMouseFn = void (*)(const DstkMouseInput *);
+// 鼠标注入：不再调用引擎导出，直接把窗口消息 PostMessage 给壁纸窗口 ——
+// fork 已经把嵌入窗口的过程换成薄壳，鼠标消息会走引擎自己的原生输入处理。
 
 static SetPresentHwndFn pfn_set_present = nullptr;
 static CreateFn pfn_create = nullptr;
@@ -56,7 +44,6 @@ static BoolFn pfn_iteration = nullptr;
 static VoidFn pfn_pause = nullptr;
 static VoidFn pfn_resume = nullptr;
 static VoidFn pfn_destroy = nullptr;
-static InputMouseFn pfn_input_mouse = nullptr;
 
 // ---------------------------------------------------------------------------
 // 与壁纸模块一致的 WorkerW 查找（DesktopHost::FindWallpaperWorkerW 的精简版）
@@ -257,7 +244,6 @@ int main(int argc, char **argv) {
 	pfn_pause = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_pause"));
 	pfn_resume = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_resume"));
 	pfn_destroy = reinterpret_cast<VoidFn>(GetProcAddress(dll, "dstk_godot_destroy"));
-	pfn_input_mouse = reinterpret_cast<InputMouseFn>(GetProcAddress(dll, "dstk_embed_input_mouse"));
 
 	bool exports_ok = true;
 	struct {
@@ -329,6 +315,7 @@ int main(int argc, char **argv) {
 	bool paused = false;
 	bool f8_down = false, f9_down = false, f10_down = false;
 	long long frames = 0;
+	bool injected = false;
 	double fps_t0 = now_ms();
 	const double start_ms = fps_t0;
 
@@ -364,36 +351,14 @@ int main(int argc, char **argv) {
 			}
 			++frames;
 
-			// 鼠标注入：验证"宿主喂事件 → 引擎 Input → GDScript 收到"这条链路
-			if (pfn_input_mouse && inject_x >= 0) {
-				if (frames == 10) {
-					DstkMouseInput move{};
-					move.type = 0;
-					move.x = inject_x;
-					move.y = inject_y;
-					pfn_input_mouse(&move);
-					std::printf("[host] injected move (%d,%d)\n", inject_x, inject_y);
-				} else if (frames == 14) {
-					DstkMouseInput down{};
-					down.type = 1;
-					down.x = inject_x;
-					down.y = inject_y;
-					down.button = 1;   // MouseButton::LEFT
-					down.pressed = 1;
-					down.buttonMask = 1;
-					pfn_input_mouse(&down);
-					std::printf("[host] injected left-down\n");
-				} else if (frames == 18) {
-					DstkMouseInput up{};
-					up.type = 1;
-					up.x = inject_x;
-					up.y = inject_y;
-					up.button = 1;
-					up.pressed = 0;
-					up.buttonMask = 0;
-					pfn_input_mouse(&up);
-					std::printf("[host] injected left-up\n");
-				}
+			// 鼠标注入：PostMessage 给壁纸窗口，走引擎自己的窗口过程（与真实窗口同一条路径）
+			if (!injected && inject_x >= 0 && frames == 10) {
+				injected = true;
+				PostMessageW(host_wnd, WM_MOUSEMOVE, 0, MAKELPARAM(inject_x, inject_y));
+				PostMessageW(host_wnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(inject_x, inject_y));
+				PostMessageW(host_wnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(inject_x + 40, inject_y + 10));
+				PostMessageW(host_wnd, WM_LBUTTONUP, 0, MAKELPARAM(inject_x + 40, inject_y + 10));
+				std::printf("[host] posted move/down/move/up at (%d,%d)\n", inject_x, inject_y);
 			}
 		} else {
 			Sleep(16);

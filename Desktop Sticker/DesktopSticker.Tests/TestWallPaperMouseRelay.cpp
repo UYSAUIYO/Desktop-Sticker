@@ -127,6 +127,20 @@ TEST(MouseRelay_MoveIsThrottledButDragIsNot) {
     ASSERT_TRUE(policy.should_forward(blank(), RelayEventKind::Move, 2000));
 }
 
+TEST(MouseRelay_MoveDueGate) {
+    // 钩子先问"够久了吗"，不够久连命中测试都不做（WindowFromPoint 很贵）
+    RelayPolicy policy;
+    ASSERT_TRUE(policy.move_due(1000));
+    policy.note_forwarded(RelayEventKind::Move, 1000);
+    ASSERT_FALSE(policy.move_due(1001));
+    ASSERT_TRUE(policy.move_due(1000 + relay_move_interval_ms(false)));
+
+    // 按住按钮时不再节流
+    policy.note_forwarded(RelayEventKind::LeftDown, 2000);
+    ASSERT_TRUE(policy.move_due(2000));
+    ASSERT_TRUE(policy.move_due(2001));
+}
+
 TEST(MouseRelay_WheelIsForwardedOnBlankDesktop) {
     RelayPolicy policy;
     ASSERT_TRUE(policy.should_forward(blank(), RelayEventKind::Wheel, 1000));

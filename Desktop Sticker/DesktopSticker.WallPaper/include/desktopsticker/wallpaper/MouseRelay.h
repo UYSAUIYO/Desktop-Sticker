@@ -144,6 +144,12 @@ public:
     bool capturing() const { return buttons_ != 0; }
     int forwarded_buttons() const { return buttons_; }
 
+    // 悬停节流：距上一条已转发的移动够久了吗（钩子里先问这个，再决定要不要做命中测试，
+    // 否则每毫秒一次 WindowFromPoint 会把钩子拖慢）。
+    bool move_due(int64_t nowMs) const {
+        return nowMs - lastMoveMs_ >= relay_move_interval_ms(capturing());
+    }
+
     // 要不要把这一条转给后端（不改状态，转发后用 note_forwarded 更新）。
     bool should_forward(const RelayHit& hit, RelayEventKind kind, int64_t nowMs) const {
         if (!enabled_) return false;

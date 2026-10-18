@@ -9,21 +9,6 @@
 
 namespace desktopsticker::wallpaper {
 
-// 与 tools/godot-src/platform/windows/dstk_embed_windows.h 的 DstkMouseInput 逐字段一致。
-// 宿主不 include 引擎头（那会把整个 Godot 平台层拖进来），靠这份 POD 镜像对接。
-struct DstkMouseInput {
-    int32_t type = 0;       // 0 = 移动，1 = 按键/滚轮
-    int32_t x = 0;
-    int32_t y = 0;
-    int32_t relX = 0;
-    int32_t relY = 0;
-    int32_t button = 0;     // MouseButton：1 左 2 右 3 中 4/5 滚轮 6/7 水平滚轮
-    int32_t pressed = 0;
-    int32_t wheelDelta = 0;
-    int32_t buttonMask = 0; // MouseButtonMask 位
-    int32_t mods = 0;       // bit0 Ctrl bit1 Shift bit2 Alt bit3 Meta
-};
-
 namespace {
 
 namespace fs = std::filesystem;
@@ -126,18 +111,12 @@ bool GodotEngineHost::ensure_runtime(std::string& error) {
     fn_resume_ = reinterpret_cast<decltype(fn_resume_)>(GetProcAddress(dll_, "dstk_godot_resume"));
     fn_destroy_ = reinterpret_cast<decltype(fn_destroy_)>(GetProcAddress(dll_, "dstk_godot_destroy"));
     fn_load_pack_ = reinterpret_cast<decltype(fn_load_pack_)>(GetProcAddress(dll_, "dstk_godot_load_pack"));
-    fn_input_mouse_ = reinterpret_cast<decltype(fn_input_mouse_)>(
-        GetProcAddress(dll_, "dstk_embed_input_mouse"));
     if (!fn_set_present_ || !fn_create_ || !fn_start_ || !fn_iteration_ || !fn_destroy_ || !fn_load_pack_) {
         error = "Godot 运行库缺少嵌入接口（版本不匹配？）";
         wp_log("godot host: runtime exports missing");
         FreeLibrary(dll_);
         dll_ = nullptr;
         return false;
-    }
-    if (!fn_input_mouse_) {
-        // 旧运行库：壁纸照常放，只是鼠标交互不可用
-        wp_log("godot host: runtime has no dstk_embed_input_mouse; scene wallpapers stay non-interactive");
     }
     wp_log("godot host: runtime loaded: " + to_utf8(path));
     return true;
@@ -274,86 +253,64 @@ void GodotEngineHost::notify_paused(bool paused) {
     }
 }
 
-// 鼠标交互：宿主钩子 → 这里 → 运行库的 dstk_embed_input_mouse()。
-// 引擎侧只是把事件塞进 Input，所以必须和 dstk_godot_iteration() 同一条线程。
+// 鼠标交互：宿主钩子 → 这里 → PostMessage 给引擎窗口。
+// 引擎窗口过程被 fork 换成了薄壳（见 dstk_embed_windows.cpp），鼠标消息走
+// DisplayServerWindows::WndProc —— 和真实窗口完全同一条路径：按下时引擎自己
+// SetCapture，之后的移动/抬起由系统直接投递给它，宿主不再插手（也就不会和
+// 真实消息重复、不需要模拟 relative/速度）。滚动条、悬停进出同样由引擎维护。
 bool GodotEngineHost::send_mouse(const MouseRelayEvent& event) {
-    if (!active_ || !instance_ || !window_ || !IsWindow(window_) || !fn_input_mouse_) {
+    if (!active_ || !instance_ || !window_ || !IsWindow(window_)) {
         return false;
     }
 
     POINT client{ event.screenX, event.screenY };
     if (!ScreenToClient(window_, &client)) return false;
 
-    DstkMouseInput in;
-    in.mods = (event.ctrl ? 1 : 0) | (event.shift ? 2 : 0) | (event.alt ? 4 : 0);
-    if (event.buttons & kRelayLeft) in.buttonMask |= 1;    // MouseButtonMask::LEFT
-    if (event.buttons & kRelayRight) in.buttonMask |= 2;   // RIGHT
-    if (event.buttons & kRelayMiddle) in.buttonMask |= 4;  // MIDDLE
+    WPARAM keyState = 0;
+    if (event.buttons & kRelayLeft) keyState |= MK_LBUTTON;
+    if (event.buttons & kRelayRight) keyState |= MK_RBUTTON;
+    if (event.buttons & kRelayMiddle) keyState |= MK_MBUTTON;
+    if (event.shift) keyState |= MK_SHIFT;
+    if (event.ctrl) keyState |= MK_CONTROL;
+
+    UINT message = WM_MOUSEMOVE;
+    WPARAM wparam = keyState;
+    LPARAM lparam = MAKELPARAM(client.x, client.y);
 
     switch (event.kind) {
         case RelayEventKind::Move:
-            in.type = 0;
-            in.x = client.x;
-            in.y = client.y;
-            in.relX = event.relX;
-            in.relY = event.relY;
             break;
         case RelayEventKind::Leave:
-            // 引擎没有"鼠标离开窗口"事件：打到画面外，Control 的悬停态会自行清掉
-            in.type = 0;
-            in.x = -1;
-            in.y = -1;
+            // 引擎有原生的"鼠标离开窗口"消息：它会清掉悬停/发出 MOUSE_EXIT
+            message = WM_MOUSELEAVE;
             break;
-        case RelayEventKind::LeftDown:
-            in.type = 1;
-            in.button = 1;   // MouseButton::LEFT
-            in.pressed = 1;
-            break;
-        case RelayEventKind::LeftUp:
-            in.type = 1;
-            in.button = 1;
-            in.pressed = 0;
-            break;
-        case RelayEventKind::RightDown:
-            in.type = 1;
-            in.button = 2;
-            in.pressed = 1;
-            break;
-        case RelayEventKind::RightUp:
-            in.type = 1;
-            in.button = 2;
-            in.pressed = 0;
-            break;
-        case RelayEventKind::MiddleDown:
-            in.type = 1;
-            in.button = 3;
-            in.pressed = 1;
-            break;
-        case RelayEventKind::MiddleUp:
-            in.type = 1;
-            in.button = 3;
-            in.pressed = 0;
-            break;
+        case RelayEventKind::LeftDown: message = WM_LBUTTONDOWN; break;
+        case RelayEventKind::LeftUp: message = WM_LBUTTONUP; break;
+        case RelayEventKind::RightDown: message = WM_RBUTTONDOWN; break;
+        case RelayEventKind::RightUp: message = WM_RBUTTONUP; break;
+        case RelayEventKind::MiddleDown: message = WM_MBUTTONDOWN; break;
+        case RelayEventKind::MiddleUp: message = WM_MBUTTONUP; break;
         case RelayEventKind::Wheel:
-            in.type = 1;
-            in.button = event.wheelDelta > 0 ? 4 : 5;   // WHEEL_UP / WHEEL_DOWN
-            in.pressed = 1;
-            in.wheelDelta = event.wheelDelta;
+            // 滚轮消息的 lParam 是**屏幕**坐标（引擎自己 ScreenToClient）
+            message = WM_MOUSEWHEEL;
+            wparam = MAKEWPARAM(keyState, static_cast<WORD>(event.wheelDelta));
+            lparam = MAKELPARAM(event.screenX, event.screenY);
             break;
         case RelayEventKind::HorizontalWheel:
-            in.type = 1;
-            in.button = event.wheelDelta < 0 ? 6 : 7;   // WHEEL_LEFT / WHEEL_RIGHT
-            in.pressed = 1;
-            in.wheelDelta = event.wheelDelta;
+            message = WM_MOUSEHWHEEL;
+            wparam = MAKEWPARAM(keyState, static_cast<WORD>(event.wheelDelta));
+            lparam = MAKELPARAM(event.screenX, event.screenY);
             break;
     }
 
-    if (in.type == 1) {
-        in.x = client.x;
-        in.y = client.y;
-    }
-    fn_input_mouse_(&in);
-    return true;
+    return PostMessageW(window_, message, wparam, lparam) != FALSE;
+}
+
+// 引擎窗口是否握着鼠标捕获（按下期间）。调用方必须在本进程的渲染线程上问：
+// GetCapture 只对"调用线程自己的消息队列"有效，而引擎正是在那条线程上捕获的。
+bool GodotEngineHost::owns_capture() const {
+    if (!active_ || !window_ || !IsWindow(window_)) return false;
+    return GetCapture() == window_;
 }
 
 void GodotEngineHost::destroy_all() {
@@ -390,7 +347,6 @@ void GodotEngineHost::shutdown() {
     fn_resume_ = nullptr;
     fn_destroy_ = nullptr;
     fn_load_pack_ = nullptr;
-    fn_input_mouse_ = nullptr;
 
     if (was_embedded) {
         restore_desktop_wallpaper();

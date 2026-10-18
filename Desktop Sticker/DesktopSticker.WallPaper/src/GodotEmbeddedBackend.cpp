@@ -98,9 +98,13 @@ void GodotEmbeddedBackend::SetPaused(bool paused) {
     GodotEngineHost::instance().notify_paused(paused);
 }
 
-// 渲染线程上的鼠标事件 → 引擎（Input::parse_input_event）。
+// 渲染线程上的鼠标事件 → 引擎窗口（PostMessage，走引擎自己的窗口过程）。
 void GodotEmbeddedBackend::OnRelayMouse(const MouseRelayEvent& event) {
     GodotEngineHost::instance().send_mouse(event);
+}
+
+bool GodotEmbeddedBackend::OwnsCapture() const {
+    return GodotEngineHost::instance().owns_capture();
 }
 
 } // namespace desktopsticker::wallpaper

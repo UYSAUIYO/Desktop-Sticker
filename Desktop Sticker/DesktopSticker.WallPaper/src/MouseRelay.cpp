@@ -97,6 +97,15 @@ void MouseRelay::Drain(bool paused) {
         statMoves_ = statButtons_ = statWheels_ = statLeaves_ = statRejected_ = statReleases_ = 0;
     }
 
+    // 后端已经握着系统捕获（按下期间）：真实的鼠标消息由系统直接送给它，
+    // 我们既不转发也不拦截。只把队列清掉，避免松开后补投一批过期事件。
+    const bool nativeCapture = sink_ && sink_->OwnsCapture();
+    nativeCapture_.store(nativeCapture);
+    if (nativeCapture) {
+        clear_queue();
+        return;
+    }
+
     std::deque<MouseRelayEvent> pending;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -224,6 +233,13 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
     }
     was_active_ = true;
 
+    // 后端握着系统捕获：这一段时间的鼠标消息由系统直接投递给它（真实消息流），
+    // 钩子必须完全让开 —— 既不再转发（会重复），也不拦截（会把它自己的消息吃掉）。
+    if (nativeCapture_.load()) {
+        policy_.reset();
+        return;
+    }
+
     RelayEventKind kind = RelayEventKind::Move;
     int wheelDelta = 0;
     switch (msg) {
@@ -272,11 +288,17 @@ void MouseRelay::handle_mouse(WPARAM msg, const MSLLHOOKSTRUCT& info, bool& swal
     int cy = 0;
     if (!relay_to_client(vp, pt.x, pt.y, captured, cx, cy)) return;
 
+    // 悬停节流：不够久就直接返回，连 WindowFromPoint 都不做 —— 1000Hz 鼠标下
+    // 一次命中测试比一次排队贵两个数量级，钩子里做这么重的事会让光标本身发飘。
+    const int64_t now = static_cast<int64_t>(GetTickCount64());
+    if (kind == RelayEventKind::Move && !captured && !policy_.move_due(now)) {
+        return;
+    }
+
     // 图标只对"按下"做命中测试（每次跨进程 SendMessage；移动时不做，否则太贵）
     RelayHit hit;
     classify(pt, relay_is_down(kind), hit);
 
-    const int64_t now = static_cast<int64_t>(GetTickCount64());
     if (!policy_.should_forward(hit, kind, now)) {
         // 命中不归壁纸（图标 / 分区卡片 / 任务栏 / 别的应用）：这一条不转发就够了。
         // **不要**在这里下发 Leave —— 光标还在画面里，只是压在了别的东西上；

@@ -37,10 +37,14 @@ public:
     // 暂停/恢复：向引擎发应用级通知（真正冻结靠调用方停止 tick）。
     void notify_paused(bool paused);
 
-    // 鼠标交互：把一条转发事件交给引擎（宿主的低级钩子 → 这里 → Input::parse_input_event）。
-    // 运行库缺少注入接口时返回 false（旧运行库仍能放壁纸，只是不能交互）。
+    // 鼠标交互：把一条转发事件以窗口消息的形式 PostMessage 给引擎窗口。
+    // 引擎的窗口过程（fork 装的那层薄壳）走它自己的原生输入处理 —— 按下时它会
+    // SetCapture，之后系统把真实的移动/抬起直接送给这个窗口，宿主不再参与。
     bool send_mouse(const MouseRelayEvent& event);
-    bool mouse_input_available() const { return fn_input_mouse_ != nullptr; }
+
+    // 引擎窗口当前是否握着鼠标捕获（按下期间为真）：为真时宿主必须停止转发/拦截，
+    // 否则会和系统捕获送来的真实消息重复。
+    bool owns_capture() const;
 
     bool active() const { return active_; }
 
@@ -79,7 +83,6 @@ private:
     void (*fn_resume_)(void*) = nullptr;
     void (*fn_destroy_)(void*) = nullptr;
     bool (*fn_load_pack_)(void*, const char*, const char*) = nullptr;
-    void (*fn_input_mouse_)(const struct DstkMouseInput*) = nullptr;
 };
 
 } // namespace desktopsticker::wallpaper

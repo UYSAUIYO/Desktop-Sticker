@@ -7301,6 +7301,9 @@ Error DisplayServerWindows::_create_window(DisplayServerEnums::WindowID p_window
 					}
 				}
 				wd.create_completed = true;
+				// 交互壁纸：给这个宿主窗口装一层薄壳窗口过程，鼠标消息走引擎原生处理
+				// （宿主 PostMessage 进来的 WM_MOUSEMOVE/WM_LBUTTONDOWN 才有意义）。
+				dstk_embed_install_input_proc();
 				// 外部窗口没有经过 Godot 的 WndProc/WM_NCCREATE，AccessKit 的窗口注册在这里补上。
 				// 注意：AccessKit 的 Windows 子类化适配器要求"窗口首次显示前"创建，否则 Rust
 				// panic 直接终止进程。壁纸窗口是宿主常驻且通常已可见，此时只能跳过无障碍支持。
