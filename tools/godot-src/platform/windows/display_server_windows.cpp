@@ -4477,6 +4477,13 @@ void DisplayServerWindows::process_events() {
 	//   WM_KEYDOWN across frames, which breaks the pairing logic in
 	//   _process_key_events() and makes keys fire twice.
 	MSG msg = {};
+	// 未过滤的 PeekMessage（不取走消息，只摸一下队列）：
+	// Windows 判定“未响应/幽灵窗口”看的是本线程是否还在处理任意消息，而 4.7.2 起
+	// 的过滤式 pump（PR #109639）把 WM_MOUSEMOVE / WM_INPUT 之外的范围以外的消息
+	// 排除在外，窗口闲置约 5 秒就会被系统标成 Not Responding（上游 #124276，
+	// 4.7.1 无此问题；实测空闲 14 秒 IsHungAppWindow 恒为 True）。
+	// PM_NOREMOVE 不改变上面那套限流/去重逻辑，只是让系统知道线程还在泵。
+	PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE);
 	auto peek_discrete = [&] {
 		BOOL ret = PeekMessageW(&msg, nullptr, 0, WM_NCMOUSEMOVE - 1, PM_REMOVE);
 		if (!ret) {
