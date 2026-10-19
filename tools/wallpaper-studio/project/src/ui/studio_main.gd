@@ -7,6 +7,7 @@ extends Control
 ## 布局（自上而下）：
 ##   ProjectBar （36px，新建/打开/保存/导出）
 ##   HBox       （LayerPanel 240 | CanvasView 自适应 | Inspector 300）
+##   Timeline   （底部停靠，约 190px）
 
 const StudioDoc = preload("res://src/doc/doc.gd")
 const StudioPaths = preload("res://src/doc/paths.gd")
@@ -14,6 +15,7 @@ const ProjectBar = preload("res://src/ui/project_bar.gd")
 const LayerPanel = preload("res://src/ui/layer_panel.gd")
 const CanvasView = preload("res://src/ui/canvas_view.gd")
 const Inspector = preload("res://src/ui/inspector.gd")
+const TimelinePanel = preload("res://src/ui/timeline_panel.gd")
 
 signal doc_changed
 signal selection_changed
@@ -29,6 +31,7 @@ var _bar: Control
 var _layers: Control
 var _canvas: Control
 var _inspector: Control
+var _timeline: Control
 
 
 func _ready() -> void:
@@ -75,11 +78,16 @@ func _build_ui() -> void:
 	_inspector.custom_minimum_size = Vector2(300, 0)
 	hbox.add_child(_inspector)
 
+	_timeline = TimelinePanel.new()
+	_timeline.custom_minimum_size = Vector2(0, 190)
+	vbox.add_child(_timeline)
+
 	# setup 放在全部节点进树之后：面板的 _ready 只建自己的控件，不依赖 main。
 	_bar.setup(self)
 	_layers.setup(self)
 	_canvas.setup(self)
 	_inspector.setup(self)
+	_timeline.setup(self)
 
 
 ## 默认字体。运行库内置字体没有中文字形，不换字体的话所有中文都是方块。
@@ -107,6 +115,10 @@ func _set_doc(new_doc, dir_path: String) -> void:
 	project_dir = dir_path
 	sel = PackedInt32Array()
 	dirty = false
+	# 换工程 = 时间轴归零：新工程不该停在上一个工程拖到的位置。
+	if _canvas != null:
+		_canvas.time = 0.0
+		_canvas.playing = false
 	_update_window_title()
 
 
@@ -207,9 +219,44 @@ func apply_change(rebuild_inspector: bool = false) -> void:
 		_layers.refresh()
 	if rebuild_inspector and _inspector != null:
 		_inspector.refresh(true)
+	if _timeline != null:
+		_timeline.sync_time()
+		_timeline.refresh_warnings()
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
+
+
+## 关键帧被就地改过（拖动时间轴上 key 的时刻）：只重装播放器里的曲线，不重建节点。
+func recompile_animation() -> void:
+	if _canvas != null:
+		_canvas.recompile_animation()
+
+
+func seek_time(t: float) -> void:
+	if _canvas == null:
+		return
+	_canvas.set_time(t)
+	if _timeline != null:
+		_timeline.sync_time()
+	if _inspector != null:
+		_inspector.sync_time()
+
+
+func toggle_play() -> void:
+	if _canvas == null:
+		return
+	_canvas.toggle_play()
+	if _timeline != null:
+		_timeline.sync_play_button()
+	if _inspector != null:
+		_inspector.sync_time()
+
+
+## 播放中属性面板的数值要跟着播放头走（只改值，不重建面板）。
+func _process(_delta: float) -> void:
+	if _canvas != null and _canvas.playing and _inspector != null:
+		_inspector.sync_time()
 
 
 ## 拖动类交互的轻量路径：只改画布上那个节点的位置/尺寸，不重建整棵树
@@ -256,6 +303,8 @@ func _canvas_changed_selection() -> void:
 		_canvas.refresh_selection()
 	if _inspector != null:
 		_inspector.refresh(true)
+	if _timeline != null:
+		_timeline.refresh()
 
 
 ## 只改了文档元信息（名称）或图层名：不需要重建画布。
@@ -283,6 +332,8 @@ func _refresh_all() -> void:
 		_canvas.rebuild()
 	if _inspector != null:
 		_inspector.refresh(true)
+	if _timeline != null:
+		_timeline.refresh()
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
@@ -356,7 +407,17 @@ func _shortcut_input(event: InputEvent) -> void:
 	if busy or not (event is InputEventKey):
 		return
 	var key := event as InputEventKey
-	if not key.pressed or key.echo or not key.ctrl_pressed:
+	if not key.pressed or key.echo:
+		return
+	# 空格 = 播放/暂停。焦点在文本输入类控件里时不抢（那里空格就是空格）。
+	if key.keycode == KEY_SPACE and not key.ctrl_pressed:
+		var focus := get_viewport().gui_get_focus_owner()
+		if focus is LineEdit or focus is TextEdit:
+			return
+		toggle_play()
+		get_viewport().set_input_as_handled()
+		return
+	if not key.ctrl_pressed:
 		return
 	match key.keycode:
 		KEY_N:

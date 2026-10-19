@@ -20,6 +20,7 @@ extends Control
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 
 const BORDER_COLOR := Color(0.42, 0.62, 0.95)
 const MASK_COLOR := Color(0.96, 0.72, 0.24)
@@ -67,8 +68,20 @@ func _space() -> Dictionary:
 		"origin": canvas.container_origin() + (map["origin"] as Vector2) * d,
 		"scale": float(map["scale"]) * d,
 		"rotation": float(map["rotation"]),
-		"rect": main.doc.filter_frame(main.sel),
+		"rect": _rect_of_main_selection(),
 	}
+
+
+## 选区框 = 这一层在**当前播放头**的样子：有关键帧的图层跟着动画走，
+## 否则框会停在基础位置，跟画面上的元素对不上。
+## 祖先容器的动画暂不参与（框的空间仍按文档里的容器变换算）。
+func _rect_of_main_selection() -> Rect2:
+	var layer := _layer()
+	if not layer.is_empty() and not Layer.is_effect(layer) \
+			and Timeline.has_animation(layer):
+		return Timeline.rect_at(layer, canvas.time,
+				main.doc.parent_size(main.sel))
+	return main.doc.filter_frame(main.sel)
 
 
 func _box_color(layer: Dictionary) -> Color:

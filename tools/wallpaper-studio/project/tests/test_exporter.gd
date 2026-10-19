@@ -7,6 +7,7 @@ extends RefCounted
 
 const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 const StudioPaths = preload("res://src/doc/paths.gd")
 const Exporter = preload("res://src/export/exporter.gd")
 
@@ -18,6 +19,10 @@ func _tmp_project() -> String:
 	var img := Image.create(4, 4, false, Image.FORMAT_RGBA8)
 	img.fill(Color(1, 0, 0))
 	img.save_png(dir.path_join("red.png"))
+	# 动图的第二帧（帧序列要至少两帧才看得出在动）。
+	var img2 := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	img2.fill(Color(0, 0, 1))
+	img2.save_png(dir.path_join("blue.png"))
 	return dir
 
 
@@ -104,11 +109,23 @@ func register(t) -> void:
 	t.case("exporter_produces_loadable_pack", func() -> void:
 		var proj := _tmp_project()
 		var doc = StudioDoc.create_empty("导出台", Vector2i(320, 240))
+		doc.loop_seconds = 4.0
 		doc.add_layer(Layer.make_color("底", Color(0, 0, 0)))
 		doc.add_layer(Layer.make_image("红块", "red.png"))
 		var clock := Layer.make_text("时钟", "00:00:00")
 		clock["dynamic"] = "clock"
 		doc.add_layer(clock)
+
+		# 阶段 2 的两条新链路一起验：关键帧 -> AnimationPlayer，帧序列 -> 运行时装动图。
+		var petal := Layer.make_image("花瓣", "")
+		petal["frames"] = ["red.png", "blue.png"]
+		petal["fps"] = 6.0
+		Timeline.set_key(petal, "y", 0.0, 0.0)
+		Timeline.set_key(petal, "y", 2.0, 120.0 / 240.0)   # y 存父级比例（画布高 240）
+		# 缓动段：包里必须是烘焙过的密集关键帧（否则导出就成了匀速）。
+		Timeline.set_key(petal, "opacity", 0.0, 0.0, "linear")
+		Timeline.set_key(petal, "opacity", 2.0, 1.0, "in")
+		doc.add_layer(petal)
 
 		var out := "user://test_out.dswall"
 		var result: Dictionary = Exporter.export(doc, proj, out, _tmp_poster())
@@ -146,15 +163,46 @@ func register(t) -> void:
 		# 内容节点嵌在 layer box / stack 里，递归找。
 		var found_clock := false
 		var found_image_script := false
+		var found_animated := false
+		var player: AnimationPlayer = null
 		for c in inst.find_children("*", "", true, false):
+			if c is AnimationPlayer:
+				player = c as AnimationPlayer
 			if c.get_script() == null:
 				continue
 			if "mode" in c:
 				found_clock = true
 				t.eq(c.get("mode"), "clock", "clock mode survived packing")
+			elif "frames" in c and (c.get("frames") as PackedStringArray).size() > 0:
+				found_animated = true
+				t.eq((c.get("frames") as PackedStringArray).size(), 2, "两帧都进了包")
+				t.approx(float(c.get("fps")), 6.0, 0.0001, "帧率写进场景")
+				c.call("_apply_frames")
+				t.ok(c.texture is AnimatedTexture, "运行库把帧序列解成 AnimatedTexture")
+				if c.texture is AnimatedTexture:
+					t.eq((c.texture as AnimatedTexture).frames, 2, "动图帧数")
 			elif "src" in c:
 				found_image_script = true
-		inst.free()
 		t.eq(found_clock, true, "the injected clock script survived packing")
 		t.eq(found_image_script, true, "the injected image script survived packing")
+		t.eq(found_animated, true, "the injected animated-image script survived packing")
+
+		# 关键帧进包：AnimationPlayer 存在、动画存在、autoplay 设好。
+		t.ok(player != null, "AnimationPlayer survived packing")
+		if player != null:
+			t.eq(player.autoplay, "wallpaper", "autoplay survives packing")
+			var anim := player.get_animation("wallpaper")
+			t.ok(anim != null, "animation survived packing")
+			if anim != null:
+				t.approx(anim.length, 4.0, 0.0001, "length = loop_seconds")
+				t.ok(anim.get_track_count() >= 2, "y 关键帧展开成上下两条锚点轨道")
+				var alpha := -1
+				for i in anim.get_track_count():
+					if String(anim.track_get_path(i)).ends_with(":modulate:a"):
+						alpha = i
+				t.ok(alpha >= 0, "包里有不透明度轨道")
+				if alpha >= 0:
+					t.ok(anim.track_get_key_count(alpha) > 30,
+							"缓动段在包里仍是烘焙过的（不是线性端点）")
+		inst.free()
 	)

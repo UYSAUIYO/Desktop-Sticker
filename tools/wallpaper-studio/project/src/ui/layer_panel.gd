@@ -359,8 +359,8 @@ func _pick_image() -> void:
 		_file_dialog = FileDialog.new()
 		_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 		_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
-		_file_dialog.title = "选择图片（会拷进工程 assets/）"
-		_file_dialog.filters = AssetImport.image_filters()
+		_file_dialog.title = "选择图片或 GIF（会拷进工程 assets/）"
+		_file_dialog.filters = AssetImport.image_filters(true)
 		_file_dialog.file_selected.connect(_on_image_selected)
 		add_child(_file_dialog)
 	_file_dialog.current_dir = dir
@@ -368,6 +368,17 @@ func _pick_image() -> void:
 
 
 func _on_image_selected(path: String) -> void:
+	# GIF 直接当动图：拆成 PNG 帧后建图层，省得"先加静态图、再去属性面板导入动图"。
+	if path.get_extension().to_lower() == "gif":
+		var res: Dictionary = AssetImport.import_gif(main.ensure_project_dir(), path)
+		if not res.ok:
+			main.show_error("添加 GIF 失败", String(res.error))
+			return
+		var layer := Layer.make_image(path.get_file().get_basename(), String(res.frames[0]))
+		layer["frames"] = res.frames
+		layer["fps"] = float(res.fps)
+		_add_layer(layer)
+		return
 	var rel := AssetImport.import_image(main.ensure_project_dir(), path)
 	if rel.is_empty():
 		main.show_error("添加图片失败", "无法把图片拷进工程：\n" + path)

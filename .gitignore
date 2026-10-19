@@ -97,3 +97,6 @@ tools/glslang-src/
 tools/godot-host-test/probe/.godot/
 
 
+
+# Local agent notes (memory logs)
+.workbuddy/

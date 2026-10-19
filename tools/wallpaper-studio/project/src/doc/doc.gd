@@ -14,14 +14,21 @@ const Layer = preload("res://src/doc/layer.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const LayerTimeline = preload("res://src/doc/timeline.gd")
 
-const FORMAT_VERSION := 1
+## 文档格式版本。
+##   1 —— x/y 关键帧存父级**像素**；
+##   2 —— x/y 关键帧存父级**比例**（0..1），换画布/容器尺寸不再需要改关键帧。
+## 老文档在 parse 里一次性折算，编辑器内部只认当前版本。
+const FORMAT_VERSION := 2
 const MIN_CANVAS := 64
 
 var name: String = "未命名壁纸"
 var canvas: Vector2i = Vector2i(1920, 1080)
 var background: Color = Color(0.02, 0.07, 0.12)
 var pack_id: String = ""
+## 时间轴总长度（秒）。关键帧可以超出它，播放器按它循环。
+var loop_seconds: float = 8.0
 var layers: Array = []          # Array[Dictionary]，index 0 = 最底层
 
 
@@ -63,6 +70,7 @@ static func parse(text: String) -> Dictionary:
 		var c: Dictionary = raw["canvas"]
 		d.canvas = Vector2i(int(c.get("width", 1920)), int(c.get("height", 1080)))
 	d.background = Layer.to_color(raw.get("background"), Color(0.02, 0.07, 0.12))
+	d.loop_seconds = clampf(float(raw.get("loop_seconds", 8.0)), 0.25, 600.0)
 	if d.canvas.x < MIN_CANVAS or d.canvas.y < MIN_CANVAS:
 		return {"ok": false, "doc": null, "error": "画布尺寸过小：%s" % d.canvas}
 
@@ -71,18 +79,21 @@ static func parse(text: String) -> Dictionary:
 			if item is Dictionary:
 				# _migrate 返回的是**一串**图层：老的"每层自带遮罩/滤镜"会被拆成
 				# 紧跟在该层上面的独立效果图层（见 _legacy_effects）。
-				d.layers.append_array(_migrate(item, Vector2(d.canvas)))
+				d.layers.append_array(_migrate(item, Vector2(d.canvas), version))
 
 	return {"ok": true, "doc": d, "error": ""}
 
 
 ## 规范化 + 历史迁移。返回 [{layer}, …]：图层本身，外加老字段折算出的效果图层。
 ## 容器里的子图层按容器框做参照，所以这里要递归下去。
-static func _migrate(raw: Dictionary, parent_size: Vector2) -> Array:
+static func _migrate(raw: Dictionary, parent_size: Vector2,
+		version: int = FORMAT_VERSION) -> Array:
 	var own := raw.duplicate()
 	own.erase("children")
 	var layer := Layer.normalize(own)
 	Frame.migrate_scale(layer, parent_size)
+	if version < 2:
+		_convert_tracks_to_ratio(layer, parent_size)
 	if Layer.is_group(layer):
 		var kids := []
 		var raw_kids = raw.get("children")
@@ -90,11 +101,25 @@ static func _migrate(raw: Dictionary, parent_size: Vector2) -> Array:
 		if raw_kids is Array:
 			for raw_child in raw_kids:
 				if raw_child is Dictionary:
-					kids.append_array(_migrate(raw_child, frame_size))
+					kids.append_array(_migrate(raw_child, frame_size, version))
 		layer["children"] = kids
 	var out := [layer]
 	out.append_array(_legacy_effects(layer, raw, parent_size))
 	return out
+
+
+## format_version 1 -> 2：x/y 关键帧从**父级像素**折算成**父级比例**。
+## 每个图层的分母都是它自己的父级尺寸（根层是画布，容器里的子层是容器框），
+## 所以必须跟着 _migrate 的递归一起走。
+static func _convert_tracks_to_ratio(layer: Dictionary, parent_size: Vector2) -> void:
+	for track in LayerTimeline.tracks_of(layer):
+		var channel := String(track.get("channel", ""))
+		if channel != "x" and channel != "y":
+			continue
+		var denom := maxf(1.0, parent_size.x if channel == "x" else parent_size.y)
+		for key in track.get("keys", []):
+			if key is Dictionary:
+				key["v"] = float(key.get("v", 0.0)) / denom
 
 
 ## 旧文档把遮罩/滤镜挂在图层自己身上（"节点属性"模型）。加载时把它们拆成
@@ -145,12 +170,120 @@ func to_text() -> String:
 		"pack_id": pack_id,
 		"canvas": {"width": canvas.x, "height": canvas.y},
 		"background": "#" + background.to_html(false),
+		"loop_seconds": loop_seconds,
 		"layers": layers,
 	}
 	return JSON.stringify(out, "  ")
 
 
 # ---------------------------------------------------------------- 路径访问
+
+## 循环长度（秒）。**权威值**：播放器就在这个长度上回绕，超出的关键帧不会播放。
+## （以前这里取 max(loop, 末帧)，导致"把时长改短"其实没变短 —— 已修正。）
+func timeline_end() -> float:
+	return maxf(0.25, loop_seconds)
+
+
+## 所有关键帧里最晚的时刻（没有关键帧返回 0）。只用于提示"超出时长"和"适配末帧"。
+func key_end() -> float:
+	var end := 0.0
+	for item in walk():
+		end = maxf(end, LayerTimeline.end_of(item["layer"]))
+	return end
+
+
+## 超出循环时长的关键帧（不会播放）。返回 [{layer, channel, count}]。
+func out_of_range_keys() -> Array:
+	var out := []
+	for item in walk():
+		var layer: Dictionary = item["layer"]
+		for track in LayerTimeline.tracks_of(layer):
+			var n := 0
+			for key in track.get("keys", []):
+				if float(key.get("t", 0.0)) > loop_seconds + 0.0001:
+					n += 1
+			if n > 0:
+				out.append({"layer": layer, "channel": String(track.get("channel", "")),
+						"count": n})
+	return out
+
+
+## 循环接缝：每条轨道在 t=0 与 t=loop 的采样值差（按通道自己的容差归一化）。
+## ok=false 表示回绕那一帧会"跳一下"。where 指出偏差最大的是哪一层/哪条通道。
+func loop_seam() -> Dictionary:
+	var worst := 0.0
+	var where := ""
+	for item in walk():
+		var layer: Dictionary = item["layer"]
+		if Layer.is_effect(layer) or not LayerTimeline.has_animation(layer):
+			continue
+		for track in LayerTimeline.tracks_of(layer):
+			var channel := String(track.get("channel", ""))
+			var a = LayerTimeline.sample_track(track, 0.0)
+			var b = LayerTimeline.sample_track(track, loop_seconds)
+			if a == null or b == null:
+				continue
+			var tol := 0.001            # x/y：父级比例的 0.1%
+			match channel:
+				"rotation":
+					tol = 0.5           # 0.5 度
+				"scale":
+					tol = 0.002
+				"opacity":
+					tol = 0.005
+			var d := absf(float(b) - float(a)) / tol
+			if d > worst:
+				worst = d
+				where = "%s · %s" % [
+					String(layer.get("name", "图层")),
+					String(LayerTimeline.CHANNEL_NAMES.get(channel, channel))]
+	return {"ok": worst <= 1.0, "ratio": worst, "where": where}
+
+
+## 闭合循环：给每条有 key 的通道在 loop 处补一个"等于 0 时刻"的关键帧，
+## 回绕时首尾相接。返回补了多少条通道（0 = 没有可补的）。
+## 只应该在"没有超出时长的关键帧"时调用，否则超出那些帧仍然不会播放。
+func close_loop() -> int:
+	var count := 0
+	for item in walk():
+		var layer: Dictionary = item["layer"]
+		if Layer.is_effect(layer) or not LayerTimeline.has_animation(layer):
+			continue
+		var tracks: Array = LayerTimeline.tracks_of(layer).duplicate()
+		for track in tracks:
+			var keys: Array = track.get("keys", [])
+			if keys.is_empty():
+				continue
+			var channel := String(track.get("channel", ""))
+			var v0 = LayerTimeline.sample_track(track, 0.0)
+			if v0 == null:
+				continue
+			var ease := String(keys[keys.size() - 1].get("ease", "linear"))
+			LayerTimeline.set_key(layer, channel, loop_seconds, float(v0), ease)
+			count += 1
+	return count
+
+
+## 有没有任何关键帧（决定画布要不要持续重绘、导出要不要生成 AnimationPlayer）。
+func has_animation() -> bool:
+	for item in walk():
+		if LayerTimeline.has_animation(item["layer"]):
+			return true
+	return false
+
+
+## 有帧序列（动图）的图层：它们需要持续重绘，且导出时要拷全部帧。
+func animated_image_layers() -> Array:
+	var out := []
+	for item in walk():
+		var l: Dictionary = item["layer"]
+		if String(l.get("type", "")) != "image" or not bool(l.get("visible", true)):
+			continue
+		var frames = l.get("frames", [])
+		if frames is Array and not frames.is_empty():
+			out.append(item)
+	return out
+
 
 func layer_at(path: PackedInt32Array) -> Dictionary:
 	if path.is_empty():
@@ -492,19 +625,44 @@ func reparent(path: PackedInt32Array, new_parent: PackedInt32Array) -> PackedInt
 	var layer := layer_at(path)
 	if layer.is_empty():
 		return path
+
 	var old_map := Frame.space_map(self, path)
+	var old_parent_size: Vector2 = parent_size(path)
+	var fr := Frame.of(layer, old_parent_size)
+	var root_pos: Vector2 = old_map["origin"] \
+			+ (fr.position * float(old_map["scale"])).rotated(deg_to_rad(float(old_map["rotation"])))
+
+	# 目标父级先记 id：remove_at 会让它后面的兄弟下标前移，按旧路径插入会找错节点
+	# （移进"排在后面的容器"时，元素曾静默跑到根上）。
+	var target_id := ""
+	if not new_parent.is_empty():
+		target_id = String(layer_at(new_parent).get("id", ""))
+
+	remove_at(path)
+	if not target_id.is_empty():
+		new_parent = path_of_id(target_id)
+		if new_parent.is_empty():
+			new_parent = PackedInt32Array()
+
 	var probe := new_parent.duplicate()
 	probe.append(0)
 	var new_map := Frame.space_map(self, probe)
-	var fr := Frame.of(layer, parent_size(path))
-	var root_pos: Vector2 = old_map["origin"] \
-			+ (fr.position * float(old_map["scale"])).rotated(deg_to_rad(float(old_map["rotation"])))
+	var new_parent_size: Vector2 = parent_size_of(new_parent)
 	var local := Frame.to_space(root_pos, new_map)
-	remove_at(path)
+
 	if float(layer["transform"].get("w", 0.0)) <= 0.0:
 		Frame.materialize(layer, fr.size)
 	layer["transform"]["x"] = local.x
 	layer["transform"]["y"] = local.y
+	# 关键帧和基础位置用同一套空间映射整体搬家，否则动画会留在旧父级的坐标里。
+	var old_scale := float(old_map["scale"])
+	var old_rot := float(old_map["rotation"])
+	var old_origin: Vector2 = old_map["origin"]
+	var to_new := func(p: Vector2) -> Vector2:
+		var root_point := old_origin + (p * old_scale).rotated(deg_to_rad(old_rot))
+		return Frame.to_space(root_point, new_map)
+	LayerTimeline.remap_xy(layer, old_parent_size, new_parent_size, to_new)
+
 	var arr: Array = layers
 	var parent := PackedInt32Array()
 	if not new_parent.is_empty():
@@ -527,6 +685,10 @@ func wrap_in_group(path: PackedInt32Array) -> PackedInt32Array:
 	var parent_path := parent_path_of(path)
 	var size := parent_size(path)
 	var fr := Frame.of(layer, size)
+	# 换参照系：容器原点 = 图层原来的左上角，容器尺寸 = 图层原来的框。
+	# 关键帧跟着搬（容器内部坐标是旧父级坐标减去容器原点），否则动画会整体偏移。
+	LayerTimeline.remap_xy(layer, size, fr.size,
+			func(p: Vector2) -> Vector2: return p - fr.position)
 	var group := Layer.make_group(String(layer.get("name", "图层")) + " 容器",
 			fr.size.x, fr.size.y)
 	group["transform"]["x"] = fr.position.x
@@ -553,12 +715,40 @@ func set_canvas(new_size: Vector2i, scale_layers: bool = true) -> void:
 	var old := Vector2(canvas)
 	var nx := maxi(MIN_CANVAS, new_size.x)
 	var ny := maxi(MIN_CANVAS, new_size.y)
-	if scale_layers and old.x > 0.0 and old.y > 0.0:
-		var sx := float(nx) / old.x
-		var sy := float(ny) / old.y
-		if not is_equal_approx(sx, 1.0) or not is_equal_approx(sy, 1.0):
-			layers = Frame.scale_children(layers, sx, sy, Vector2.ZERO)
+	if old.x > 0.0 and old.y > 0.0 and (nx != int(old.x) or ny != int(old.y)):
+		if scale_layers:
+			# 元素按比例缩放。x/y 关键帧存的是比例，**不用改**：位置和运动幅度
+			# 自动跟着新画布伸缩（这就是比例单位的意义）。
+			layers = Frame.scale_children(layers, float(nx) / old.x, float(ny) / old.y,
+					Vector2.ZERO)
+		else:
+			# "保持像素不变"：基础位置没动，关键帧的像素位置也必须保持，
+			# 于是比例要按 旧尺寸/新尺寸 折算。
+			_keep_key_pixels(old, Vector2(nx, ny))
 	canvas = Vector2i(nx, ny)
+
+
+## set_canvas(scale_layers=false) 专用：把 x/y 关键帧的比例改成"像素不变"的比例。
+## 递归进容器，因为每个子层的分母都是它自己的父级尺寸——而这里只改根画布，
+## 容器尺寸没变，所以子层的比例其实不用动。只有根图层的分母变了。
+func _keep_key_pixels(old: Vector2, new_size: Vector2) -> void:
+	var sx := old.x / maxf(1.0, new_size.x)
+	var sy := old.y / maxf(1.0, new_size.y)
+	for layer in layers:
+		if not (layer is Dictionary):
+			continue
+		for track in LayerTimeline.tracks_of(layer):
+			var channel := String(track.get("channel", ""))
+			var factor := 1.0
+			if channel == "x":
+				factor = sx
+			elif channel == "y":
+				factor = sy
+			else:
+				continue
+			for key in track.get("keys", []):
+				if key is Dictionary:
+					key["v"] = float(key.get("v", 0.0)) * factor
 
 
 # ---------------------------------------------------------------- 兼容旧接口
@@ -614,7 +804,16 @@ func validate(project_dir: String) -> PackedStringArray:
 		var rel := ""
 		if type == "image":
 			rel = String(l.get("src", ""))
-			if rel.is_empty():
+			var frames = l.get("frames", [])
+			if frames is Array and not frames.is_empty():
+				# 动图层：帧序列优先于 src，逐帧查存在性（缺一帧就是一段黑屏）。
+				rel = ""
+				for f in frames:
+					if not FileAccess.file_exists(project_dir.path_join(String(f))):
+						problems.append("图层「%s」的帧不存在：%s" % [l["name"], String(f)])
+				if int(l.get("fps", 12)) <= 0:
+					problems.append("图层「%s」的帧率必须大于 0。" % l["name"])
+			elif rel.is_empty():
 				problems.append("图层「%s」没有选择图片。" % l["name"])
 		elif type == "particles":
 			rel = String(l.get("texture", ""))
@@ -631,6 +830,15 @@ func validate(project_dir: String) -> PackedStringArray:
 			problems.append("图层「%s」的粒子数量必须大于 0。" % l["name"])
 	if visible == 0:
 		problems.append("没有任何可见图层，导出的会是一张纯色图。")
+	# 超出循环时长的关键帧不会播放：不拦下来的话，用户会以为导出后还会动。
+	var over := out_of_range_keys()
+	if not over.is_empty():
+		var total := 0
+		for o in over:
+			total += int(o["count"])
+		problems.append("有 %d 个关键帧超出循环时长（%.2f 秒），不会播放；"
+				% [total, loop_seconds]
+				+ "请把「时长」调大（可用「适配末帧」）或把关键帧移回范围内。")
 	return problems
 
 
@@ -647,6 +855,10 @@ func asset_refs() -> Array:
 			var rel := String(l.get("src", ""))
 			if not rel.is_empty():
 				out.append({"layer": l, "field": "src", "rel": rel})
+			var frames = l.get("frames", [])
+			if frames is Array:
+				for f in frames:
+					out.append({"layer": l, "field": "frames", "rel": String(f)})
 		elif type == "particles":
 			var rel2 := String(l.get("texture", ""))
 			if not rel2.is_empty():

@@ -19,6 +19,7 @@ const StudioPaths = preload("res://src/doc/paths.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const Frame = preload("res://src/doc/frame.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 
 const TYPES := ["color", "image", "text", "particles", "group", "mask", "filter"]
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
@@ -86,6 +87,9 @@ static func make_image(layer_name: String, src: String) -> Dictionary:
 	l["src"] = src
 	l["fit"] = "contain"
 	l["speed"] = 1.0
+	# 帧序列（动图）：非空时优先于 src，逐帧播放（见 LayerNodes.DSTK_IMAGE_SCRIPT）。
+	l["frames"] = []
+	l["fps"] = 12.0
 	return l
 
 
@@ -246,7 +250,8 @@ static func normalize(raw: Dictionary) -> Dictionary:
 		for k in ["x", "y", "w", "h", "rotation", "scale", "opacity"]:
 			out["transform"][k] = float(t.get(k, out["transform"][k]))
 	if raw.get("tracks") is Array:
-		out["tracks"] = raw["tracks"]
+		# 关键帧顺序/取值在这里一次洗好，后面的采样与场景构造就不用再防错。
+		out["tracks"] = Timeline.normalize_tracks(raw["tracks"])
 	if raw.get("effects") is Array:
 		out["effects"] = raw["effects"]
 	match type:
@@ -257,6 +262,13 @@ static func normalize(raw: Dictionary) -> Dictionary:
 			var fit := String(raw.get("fit", "contain"))
 			out["fit"] = fit if fit in ["fill", "contain", "cover", "tile"] else "contain"
 			out["speed"] = float(raw.get("speed", 1.0))
+			var frames := []
+			if raw.get("frames") is Array:
+				for f in raw["frames"]:
+					if f is String and not String(f).is_empty():
+						frames.append(String(f))
+			out["frames"] = frames
+			out["fps"] = clampf(float(raw.get("fps", 12.0)), 0.5, 60.0)
 		"text":
 			out["text"] = String(raw.get("text", "文本"))
 			out["font_size"] = int(raw.get("font_size", 64))

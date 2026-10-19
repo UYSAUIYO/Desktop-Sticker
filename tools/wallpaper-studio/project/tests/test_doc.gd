@@ -5,6 +5,7 @@ const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 
 
 func register(t) -> void:
@@ -19,6 +20,32 @@ func register(t) -> void:
 		t.eq(parsed.doc.layers[0].type, "color", "layer type kept")
 		t.eq(parsed.doc.layers[0].color, Color(0.02, 0.07, 0.12), "color kept")
 		t.eq(parsed.doc.pack_id, doc.pack_id, "pack id kept")
+	)
+
+	t.case("doc_roundtrip_keeps_image_frames", func() -> void:
+		# 动图（帧序列）在文档里是普通数组，必须原样往返；老文档没有这两项时取默认。
+		var doc = StudioDoc.create_empty("动图", Vector2i(640, 360))
+		doc.loop_seconds = 3.5
+		var l := Layer.make_image("花瓣", "assets/a.png")
+		l["frames"] = ["assets/f1.png", "assets/f2.png"]
+		l["fps"] = 9.0
+		doc.add_layer(l)
+
+		var parsed: Dictionary = StudioDoc.parse(doc.to_text())
+		t.eq(parsed.ok, true, "parse ok: " + String(parsed.error))
+		if parsed.ok:
+			t.approx(float(parsed.doc.loop_seconds), 3.5, 0.0001, "loop_seconds kept")
+			var l2: Dictionary = parsed.doc.layers[0]
+			t.eq((l2["frames"] as Array).size(), 2, "frames kept")
+			t.eq(String(l2["frames"][1]), "assets/f2.png", "frame order kept")
+			t.approx(float(l2["fps"]), 9.0, 0.0001, "fps kept")
+
+		var bare: Dictionary = StudioDoc.parse(
+			'{"format_version":1,"layers":[{"type":"image","src":"a.png"}]}')
+		t.eq(bare.ok, true, "old doc parses")
+		if bare.ok:
+			t.eq((bare.doc.layers[0]["frames"] as Array).size(), 0, "默认无帧序列")
+			t.approx(float(bare.doc.layers[0]["fps"]), 12.0, 0.0001, "默认 12 fps")
 	)
 
 	t.case("doc_missing_fields_take_defaults", func() -> void:
@@ -148,6 +175,10 @@ func register(t) -> void:
 		l["transform"]["y"] = 50.0
 		l["transform"]["w"] = 200.0
 		l["transform"]["h"] = 100.0
+		# 关键帧：100px -> 300px（比例）。挪进容器后必须一起换参照系，
+		# 否则基础位置换了、动画还留在旧父级的坐标里。
+		Timeline.set_key(l, "x", 0.0, 100.0 / 1280.0)
+		Timeline.set_key(l, "x", 2.0, 300.0 / 1280.0)
 		doc.add_layer(l)
 		var group := Layer.make_group("容器", 400.0, 200.0)
 		group["transform"]["x"] = 400.0
@@ -159,6 +190,77 @@ func register(t) -> void:
 		t.approx(float(child["transform"]["x"]), -300.0, 0.001, "相对容器的新 X")
 		t.approx(float(child["transform"]["y"]), -250.0, 0.001, "相对容器的新 Y")
 		t.approx(float(child["transform"]["w"]), 200.0, 0.001, "尺寸不变")
+		# 目标容器原本排在被移动图层之后：按旧路径插入会找错节点（老 bug），
+		# 现在按 id 重新定位，落点是 [1,0] -> 移除后容器变 [0] -> 子层 [0,0]。
+		t.eq(path, PackedInt32Array([0, 0]), "落进目标容器，不是根或别的节点")
+
+		var track := Timeline.find_track(Timeline.tracks_of(child), "x")
+		t.eq((track["keys"] as Array).size(), 2, "关键帧跟过来了")
+		t.approx(float(track["keys"][0]["v"]), (100.0 - 400.0) / 400.0, 0.0001,
+				"关键帧按容器宽重新折算")
+		t.approx(float(track["keys"][1]["v"]), (300.0 - 400.0) / 400.0, 0.0001,
+				"第二个关键帧同样折算")
+		# 视觉连续：容器原点 400 + 容器内 -300 = 100。
+		t.approx(400.0 + Timeline.rect_at(child, 0.0, Vector2(400, 200)).position.x,
+				100.0, 0.0001, "搬完之后画面不跳")
+	)
+
+	t.case("doc_wrap_in_group_remaps_keys", func() -> void:
+		# 包容器：容器框 = 图层原框，关键帧从"父级坐标"换算到"容器内坐标"。
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_color("块", Color.WHITE)
+		l["transform"]["x"] = 100.0
+		l["transform"]["y"] = 0.0
+		l["transform"]["w"] = 200.0
+		l["transform"]["h"] = 100.0
+		Timeline.set_key(l, "x", 0.0, 100.0 / 1280.0)
+		Timeline.set_key(l, "x", 2.0, 300.0 / 1280.0)
+		doc.add_layer(l)
+		var gpath: PackedInt32Array = doc.wrap_in_group(PackedInt32Array([0]))
+		var child: Dictionary = doc.layer_at(PackedInt32Array([gpath[0], 0]))
+		var track := Timeline.find_track(Timeline.tracks_of(child), "x")
+		t.approx(float(track["keys"][0]["v"]), 0.0, 0.0001, "起点落在容器原点")
+		t.approx(float(track["keys"][1]["v"]), (300.0 - 100.0) / 200.0, 0.0001,
+				"终点按容器宽折算")
+		# 画面连续：容器在 100，子层比例 1.0 -> 300。
+		t.approx(100.0 + Timeline.rect_at(child, 2.0, Vector2(200, 100)).position.x,
+				300.0, 0.0001, "包完之后画面不跳")
+	)
+
+	t.case("doc_migrates_v1_pixel_keys_to_ratio", func() -> void:
+		# format_version 1 的 x/y 关键帧是像素；加载时一次性折算成比例。
+		var text := '{"format_version":1,"canvas":{"width":1280,"height":720},' \
+				+ '"layers":[{"type":"text","transform":{"x":0,"y":0,"w":200,"h":100},' \
+				+ '"tracks":[{"channel":"x","keys":[{"t":0,"v":320},{"t":2,"v":640}]}]}]}'
+		var parsed: Dictionary = StudioDoc.parse(text)
+		t.eq(parsed.ok, true, "v1 文档能加载：" + String(parsed.error))
+		if parsed.ok:
+			var track := Timeline.find_track(
+					Timeline.tracks_of(parsed.doc.layers[0]), "x")
+			t.approx(float(track["keys"][0]["v"]), 0.25, 0.0001, "320px -> 0.25")
+			t.approx(float(track["keys"][1]["v"]), 0.5, 0.0001, "640px -> 0.5")
+
+		# 容器里的子层按**容器框**折算，不是画布。
+		var nested := '{"format_version":1,"canvas":{"width":1280,"height":720},' \
+				+ '"layers":[{"type":"group","transform":{"x":0,"y":0,"w":400,"h":200},' \
+				+ '"children":[{"type":"color","tracks":' \
+				+ '[{"channel":"y","keys":[{"t":0,"v":100}]}]}]}]}'
+		var p2: Dictionary = StudioDoc.parse(nested)
+		t.eq(p2.ok, true, "嵌套 v1 文档能加载")
+		if p2.ok:
+			var child: Dictionary = p2.doc.layers[0]["children"][0]
+			var ty := Timeline.find_track(Timeline.tracks_of(child), "y")
+			t.approx(float(ty["keys"][0]["v"]), 0.5, 0.0001, "100 / 容器高 200")
+
+		# v2 的值原样保留；写回时版本升到 2。
+		var v2 := '{"format_version":2,"canvas":{"width":1280,"height":720},' \
+				+ '"layers":[{"type":"color","tracks":[{"channel":"x","keys":[{"t":0,"v":0.25}]}]}]}'
+		var p3: Dictionary = StudioDoc.parse(v2)
+		t.eq(p3.ok, true, "v2 文档能加载")
+		if p3.ok:
+			var t3 := Timeline.find_track(Timeline.tracks_of(p3.doc.layers[0]), "x")
+			t.approx(float(t3["keys"][0]["v"]), 0.25, 0.0001, "v2 不再折算")
+			t.ok(p3.doc.to_text().contains('"format_version": 2'), "写回版本 2")
 	)
 
 	t.case("doc_wrap_in_group_keeps_frame", func() -> void:

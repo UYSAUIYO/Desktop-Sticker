@@ -46,20 +46,26 @@ func _refresh() -> void:
 const DSTK_IMAGE_SCRIPT := "extends TextureRect
 
 @export var src: String = \"\"
+## 帧序列（动图）：非空时优先于 src。导出时按 pack 内路径逐帧解码。
+@export var frames: PackedStringArray = PackedStringArray()
+@export var fps: float = 12.0
+
+const MAX_FRAMES := 256
 
 func _ready() -> void:
-	_apply()
+	if frames.size() > 0:
+		_apply_frames()
+	else:
+		_apply()
 
-func _apply() -> void:
-	if src.is_empty():
-		return
-	var bytes := FileAccess.get_file_as_bytes(src)
+func _decode(path: String):
+	var bytes := FileAccess.get_file_as_bytes(path)
 	if bytes.is_empty():
-		push_warning(\"dstk: cannot read \" + src)
-		return
+		push_warning(\"dstk: cannot read \" + path)
+		return null
 	var img := Image.new()
 	var err := FAILED
-	match src.get_extension().to_lower():
+	match path.get_extension().to_lower():
 		\"png\":
 			err = img.load_png_from_buffer(bytes)
 		\"jpg\", \"jpeg\":
@@ -73,9 +79,27 @@ func _apply() -> void:
 		_:
 			err = img.load_png_from_buffer(bytes)
 	if err != OK:
-		push_warning(\"dstk: cannot decode \" + src)
+		push_warning(\"dstk: cannot decode \" + path)
+		return null
+	return ImageTexture.create_from_image(img)
+
+func _apply() -> void:
+	if src.is_empty():
 		return
-	texture = ImageTexture.create_from_image(img)
+	var tex = _decode(src)
+	if tex != null:
+		texture = tex
+
+func _apply_frames() -> void:
+	var anim := AnimatedTexture.new()
+	var n := mini(frames.size(), MAX_FRAMES)
+	anim.frames = maxi(1, n)
+	anim.fps = maxf(0.1, fps)
+	for i in n:
+		var tex = _decode(frames[i])
+		if tex != null:
+			anim.set_frame_texture(i, tex)
+	texture = anim
 "
 
 
@@ -116,16 +140,47 @@ static func _build_image(layer: Dictionary, project_dir: String) -> Control:
 			n.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 
 	var rel := String(layer.get("src", ""))
-	if not rel.is_empty() and project_dir.begins_with("res://"):
+	var frames = layer.get("frames", [])
+	var animated: bool = frames is Array and not (frames as Array).is_empty()
+	if project_dir.begins_with("res://"):
 		# 导出路径：不内联像素，挂运行时解码脚本（见 DSTK_IMAGE_SCRIPT 的说明）。
 		var script = _compile(DSTK_IMAGE_SCRIPT)
 		if script != null:
 			n.set_script(script)
-			n.set("src", project_dir.path_join(rel.get_file()))
+			if animated:
+				# 导出时资源被**平铺**进 assets/（见 exporter），所以这里只取文件名。
+				var packed := PackedStringArray()
+				for f in frames:
+					packed.append(project_dir.path_join(String(f).get_file()))
+				n.set("frames", packed)
+				n.set("fps", frame_fps(layer))
+			elif not rel.is_empty():
+				n.set("src", project_dir.path_join(rel.get_file()))
 			return n
 	# 预览路径（或导出时脚本编译失败）：直接用内存纹理。
-	n.texture = load_texture(rel, project_dir)
+	n.texture = load_animation(frames, frame_fps(layer), project_dir) if animated \
+			else load_texture(rel, project_dir)
 	return n
+
+
+## 帧序列的播放帧率：fps × speed（speed 是图层上的通用播放倍速）。
+static func frame_fps(layer: Dictionary) -> float:
+	return clampf(float(layer.get("fps", 12.0)) * float(layer.get("speed", 1.0)), 0.1, 240.0)
+
+
+## 帧序列 -> AnimatedTexture（预览用）。帧缺失的位置留空，不整段丢弃。
+static func load_animation(frames: Array, fps: float, project_dir: String) -> Texture2D:
+	var n := mini(frames.size(), 256)
+	if n <= 0:
+		return null
+	var anim := AnimatedTexture.new()
+	anim.frames = n
+	anim.fps = maxf(0.1, fps)
+	for i in n:
+		var tex := load_texture(String(frames[i]), project_dir)
+		if tex != null:
+			anim.set_frame_texture(i, tex)
+	return anim
 
 
 static func _build_text(layer: Dictionary) -> Control:

@@ -18,6 +18,7 @@ extends RefCounted
 ## 嵌套容器/嵌套效果时 SCREEN_UV 会跟着外层 viewport 跑，遮罩会错位（见 filters.gd）。
 
 const LayerNodes = preload("res://src/build/layer_nodes.gd")
+const AnimationBuilder = preload("res://src/build/animation_builder.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Filters = preload("res://src/doc/filters.gd")
@@ -31,7 +32,8 @@ const FULL_UV := Rect2(0.0, 0.0, 1.0, 1.0)
 
 
 ## project_dir：用户工程目录（预览）或构建目录的 assets 目录（导出）。
-static func build(doc, project_dir: String) -> Control:
+## `autoplay`：导出时要 true（进树就播）；预览传 false，由画布自己拖播放头。
+static func build(doc, project_dir: String, autoplay: bool = true) -> Control:
 	var root := Control.new()
 	root.name = ROOT_NAME
 	# 铺满父级：预览时父级是画布 SubViewport，导出后是壁纸窗口 —— 运行时按窗口自适应
@@ -56,7 +58,8 @@ static func build(doc, project_dir: String) -> Control:
 	# 列表顶部 = 最上层 = 最后 add_child；文档 index 0 是最底层，所以正序累加即可。
 	add_children(root, doc.layers, project_dir, FULL_UV, Vector2(doc.canvas), bindings_of(doc))
 
-	# 阶段 2 的接缝：这里会调用 AnimationBuilder.compile(doc, root) 生成 AnimationPlayer。
+	# 时间轴：有 key 才挂 AnimationPlayer（空播放器会让导出的场景多一个无用节点）。
+	AnimationBuilder.compile(doc, root, autoplay)
 
 	# 必须做：PackedScene.pack() 会**静默丢弃** owner != 根节点的子节点
 	# （packed_scene.cpp 的 _parse_node 开头就是 `if (p_node != p_owner &&

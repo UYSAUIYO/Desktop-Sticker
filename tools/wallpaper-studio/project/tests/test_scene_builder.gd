@@ -19,6 +19,16 @@ func _build(doc):
 	return SceneBuilder.build(doc, "")
 
 
+func _clean_dir(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		return
+	for f in DirAccess.get_files_at(path):
+		DirAccess.remove_absolute(path.path_join(f))
+	for d in DirAccess.get_directories_at(path):
+		_clean_dir(path.path_join(d))
+	DirAccess.remove_absolute(path)
+
+
 ## 第 i 个根图层对应的 box（root 的第 0 个孩子是背景）。
 func _box(root: Node, i: int) -> Control:
 	return root.get_child(i + 1)
@@ -581,3 +591,44 @@ func register(t) -> void:
 		t.ok(not (comp.get_child(0) is SubViewportContainer), "不额外套合成")
 		root.free()
 	)
+
+	t.case("builder_image_frames_become_animated_texture", func() -> void:
+		# 动图：帧序列优先于 src。预览直接建 AnimatedTexture，导出则交给运行时脚本。
+		var dir := ProjectSettings.globalize_path("user://test_builder_frames")
+		_clean_dir(dir)
+		DirAccess.make_dir_recursive_absolute(dir.path_join("assets"))
+		var frames := []
+		for i in 2:
+			var img := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+			img.fill(Color(1, 0, 0, 1) if i == 0 else Color(0, 1, 0, 1))
+			var rel := "assets/f%d.png" % i
+			img.save_png(dir.path_join(rel))
+			frames.append(rel)
+
+		var doc = StudioDoc.create_empty("t", Vector2i(1280, 720))
+		var l := Layer.make_image("动图", "")
+		l["frames"] = frames
+		l["fps"] = 8.0
+		doc.add_layer(l)
+		var root = SceneBuilder.build(doc, dir)
+		var content := _content(root, 0)
+		t.ok(content is TextureRect, "图片层是 TextureRect")
+		if content is TextureRect:
+			t.ok(content.texture is AnimatedTexture, "预览纹理是 AnimatedTexture")
+			if content.texture is AnimatedTexture:
+				var anim := content.texture as AnimatedTexture
+				t.eq(anim.frames, 2, "两帧")
+				t.approx(anim.fps, 8.0, 0.0001, "帧率来自图层")
+		root.free()
+
+		# 导出路径：res:// 下不建纹理，改为把帧列表与帧率写进运行时脚本。
+		var root2 = SceneBuilder.build(doc, "res://build/test_pack/assets")
+		var content2 := _content(root2, 0)
+		t.ok(content2.get_script() != null, "导出路径挂了运行时解码脚本")
+		t.eq((content2.get("frames") as PackedStringArray).size(), 2, "帧列表写进脚本")
+		t.approx(float(content2.get("fps")), 8.0, 0.0001, "帧率写进脚本")
+		t.eq(content2.texture, null, "导出时不内联纹理")
+		root2.free()
+		_clean_dir(dir)
+	)
+

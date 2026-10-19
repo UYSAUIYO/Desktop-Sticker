@@ -8,8 +8,10 @@ extends Control
 ## "屏幕坐标 <-> 文档坐标"的换算和轻量重绘入口。
 
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
+const AnimationBuilder = preload("res://src/build/animation_builder.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 const SelectionOverlay = preload("res://src/ui/selection_overlay.gd")
 
 const PADDING := 28.0
@@ -17,6 +19,10 @@ const PADDING := 28.0
 const WARMUP_FRAMES := 4
 
 var main = null
+
+## 播放头（秒）。预览里"拖时间轴"和"播放"改的都是它；重建预览后按它恢复画面。
+var time := 0.0
+var playing := false
 
 var _bg: ColorRect
 var _container: SubViewportContainer
@@ -27,6 +33,9 @@ var _hint: Label
 var _warmup := 0
 var _scale := 1.0
 var _root: Control
+## 预览树里的播放器（文档没有关键帧时为 null）。播放头由它评估，
+## 不再用 GDScript 另算一遍曲线 —— 预览与导出只此一个求值器。
+var _player: AnimationPlayer
 
 
 func setup(m) -> void:
@@ -109,16 +118,92 @@ func rebuild() -> void:
 	_viewport.size = size_i
 	_container.size = Vector2(size_i)
 
-	var root: Control = SceneBuilder.build(main.doc, main.project_dir)
+	# 预览不装 autoplay：播放头由编辑器自己控制（拖时间轴 / 点播放）。
+	# 节点结构仍然和导出完全一致（AnimationPlayer 也在，只是不自动播）。
+	var root: Control = SceneBuilder.build(main.doc, main.project_dir, false)
 	_viewport.add_child(root)
 	_root = root
+	_player = AnimationBuilder.player_of(root)
+	apply_time()
 
 	_warmup = WARMUP_FRAMES
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_fit()
 
 
+## 把当前播放头应用到预览节点树。拖动时间轴、加/删关键帧、重建之后都走这里。
+## 走的是预览树里的 AnimationPlayer，和导出后引擎跑的是同一个动画资源。
+func apply_time() -> void:
+	if _player == null:
+		return
+	if playing:
+		if _player.current_animation != AnimationBuilder.ANIM_NAME:
+			_player.play(AnimationBuilder.ANIM_NAME)
+		_player.seek(time, true)
+	else:
+		AnimationBuilder.set_player_time(_player, time)
+
+
+## 关键帧改了之后把新曲线装回播放器（不重建节点树），再按当前播放头落一次。
+func recompile_animation() -> void:
+	if _player == null or _root == null or main == null:
+		return
+	if AnimationBuilder.recompile(main.doc, _root, _player):
+		apply_time()
+
+
+## 跳到某个时刻。播放中跳转不打断播放（从新位置继续）。
+func set_time(t: float) -> void:
+	if main == null or main.doc == null:
+		return
+	time = clampf(t, 0.0, main.doc.timeline_end())
+	apply_time()
+	_warmup = WARMUP_FRAMES
+	if _viewport != null:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_update_selection()
+
+
+func play() -> void:
+	if main == null or main.doc == null:
+		return
+	# 只有"持续变化"的内容才值得开播放；纯静态壁纸点播放不该有任何反应。
+	if not _is_dynamic() and not main.doc.has_animation():
+		return
+	if _player != null:
+		_player.play(AnimationBuilder.ANIM_NAME)
+		_player.seek(time, true)
+	playing = true
+	_warmup = WARMUP_FRAMES
+	if _viewport != null:
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+
+func pause() -> void:
+	playing = false
+	if _player != null:
+		# 停在当前位置：读回播放器的时间，免得下一次 seek 把画面拉回旧值。
+		time = _player.current_animation_position
+		_player.pause()
+
+
+func toggle_play() -> void:
+	if playing:
+		pause()
+	else:
+		play()
+
+
 func _process(_delta: float) -> void:
+	if playing and _player != null:
+		# 播放头完全交给播放器：它自己按真实时间推进、按动画长度循环。
+		time = _player.current_animation_position
+		if _viewport != null and _viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		_warmup = 1
+		_update_selection()
+		return
+
 	if _warmup <= 0:
 		return
 	_warmup -= 1
@@ -128,10 +213,14 @@ func _process(_delta: float) -> void:
 		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 
-## 有时钟/日期文字或粒子时保持持续重绘，否则它们会停住。
+## 有时钟/日期文字、粒子、动图时保持持续重绘，否则它们会停住。
+## 关键帧不在这里：暂停时动画是静止的，只按播放头重绘一次就够了
+## （播放中由 _process 强制 UPDATE_ALWAYS）。
 func _is_dynamic() -> bool:
 	if main == null or main.doc == null:
 		return false
+	if not main.doc.animated_image_layers().is_empty():
+		return true
 	for item in main.doc.walk():
 		var t := String((item["layer"] as Dictionary).get("type", ""))
 		if t == "particles":
@@ -194,6 +283,13 @@ func apply_live(path: PackedInt32Array) -> void:
 	_apply_live_subtree(_root, layer, main.doc.parent_size(path))
 	# 效果层（遮罩）改的是着色器 uniform：只刷材质参数，不重建节点。
 	SceneBuilder.refresh_effect(_root, main.doc, path, main.project_dir)
+	# 已经有关键帧的位置通道：拖拽就近写进播放头那一帧（自动关键帧），
+	# 否则"拖了又被关键帧拉回去"看起来像拖不动。
+	if _auto_key(layer):
+		# 曲线变了，得先把新 key 装回播放器；否则 seek 的还是旧曲线。
+		recompile_animation()
+	else:
+		apply_time()
 	# 静态画面平时是 UPDATE_ONCE（省电），拖动时必须重新开几帧重绘，
 	# 否则预览停在原地、看起来像"拖不动"。
 	_warmup = WARMUP_FRAMES
@@ -224,6 +320,30 @@ func _update_selection() -> void:
 	# 曾经在"没选中"时把它藏掉，结果点空白取消选择之后再也点不回来了。
 	_selection.visible = true
 	_selection.queue_redraw()
+
+
+## 自动关键帧：拖动画布上已经"有位置动画"的图层时，把当前值写进播放头那一帧。
+## 只对她本来就有 track 的通道生效 —— 否则每拖一下都会凭空多出一条动画。
+## 返回 true = 真的写了 key（调用方需要重编译播放器）。
+func _auto_key(layer: Dictionary) -> bool:
+	if main == null or main.doc == null:
+		return false
+	var tracks: Array = Timeline.tracks_of(layer)
+	if tracks.is_empty():
+		return false
+	var wrote := false
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	var px := Vector2(layer.get("transform", {}).get("x", 0.0),
+			layer.get("transform", {}).get("y", 0.0))
+	for channel in ["x", "y"]:
+		if Timeline.find_track(tracks, channel).is_empty():
+			continue
+		# 关键帧存父级比例，画布给的是像素 —— 在边界处换算一次。
+		Timeline.set_key(layer, channel, time,
+				Timeline.to_doc(channel, px.x if channel == "x" else px.y, parent_size))
+		main.mark_dirty()
+		wrote = true
+	return wrote
 
 
 ## 选中变化时由 main 调用：重画选区框/手柄。
@@ -270,6 +390,9 @@ func _hit_children(arr: Array, parent_path: PackedInt32Array, canvas_point: Vect
 		var fr := Frame.of(layer, parent_size)
 		if Layer.is_filter(layer):
 			fr = main.doc.filter_frame(path)
+		elif Timeline.has_animation(layer):
+			# 有动画的图层：命中框按当前播放头的位置算，否则画面上看到的和点得到的错位。
+			fr = Timeline.rect_at(layer, time, parent_size)
 		if not Frame.hit_rect(fr, local):
 			continue
 		if Layer.is_group(layer):

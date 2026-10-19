@@ -11,6 +11,7 @@ const Layer = preload("res://src/doc/layer.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
+const Timeline = preload("res://src/doc/timeline.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
 
 const TYPE_NAMES := {
@@ -41,14 +42,21 @@ const PRESETS := [
 	{"name": "1080 × 1920（竖屏）", "size": Vector2i(1080, 1920)},
 	{"name": "1080 × 1080（方形）", "size": Vector2i(1080, 1080)},
 ]
+## AnimatedTexture 的帧数上限。超过这个数的帧不会播放，白占包体积。
+const MAX_FRAMES := 256
 
 var main = null
 
 var _box: VBoxContainer
 var _sig := ""
 var _file_dialog: FileDialog
+var _gif_dialog: FileDialog
+var _dir_dialog: FileDialog
 var _pick_layer: Dictionary = {}
 var _pick_field := ""
+## 当前显示"播放头处取值"的控件：[{channel, node}]。播放头一动就只改它们的值，
+## 不重建面板（重建会把用户正在拖的滑块换掉）。
+var _time_controls: Array = []
 
 
 func setup(m) -> void:
@@ -107,6 +115,7 @@ func _rebuild() -> void:
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.queue_free()
+	_time_controls.clear()
 	var layer: Dictionary = main.selected_layer()
 	if layer.is_empty():
 		_build_doc()
@@ -221,15 +230,20 @@ func _build_layer(layer: Dictionary) -> void:
 	_size_row("宽", "w", layer, parent_size)
 	_size_row("高", "h", layer, parent_size)
 	_transform_row("旋转", "rotation", layer, 0.0, -3600.0, 3600.0, 1.0)
+	_scale_row(layer, parent_size)
 	_hint("X / Y / 宽 / 高 都是相对「父级」的像素：根图层相对画布，容器里的子元素相对容器框。"
-			+ "画布上拖动元素即可移动；拖八个手柄缩放尺寸，角点按住 Shift 等比。")
+			+ "画布上拖动元素即可移动；拖八个手柄缩放尺寸，角点按住 Shift 等比。"
+			+ "\n有关键帧的通道显示的是播放头处的值，改动会写进当前帧；"
+			+ "没有关键帧的通道改的是基础值。")
 
-	var opacity := _spin(float(layer["transform"].get("opacity", 1.0)), 0.0, 1.0, 0.01)
+	var opacity := _spin(_display_value(layer, "opacity", parent_size), 0.0, 1.0, 0.01)
 	opacity.value_changed.connect(func(v: float) -> void:
 		layer["transform"]["opacity"] = v
+		_auto_key(layer, "opacity", v)
 		main.apply_change()
 	)
 	_row("不透明度", opacity)
+	_register_time(opacity, "opacity")
 
 	var blend := _option(BLEND_KEYS, BLEND_NAMES, String(layer.get("blend", "mix")))
 	blend.item_selected.connect(func(i: int) -> void:
@@ -631,6 +645,121 @@ func _build_image(layer: Dictionary) -> void:
 	)
 	_row("填充方式", fit)
 
+	_build_animation(layer)
+
+
+## 动图：GIF 自动拆帧，或直接导入一个帧序列目录。帧序列存在图层自己的 frames 里，
+## 导出时逐帧进包，运行时用 AnimatedTexture 播（见 layer_nodes.DSTK_IMAGE_SCRIPT）。
+func _build_animation(layer: Dictionary) -> void:
+	_section("动图")
+	var frames = layer.get("frames", [])
+	var has_frames: bool = frames is Array and not (frames as Array).is_empty()
+
+	var info := Label.new()
+	if has_frames:
+		info.text = "%d 帧 · %.1f fps" % [(frames as Array).size(), float(layer.get("fps", 12.0))]
+	else:
+		info.text = "（未启用，按单张图片渲染）"
+	info.modulate = Color(0.7, 0.73, 0.8)
+	info.add_theme_font_size_override("font_size", 11)
+	_row("帧序列", info)
+
+	var menu := MenuButton.new()
+	menu.text = "导入动图…"
+	var popup := menu.get_popup()
+	popup.add_item("导入 GIF（自动拆帧）", 0)
+	popup.add_item("导入帧序列目录…", 1)
+	popup.add_separator()
+	popup.add_item("清除帧序列", 2)
+	popup.id_pressed.connect(func(id: int) -> void: _on_animation_menu(id, layer))
+	_row("操作", menu)
+
+	if has_frames:
+		var fps := _spin(float(layer.get("fps", 12.0)), 0.5, 60.0, 1.0)
+		fps.value_changed.connect(func(v: float) -> void:
+			layer["fps"] = v
+			main.apply_change()
+		)
+		_row("帧率", fps)
+
+		var speed := _spin(float(layer.get("speed", 1.0)), 0.1, 8.0, 0.1)
+		speed.value_changed.connect(func(v: float) -> void:
+			layer["speed"] = v
+			main.apply_change()
+		)
+		_row("倍速", speed)
+		_hint("帧序列优先于「文件」。按文件名排序，建议用 frame_0001.png 这种补零命名；"
+				+ "最多 256 帧，超出部分导入时截掉。")
+
+
+func _on_animation_menu(id: int, layer: Dictionary) -> void:
+	if id == 2:
+		layer["frames"] = []
+		main.apply_change(true)
+		return
+	if main.ensure_project_dir().is_empty():
+		main.show_error("无法导入动图", "工程目录不可写。")
+		return
+	_pick_layer = layer
+	if id == 0:
+		if _gif_dialog == null:
+			_gif_dialog = FileDialog.new()
+			_gif_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+			_gif_dialog.access = FileDialog.ACCESS_FILESYSTEM
+			_gif_dialog.title = "选择 GIF（会用 ffmpeg 拆成 PNG 帧）"
+			_gif_dialog.filters = PackedStringArray(["*.gif ; GIF 动图"])
+			_gif_dialog.file_selected.connect(_on_gif_selected)
+			add_child(_gif_dialog)
+		_gif_dialog.popup_centered_ratio(0.7)
+	else:
+		if _dir_dialog == null:
+			_dir_dialog = FileDialog.new()
+			_dir_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+			_dir_dialog.access = FileDialog.ACCESS_FILESYSTEM
+			_dir_dialog.title = "选择帧序列目录（按文件名排序）"
+			_dir_dialog.dir_selected.connect(_on_frames_dir_selected)
+			add_child(_dir_dialog)
+		_dir_dialog.popup_centered_ratio(0.7)
+
+
+func _on_gif_selected(path: String) -> void:
+	if _pick_layer.is_empty():
+		return
+	var res: Dictionary = AssetImport.import_gif(main.ensure_project_dir(), path)
+	if not res.ok:
+		main.show_error("GIF 导入失败", String(res.error))
+		return
+	var frames := _trim_frames(res.frames)
+	_pick_layer["frames"] = frames
+	_pick_layer["fps"] = float(res.fps)
+	# 首帧同时当静态图：海报、以及"帧全丢"时的兜底都用它。
+	_pick_layer["src"] = String(frames[0]) if not frames.is_empty() else ""
+	_pick_layer = {}
+	main.apply_change(true)
+
+
+func _on_frames_dir_selected(path: String) -> void:
+	if _pick_layer.is_empty():
+		return
+	var frames := _trim_frames(AssetImport.import_frames(main.ensure_project_dir(), path,
+			path.get_file()))
+	if frames.is_empty():
+		main.show_error("帧序列导入失败", "这个目录里没有可用的图片：\n" + path)
+		return
+	_pick_layer["frames"] = frames
+	_pick_layer["src"] = String(frames[0])
+	_pick_layer = {}
+	main.apply_change(true)
+
+
+## 截到引擎上限。超出的帧不播放却会被打进包里，所以在导入时就截断并明确告知。
+func _trim_frames(frames: Array) -> Array:
+	if frames.size() <= MAX_FRAMES:
+		return frames
+	main.show_message("帧数过多",
+			"动图最多播放 %d 帧，只保留前 %d 帧。\n" % [MAX_FRAMES, MAX_FRAMES])
+	return frames.slice(0, MAX_FRAMES)
+
 
 func _build_text(layer: Dictionary) -> void:
 	_section("文字")
@@ -798,15 +927,31 @@ func _pick_texture(layer: Dictionary, field: String) -> void:
 		_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 		_file_dialog.access = FileDialog.ACCESS_FILESYSTEM
 		_file_dialog.title = "选择图片（会拷进工程 assets/）"
-		_file_dialog.filters = AssetImport.image_filters()
 		_file_dialog.file_selected.connect(_on_texture_selected)
 		add_child(_file_dialog)
+	# 只有图片图层的 src 认识 GIF（会拆帧）；粒子贴图/遮罩图不能选它。
+	_file_dialog.filters = AssetImport.image_filters(field == "src"
+			and String(layer.get("type", "")) == "image")
 	_file_dialog.current_dir = dir
 	_file_dialog.popup_centered_ratio(0.7)
 
 
 func _on_texture_selected(path: String) -> void:
 	if _pick_layer.is_empty() or _pick_field.is_empty():
+		return
+	if path.get_extension().to_lower() == "gif" and _pick_field == "src" \
+			and String(_pick_layer.get("type", "")) == "image":
+		var res: Dictionary = AssetImport.import_gif(main.ensure_project_dir(), path)
+		if not res.ok:
+			main.show_error("GIF 导入失败", String(res.error))
+			return
+		var frames := _trim_frames(res.frames)
+		_pick_layer["frames"] = frames
+		_pick_layer["fps"] = float(res.fps)
+		_pick_layer["src"] = String(frames[0]) if not frames.is_empty() else ""
+		_pick_layer = {}
+		_pick_field = ""
+		main.apply_change(true)
 		return
 	var rel := AssetImport.import_image(main.ensure_project_dir(), path)
 	if rel.is_empty():
@@ -900,12 +1045,74 @@ func _transform_row(label_text: String, key: String, layer: Dictionary,
 	var tr: Dictionary = layer["transform"]
 	if not tr.has(key):
 		tr[key] = default_value
-	var sp := _spin(float(tr.get(key, default_value)), minv, maxv, step)
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	var sp := _spin(_display_value(layer, key, parent_size), minv, maxv, step)
 	sp.value_changed.connect(func(v: float) -> void:
 		tr[key] = v
+		_auto_key(layer, key, v)
 		main.apply_change()
 	)
 	_row(label_text, sp)
+	_register_time(sp, key)
+
+
+## 缩放：静态路径不读 transform.scale（历史字段已折算进 w/h），
+## 所以缩放**只能**用关键帧表达 —— 改这个数字就是写播放头的 key，顺带建出轨道。
+func _scale_row(layer: Dictionary, parent_size: Vector2) -> void:
+	var sp := _spin(_display_value(layer, "scale", parent_size), 0.05, 10.0, 0.05)
+	sp.value_changed.connect(func(v: float) -> void:
+		Timeline.set_key(layer, "scale", main._canvas.time, v)
+		layer["transform"]["scale"] = 1.0
+		main.mark_dirty()
+		main.apply_change()
+	)
+	_row("缩放", sp)
+	_register_time(sp, "scale")
+
+
+# ---------------------------------------------------------------- 播放头
+
+## 让"显示播放头值"的控件跟上时间。播放中每帧调用，只写值不重建面板。
+func sync_time() -> void:
+	if main == null or main.doc == null or main._canvas == null:
+		return
+	var layer: Dictionary = main.selected_layer()
+	if layer.is_empty():
+		return
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	for item in _time_controls:
+		var node = item.get("node")
+		if not is_instance_valid(node) or not (node is SpinBox):
+			continue
+		(node as SpinBox).set_value_no_signal(_display_value(layer, String(item["channel"]),
+				parent_size))
+
+
+## 通道在当前播放头处的**界面值**：有关键帧就取采样值（x/y 换成像素），否则取基础值。
+func _display_value(layer: Dictionary, channel: String, parent_size: Vector2) -> float:
+	var tracks := Timeline.tracks_of(layer)
+	if not Timeline.find_track(tracks, channel).is_empty():
+		var v := Timeline.value_at(layer, channel, main._canvas.time, parent_size)
+		return Timeline.to_px(channel, v, parent_size)
+	if channel == "scale":
+		return float(layer.get("transform", {}).get("scale", 1.0))
+	return float(layer.get("transform", {}).get(channel, 0.0))
+
+
+func _register_time(control: Control, channel: String) -> void:
+	_time_controls.append({"channel": channel, "node": control})
+
+
+## 自动关键帧（属性面板这一侧）：通道已经有关键帧时，改值就是改**播放头那一帧**，
+## 而不是改一个播放时会被覆盖的基础值。没有轨道的通道保持原行为（只改基础值）。
+func _auto_key(layer: Dictionary, channel: String, value: float) -> void:
+	if main == null or main._canvas == null:
+		return
+	if Timeline.find_track(Timeline.tracks_of(layer), channel).is_empty():
+		return
+	var parent_size: Vector2 = main.doc.parent_size(main.sel)
+	Timeline.set_key(layer, channel, main._canvas.time,
+			Timeline.to_doc(channel, value, parent_size))
 
 
 ## 宽/高。没定过尺寸的图层显示的是父级尺寸；第一次改值时才把框落成显式数字

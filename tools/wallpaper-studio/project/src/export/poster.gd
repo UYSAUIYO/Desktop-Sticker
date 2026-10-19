@@ -5,6 +5,7 @@ extends RefCounted
 ## 不存在"海报好看、实机不对"。
 
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
+const AnimationBuilder = preload("res://src/build/animation_builder.gd")
 
 const SIZE := Vector2i(960, 540)
 
@@ -25,7 +26,7 @@ static func render(doc, project_dir: String, out_png: String, tree: SceneTree) -
 	sub.disable_3d = true
 	tree.root.add_child(sub)
 
-	var root = SceneBuilder.build(doc, project_dir)
+	var root = SceneBuilder.build(doc, project_dir, false)
 	# 海报是固定 960x540，把文档画布等比缩进去并居中；设计画布和取景框比例不同时
 	# 只留边，不拉伸内容。
 	#
@@ -38,6 +39,10 @@ static func render(doc, project_dir: String, out_png: String, tree: SceneTree) -
 	root.scale = Vector2(scale, scale)
 	root.position = (Vector2(SIZE) - Vector2(doc.canvas) * scale) * 0.5
 	sub.add_child(root)
+	# 海报取第 0 帧：不开 autoplay（那会按真实时间推进几帧），
+	# 而是把同一个 AnimationPlayer 定位到 0 —— 和导出后播放的第一帧一致。
+	# 必须在进树之后 seek：播放器要在场景树里才会把姿态落到节点上。
+	AnimationBuilder.set_player_time(AnimationBuilder.player_of(root), 0.0)
 
 	# 一帧让节点进树并完成布局，一帧让渲染目标真的画出来。
 	await tree.process_frame
