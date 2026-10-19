@@ -6,7 +6,7 @@
 namespace desktopsticker::wallpaper {
 
 // 壁纸窗口：桌面层子窗口，位于原生桌面图标与分区卡片之下。
-// 失败降级为置底普通窗口（与分区/时钟既有降级约定一致）。
+// 桌面宿主不可用时停止显示，避免全屏普通窗口遮挡桌面。
 class WallPaperWindow {
 public:
     ~WallPaperWindow();
