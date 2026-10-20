@@ -115,9 +115,18 @@ static func _to_color(v, fallback: Color) -> Color:
 	if v is Color:
 		return v
 	if v is String:
-		var s: String = v.trim_prefix("#")
-		if s.length() == 6 and s.is_valid_hex_number(false):
-			return Color.html(s)
+		var s: String = v.strip_edges()
+		if s.begins_with("#"):
+			s = s.substr(1)
+			if (s.length() == 6 or s.length() == 8) and s.is_valid_hex_number(false):
+				return Color.html(s)
+			return fallback
+		# 同 Layer.to_color：兜底 Color 被 JSON 直接 str() 出来的老写法。
+		if s.begins_with("(") and s.ends_with(")"):
+			var parts := s.substr(1, maxi(0, s.length() - 2)).split(",", false)
+			if parts.size() >= 3:
+				return Color(float(parts[0]), float(parts[1]), float(parts[2]),
+						float(parts[3]) if parts.size() > 3 else 1.0)
 	return fallback
 
 

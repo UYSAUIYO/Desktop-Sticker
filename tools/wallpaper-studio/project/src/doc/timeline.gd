@@ -21,6 +21,8 @@ extends RefCounted
 ## 本模块刻意不认识 Frame：位置/尺寸的兜底算法就三行（见 base_pose / frame_size），
 ## 抄一份比引出一层依赖更省事，也避免 layer -> timeline -> frame -> layer 的环。
 
+const Motion = preload("res://src/doc/motion.gd")
+
 const CHANNELS := ["x", "y", "scale", "rotation", "opacity"]
 const CHANNEL_NAMES := {
 	"x": "X 位置",
@@ -191,6 +193,11 @@ static func sample_layer(layer: Dictionary, t: float, parent_size: Vector2) -> D
 		var v = sample_track(track, t)
 		if v != null:
 			pose[String(track.get("channel", ""))] = float(v)
+	# 运动路径接管 x/y：它是二维的，比两条一维轨道后算，覆盖掉它们。
+	var p = Motion.sample(layer, t)
+	if p != null:
+		pose["x"] = float(p.x)
+		pose["y"] = float(p.y)
 	return pose
 
 
@@ -210,7 +217,8 @@ static func has_animation(layer: Dictionary) -> bool:
 	for track in tracks_of(layer):
 		if track is Dictionary and not (track.get("keys", []) as Array).is_empty():
 			return true
-	return false
+	# 走路径的图层也算"有动画"：命中测试与选区框要按路径上的位置算。
+	return Motion.enabled(layer)
 
 
 ## 这一层最后一个关键帧的时刻（没有关键帧返回 0）。

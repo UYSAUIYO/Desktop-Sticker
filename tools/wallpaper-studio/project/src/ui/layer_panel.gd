@@ -8,6 +8,7 @@ extends PanelContainer
 const Layer = preload("res://src/doc/layer.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
+const LayerThumbs = preload("res://src/ui/layer_thumbs.gd")
 
 const TYPE_NAMES := {
 	"color": "纯色",
@@ -31,9 +32,14 @@ var _btn_up: Button
 var _btn_down: Button
 var _btn_visible: Button
 var _btn_group: Button
+var _btn_copy: Button
 var _btn_ungroup: Button
 var _file_dialog: FileDialog
 var _rows: Array = []        # [{path: PackedInt32Array, layer: Dictionary, depth: int}]
+## 折叠起来的容器（按图层 id 记：行下标会随增删移动，id 不会）。
+var _folded: Dictionary = {}
+var _thumbs = null
+var _syncing := false
 
 
 func setup(m) -> void:
@@ -85,8 +91,11 @@ func _ready() -> void:
 	_list = ItemList.new()
 	_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_list.allow_reselect = true
+	_list.fixed_icon_size = Vector2i(24, 24)
 	_list.item_selected.connect(_on_item_selected)
+	_list.gui_input.connect(_on_list_input)
 	box.add_child(_list)
+	_thumbs = LayerThumbs.new()
 
 	_empty_hint = Label.new()
 	_empty_hint.text = "还没有图层\n点右上角「＋ 添加」"
@@ -111,6 +120,7 @@ func _ready() -> void:
 	var buttons2 := HBoxContainer.new()
 	buttons2.add_theme_constant_override("separation", 4)
 	box.add_child(buttons2)
+	_btn_copy = _small_button(buttons2, "复制", "原地复制选中图层（Ctrl+D）")
 	_btn_group = _small_button(buttons2, "放进容器", "把选中图层包进一个新建的容器")
 	_btn_ungroup = _small_button(buttons2, "移出容器", "把选中图层移出它的父容器")
 
@@ -118,6 +128,7 @@ func _ready() -> void:
 	_btn_up.pressed.connect(_on_move.bind(1))
 	_btn_down.pressed.connect(_on_move.bind(-1))
 	_btn_visible.pressed.connect(_on_toggle_visible)
+	_btn_copy.pressed.connect(func() -> void: main.duplicate_selection())
 	_btn_group.pressed.connect(_on_wrap)
 	_btn_ungroup.pressed.connect(_on_unwrap)
 
@@ -145,11 +156,15 @@ func refresh() -> void:
 	for row in _rows:
 		var layer: Dictionary = row["layer"]
 		var path: PackedInt32Array = row["path"]
-		var indent := "　".repeat(int(row["depth"]))
-		var label := indent + _label_for(layer, path)
+		var depth := int(row["depth"])
+		var indent := "　".repeat(depth)
+		var mark := ""
+		if Layer.is_group(layer):
+			mark = "▾ " if not _is_folded(layer) else "▸ "
+		var label := indent + mark + _label_for(layer, path)
 		if not bool(layer.get("visible", true)):
 			label = "（隐藏）" + label
-		var idx := _list.add_item(label)
+		var idx := _list.add_item(label, _thumbs.icon_for(layer, main.project_dir))
 		if not bool(layer.get("visible", true)):
 			_list.set_item_custom_fg_color(idx, Color(0.52, 0.54, 0.6))
 		elif Layer.is_mask(layer):
@@ -170,6 +185,9 @@ func _label_for(layer: Dictionary, path: PackedInt32Array) -> String:
 	var type_name := String(TYPE_NAMES.get(String(layer.get("type", "color")), "图层"))
 	var out := "%s    ·    %s" % [String(layer.get("name", "图层")), type_name]
 	if not Layer.is_effect(layer):
+		if Layer.is_group(layer):
+			var kids = layer.get("children", [])
+			out += "    ·    %d 层" % (kids as Array).size()
 		return out
 	var target_id := Layer.cover_target(layer)
 	if not target_id.is_empty():
@@ -200,7 +218,7 @@ func _collect(parent_path: PackedInt32Array, depth: int) -> void:
 		path.append(i)
 		var layer: Dictionary = arr[i]
 		_rows.append({"path": path, "layer": layer, "depth": depth})
-		if Layer.is_group(layer):
+		if Layer.is_group(layer) and not _is_folded(layer):
 			_collect(path, depth + 1)
 
 
@@ -214,11 +232,14 @@ func _row_of(path: PackedInt32Array) -> int:
 func sync_selection() -> void:
 	if _list == null or main == null or main.doc == null:
 		return
-	var row := _row_of(main.sel)
-	if row >= 0:
-		_list.select(row)
-	else:
-		_list.deselect_all()
+	# select() 会回抛 item_selected，那会把多选又缩回单选 —— 加个闸门。
+	_syncing = true
+	_list.deselect_all()
+	for p in main.selected_paths():
+		var row := _row_of(p)
+		if row >= 0:
+			_list.select(row, false)
+	_syncing = false
 	_update_buttons()
 
 
@@ -241,7 +262,38 @@ func _update_buttons() -> void:
 		_btn_visible.text = "隐藏" if bool(layer.get("visible", true)) else "显示"
 
 
+## 点容器行最左边的箭头 = 折叠 / 展开（不改选中）。
+## 判定只看 x：ItemList 没有"点在第几列"的概念，箭头固定在行首那一小块。
+func _on_list_input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mb := event as InputEventMouseButton
+	if not mb.pressed or mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var row := _list.get_item_at_position(mb.position, true)
+	if row < 0 or row >= _rows.size():
+		return
+	if mb.position.x > 22.0:
+		return
+	var entry: Dictionary = _rows[row]
+	var layer: Dictionary = entry["layer"]
+	if not Layer.is_group(layer):
+		return
+	var id := String(layer.get("id", ""))
+	if id.is_empty():
+		return
+	_folded[id] = not bool(_folded.get(id, false))
+	get_viewport().set_input_as_handled()
+	refresh()
+
+
+func _is_folded(layer: Dictionary) -> bool:
+	return bool(_folded.get(String(layer.get("id", "")), false))
+
+
 func _on_item_selected(row: int) -> void:
+	if _syncing:
+		return
 	if row >= 0 and row < _rows.size():
 		main.select_layer_path(_rows[row]["path"])
 
@@ -302,17 +354,8 @@ func _add_effect(layer: Dictionary) -> void:
 
 
 func _on_delete() -> void:
-	if main == null or main.doc == null or main.sel.is_empty():
-		return
-	var parent: PackedInt32Array = main.doc.parent_path_of(main.sel)
-	main.doc.remove_at(main.sel)
-	var siblings: Array = main.doc.siblings_at(parent)
-	var path := PackedInt32Array()
-	if not siblings.is_empty():
-		path = parent.duplicate()
-		path.append(siblings.size() - 1)
-	main.select_layer_path(path)
-	main.apply_change(true)
+	# 多选时全部删掉（main 里按深度/下标从大到小删，不会串位）。
+	main.delete_selection()
 
 
 func _on_move(delta: int) -> void:

@@ -16,6 +16,7 @@ extends SceneTree
 const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
+const Motion = preload("res://src/doc/motion.gd")
 
 var fails := 0
 var _shots_dir := ""
@@ -217,6 +218,196 @@ func _run() -> void:
 					"预览里的动图在播（%s）" % ("未换帧" if changed_ms < 0 else str(changed_ms) + "ms 后换帧"))
 		await _shot("09-frames")
 
+	# ---------------------------------------------------------------- 7. 画布缩放 / 平移
+	scene.select_layer_path(PackedInt32Array())
+	await _frames(2)
+	scene._canvas.fit_view()
+	await _frames(2)
+	var cv: Rect2 = scene._canvas.get_global_rect()
+	var z0: float = scene._canvas.zoom_level()
+	# to_canvas 吃的是画布区内的局部坐标，光标下的画布点在缩放前后必须不动。
+	var local_anchor: Vector2 = scene._canvas.size * 0.5
+	var c0: Vector2 = scene._canvas.to_canvas(local_anchor)
+	await _wheel(cv.position + local_anchor, true)
+	await _frames(2)
+	var z1: float = scene._canvas.zoom_level()
+	_ok(z1 > z0 + 0.0001, "滚轮向上 = 放大（%.3f -> %.3f）" % [z0, z1])
+	var c1: Vector2 = scene._canvas.to_canvas(local_anchor)
+	_ok(c0.distance_to(c1) < 2.0, "缩放锚在光标上（差 %.2f 画布像素）" % c0.distance_to(c1))
+	_ok(String(scene._canvas._zoom_btn.text).ends_with("%"),
+			"缩放按钮显示百分比（%s）" % scene._canvas._zoom_btn.text)
+	await _shot("10-zoom")
+
+	var pan_from: Vector2 = cv.position + Vector2(60.0, 60.0)
+	await _middle_drag(pan_from, pan_from + Vector2(80.0, 45.0))
+	await _frames(2)
+	_ok(scene._canvas._pan.length() > 20.0,
+			"中键拖动平移了画布（%.0f, %.0f）" % [scene._canvas._pan.x, scene._canvas._pan.y])
+	await _shot("11-pan")
+	await _click(_center(scene._canvas._zoom_btn))
+	await _frames(2)
+	_approx(scene._canvas.zoom_level(), z0, 0.001, "点百分比按钮回到「适应窗口」")
+	_ok(scene._canvas._pan.length() < 0.001, "回到适应后平移归零")
+
+	# ---------------------------------------------------------------- 8. 撤销 / 重做
+	# 前面在数字框里打过字，焦点还在输入框里的话 Ctrl+Z 会被输入框吃掉。
+	var focus := root.gui_get_focus_owner()
+	if focus != null and focus.has_method("release_focus"):
+		focus.release_focus()
+	scene.break_history()
+	var n_before: int = scene.doc.layers.size()
+	scene.doc.add_layer(Layer.make_color("撤销测试", Color(0.45, 0.2, 0.75)))
+	scene.apply_change(true)
+	await _frames(2)
+	_ok(scene.doc.layers.size() == n_before + 1, "加了一层用来试撤销")
+	_ok(not scene._bar._btn_undo.disabled, "有改动后「撤销」按钮可用")
+	await _click(_center(scene._bar._btn_undo))
+	await _frames(2)
+	_ok(scene.doc.layers.size() == n_before, "点「撤销」撤掉了刚才那一层")
+	_ok(not scene._bar._btn_redo.disabled, "撤销后「重做」按钮可用")
+	await _click(_center(scene._bar._btn_redo))
+	await _frames(2)
+	_ok(scene.doc.layers.size() == n_before + 1, "点「重做」把那一层拿回来")
+	await _key(KEY_Z, true)
+	await _frames(2)
+	_ok(scene.doc.layers.size() == n_before, "Ctrl+Z 撤销")
+	await _key(KEY_Z, true, true)
+	await _frames(2)
+	_ok(scene.doc.layers.size() == n_before + 1, "Ctrl+Shift+Z 重做")
+	await _shot("12-undo-redo")
+	scene.select_layer_path(PackedInt32Array([scene.doc.layers.size() - 1]))
+	scene.delete_selection()
+	await _frames(2)
+
+	# ---------------------------------------------------------------- 9. 多选 / 框选
+	var p_title2 := _path_of(scene, "标题")
+	var p_led := _path_of(scene, "呼吸灯")
+	scene.select_layer_path(PackedInt32Array())
+	await _frames(2)
+	var n_title2 := _node(scene, String(scene.doc.layer_at(p_title2)["id"]))
+	_ok(n_title2 != null, "画布上找到标题节点")
+	if n_title2 != null:
+		await _click(Vector2(_screen_rect(scene, n_title2).get_center()))
+		await _frames(2)
+		_ok(scene.sel == p_title2, "点画布选中标题层")
+		var n_led := _node(scene, String(scene.doc.layer_at(p_led)["id"]))
+		if n_led != null:
+			await _click(Vector2(_screen_rect(scene, n_led).get_center()), true)
+			await _frames(2)
+			_ok(scene.has_multi_selection(),
+					"Shift 点第二个 -> 多选（%d 个）" % scene.selected_paths().size())
+	await _shot("13-multi-select")
+
+	# 框选：从画布区的边角（画布外的留白，那里没有图层）拖到对角。
+	scene.select_layer_path(PackedInt32Array())
+	await _frames(2)
+	var cv2: Rect2 = scene._canvas.get_global_rect()
+	await _drag(Vector2(cv2.position.x + 3.0, cv2.position.y + 3.0),
+			Vector2(cv2.end.x - 3.0, cv2.end.y - 3.0))
+	await _frames(2)
+	_ok(scene.selected_paths().size() >= 3,
+			"拖一个框选中多个图层（%d 个）" % scene.selected_paths().size())
+	await _shot("14-rubber-band")
+
+	# ---------------------------------------------------------------- 10. 复制 / 粘贴 / 原地复制
+	scene.select_layer_path(_path_of(scene, "呼吸灯"))
+	await _frames(2)
+	var n_cp: int = scene.doc.layers.size()
+	await _key(KEY_C, true)
+	await _key(KEY_V, true)
+	await _frames(3)
+	_ok(scene.doc.layers.size() == n_cp + 1,
+			"Ctrl+C / Ctrl+V 复制出一份（%d -> %d）" % [n_cp, scene.doc.layers.size()])
+	await _key(KEY_D, true)
+	await _frames(3)
+	_ok(scene.doc.layers.size() == n_cp + 2, "Ctrl+D 原地复制（共 %d 层）" % scene.doc.layers.size())
+	await _shot("15-copy-paste")
+	for _i in 2:
+		scene.select_layer_path(PackedInt32Array([scene.doc.layers.size() - 1]))
+		scene.delete_selection()
+	await _frames(2)
+
+	# ---------------------------------------------------------------- 11. 图层缩略图 / 层级折叠
+	var list: ItemList = scene._layers._list
+	_ok(list.item_count >= 4, "图层列表有 %d 行" % list.item_count)
+	var with_icon := 0
+	for i in list.item_count:
+		if list.get_item_icon(i) != null:
+			with_icon += 1
+	_ok(with_icon == list.item_count, "每行都有类型缩略图（%d/%d）" % [with_icon, list.item_count])
+	var group_row := -1
+	for i in scene._layers._rows.size():
+		if String((scene._layers._rows[i]["layer"] as Dictionary).get("name", "")) == "容器":
+			group_row = i
+	_ok(group_row >= 0, "列表里有「容器」这一行")
+	if group_row >= 0:
+		var rows_before: int = scene._layers._rows.size()
+		var lr := list.get_global_rect()
+		# ItemList 不暴露每行的矩形（有内边距、还会滚动），所以从上往下扫，
+		# 用 get_item_at_position 找到目标行真正落在哪个 y。
+		var hit_y := -1.0
+		var y := lr.position.y + 2.0
+		while y < lr.end.y - 2.0 and hit_y < 0.0:
+			if list.get_item_at_position(Vector2(8.0, y - lr.position.y), true) == group_row:
+				hit_y = y
+			y += 2.0
+		_ok(hit_y >= 0.0, "算出「容器」行的位置（第 %d 行）" % group_row)
+		if hit_y >= 0.0:
+			var hit_p := Vector2(lr.position.x + 8.0, hit_y)
+			await _click(hit_p)
+			await _frames(2)
+			_ok(scene._layers._rows.size() == rows_before - 1,
+					"点行首箭头折叠容器（%d -> %d 行）"
+							% [rows_before, scene._layers._rows.size()])
+			await _shot("16-layer-fold")
+			await _click(hit_p)
+			await _frames(2)
+			_ok(scene._layers._rows.size() == rows_before, "再点一次展开")
+
+	# ---------------------------------------------------------------- 12. 贝塞尔运动路径
+	scene.select_layer_path(p_title2)
+	await _frames(2)
+	var tl: Dictionary = scene.doc.layer_at(p_title2)
+	Motion.enable(tl, scene.doc.parent_size(p_title2))
+	Motion.motion_of(tl)["end"] = 2.0        # 收进循环时长内
+	scene.apply_change(true)
+	await _frames(3)
+	var tl2: Dictionary = scene.doc.layer_at(p_title2)
+	_ok(Motion.enabled(tl2), "给标题层启用运动路径")
+	var pts: Array = Motion.points_of(tl2)
+	if pts.size() >= 2:
+		var a := Motion._vec_at(pts[0], "p")
+		var b := Motion._vec_at(pts[pts.size() - 1], "p")
+		var mid = Motion.sample(tl2, 1.0)
+		var mid_v := Vector2(float(mid.x), float(mid.y))
+		_ok(mid_v.distance_to((a + b) * 0.5) > 0.01,
+				"路径中点偏离直线中点（偏移 %.3f，控制柄真的在拉曲线）"
+						% mid_v.distance_to((a + b) * 0.5))
+	var sel = scene._canvas._selection
+	var space: Dictionary = sel._space()
+	var nodes: Array = Motion.control_nodes(tl2, scene.doc.parent_size(p_title2))
+	_ok(nodes.size() >= 3, "画布上有 %d 个路径控制点" % nodes.size())
+	if nodes.size() > 1:
+		var hnd: Dictionary = nodes[1]
+		var before_h := Vector2(float(hnd["x"]), float(hnd["y"]))
+		var hp: Vector2 = scene._canvas.get_global_rect().position \
+				+ sel._to_screen(space, before_h)
+		await _drag(hp, hp + Vector2(70.0, -45.0))
+		await _frames(2)
+		var nodes2: Array = Motion.control_nodes(scene.doc.layer_at(p_title2),
+				scene.doc.parent_size(p_title2))
+		if nodes2.size() > 1:
+			var after_h := Vector2(float(nodes2[1]["x"]), float(nodes2[1]["y"]))
+			_ok(after_h.distance_to(before_h) > 5.0,
+					"拖控制柄改了路径（挪了 %.0f 画布像素）" % after_h.distance_to(before_h))
+	scene.seek_time(1.0)
+	await _frames(3)
+	var node_m := _node(scene, String(scene.doc.layer_at(p_title2)["id"]))
+	if node_m != null:
+		var want_p = Motion.sample(scene.doc.layer_at(p_title2), 1.0)
+		_approx(node_m.anchor_left, float(want_p.x), 0.01, "预览里的节点落在路径采样点上")
+	await _shot("17-motion-path")
+
 	# 保存走查工程，方便人工再打开这份状态。
 	scene.doc.loop_seconds = 2.0
 	print("[walk] done")
@@ -289,7 +480,7 @@ func _frames(n: int) -> void:
 		await process_frame
 
 
-func _click(pos: Vector2) -> void:
+func _click(pos: Vector2, shift: bool = false) -> void:
 	var motion := InputEventMouseMotion.new()
 	motion.position = pos
 	motion.global_position = pos
@@ -300,6 +491,7 @@ func _click(pos: Vector2) -> void:
 	down.pressed = true
 	down.position = pos
 	down.global_position = pos
+	down.shift_pressed = shift
 	root.push_input(down, true)
 	await process_frame
 	var up := down.duplicate() as InputEventMouseButton
@@ -328,6 +520,77 @@ func _type(text: String) -> bool:
 	enter_up.pressed = false
 	root.push_input(enter_up, true)
 	return true
+
+
+## 一次真实拖拽：按下 -> 若干次移动 -> 松开。shift 用来测加选。
+func _drag(from: Vector2, to: Vector2, shift: bool = false,
+		button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
+	await _move_to(from, shift)
+	var down := InputEventMouseButton.new()
+	down.button_index = button
+	down.pressed = true
+	down.position = from
+	down.global_position = from
+	down.shift_pressed = shift
+	root.push_input(down, true)
+	await process_frame
+	for i in range(1, 7):
+		await _move_to(from + (to - from) * (float(i) / 6.0), shift, true, button)
+	var up := InputEventMouseButton.new()
+	up.button_index = button
+	up.pressed = false
+	up.position = to
+	up.global_position = to
+	up.shift_pressed = shift
+	root.push_input(up, true)
+	await process_frame
+
+
+func _middle_drag(from: Vector2, to: Vector2) -> void:
+	await _drag(from, to, false, MOUSE_BUTTON_MIDDLE)
+
+
+func _move_to(pos: Vector2, shift: bool = false, pressed: bool = false,
+		button: MouseButton = MOUSE_BUTTON_LEFT) -> void:
+	var mm := InputEventMouseMotion.new()
+	mm.position = pos
+	mm.global_position = pos
+	mm.shift_pressed = shift
+	if pressed:
+		mm.button_mask = 1 << (button - 1)
+	root.push_input(mm, true)
+	await process_frame
+
+
+func _wheel(pos: Vector2, up: bool) -> void:
+	await _move_to(pos)
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_WHEEL_UP if up else MOUSE_BUTTON_WHEEL_DOWN
+	ev.pressed = true
+	ev.factor = 1.0
+	ev.position = pos
+	ev.global_position = pos
+	root.push_input(ev, true)
+	await process_frame
+	var rel := ev.duplicate() as InputEventMouseButton
+	rel.pressed = false
+	root.push_input(rel, true)
+	await process_frame
+
+
+## 一个按键（带 Ctrl / Shift 修饰）。走的是编辑器的 _shortcut_input。
+func _key(kc: Key, ctrl: bool = false, shift: bool = false) -> void:
+	var ev := InputEventKey.new()
+	ev.pressed = true
+	ev.keycode = kc
+	ev.ctrl_pressed = ctrl
+	ev.shift_pressed = shift
+	root.push_input(ev, true)
+	await process_frame
+	var up := ev.duplicate() as InputEventKey
+	up.pressed = false
+	root.push_input(up, true)
+	await process_frame
 
 
 func _center(c: Control) -> Vector2:

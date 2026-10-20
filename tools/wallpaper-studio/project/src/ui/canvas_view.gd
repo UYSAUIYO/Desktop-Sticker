@@ -17,6 +17,11 @@ const SelectionOverlay = preload("res://src/ui/selection_overlay.gd")
 const PADDING := 28.0
 ## 静态画面重绘几帧后切成 UPDATE_ONCE：4K 画布常开每秒 8 兆像素没必要。
 const WARMUP_FRAMES := 4
+## 缩放范围：_zoom 是"相对适应窗口"的倍数，1 = 刚好放得下。
+const MIN_ZOOM := 0.1
+const MAX_ZOOM := 16.0
+## 鼠标位置在缩放前后要落在同一个画布点上，判定阈值（像素）。
+const ZOOM_STEP := 1.12
 
 var main = null
 
@@ -30,9 +35,18 @@ var _viewport: SubViewport
 var _frame: Panel
 var _selection: Control
 var _hint: Label
+var _zoom_btn: Button
+var _tools: HBoxContainer
 var _warmup := 0
 var _scale := 1.0
 var _root: Control
+## 用户缩放（1 = 适应窗口）与平移（屏幕像素偏移，_container 位置再叠加它）。
+var _zoom := 1.0
+var _pan := Vector2.ZERO
+var _fit_scale := 1.0
+var _panning := false
+var _pan_mouse := Vector2.ZERO
+var _pan_origin := Vector2.ZERO
 ## 预览树里的播放器（文档没有关键帧时为 null）。播放头由它评估，
 ## 不再用 GDScript 另算一遍曲线 —— 预览与导出只此一个求值器。
 var _player: AnimationPlayer
@@ -98,8 +112,35 @@ func _ready() -> void:
 	_hint.add_theme_font_size_override("font_size", 12)
 	add_child(_hint)
 
+	# 缩放工具条：右上角，和左下角的尺寸提示分开（那里文字会跟着画布尺寸变）。
+	# 不用 set_anchors_preset：它按"调用那一刻"的 size 算偏移，按钮加进去之后
+	# 宽度变了就会歪出去。锚点手动设，位置在 _apply_view 里按当前 size 重算。
+	_tools = HBoxContainer.new()
+	_tools.anchor_left = 1.0
+	_tools.anchor_right = 1.0
+	_tools.anchor_top = 0.0
+	_tools.anchor_bottom = 0.0
+	_tools.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_tools.mouse_filter = Control.MOUSE_FILTER_PASS
+	_tools.add_theme_constant_override("separation", 4)
+	add_child(_tools)
+	_zoom_btn = _tool_button(_tools, "100%", "点击回到「适应窗口」", func() -> void: fit_view())
+	_tool_button(_tools, "＋", "放大（滚轮）", func() -> void: zoom_by(ZOOM_STEP))
+	_tool_button(_tools, "－", "缩小（滚轮）", func() -> void: zoom_by(1.0 / ZOOM_STEP))
+
 	resized.connect(_fit)
 	_fit()
+
+
+func _tool_button(parent: Control, text: String, tip: String, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.tooltip_text = tip
+	b.custom_minimum_size = Vector2(38, 24)
+	b.add_theme_font_size_override("font_size", 12)
+	b.pressed.connect(cb)
+	parent.add_child(b)
+	return b
 
 
 ## 用当前文档重建预览节点树。文档一变就调用（图层增删/改名/换色/换序都算）。
@@ -237,20 +278,121 @@ func _fit() -> void:
 	var avail := size - Vector2(PADDING * 2.0, PADDING * 2.0)
 	if avail.x <= 8.0 or avail.y <= 8.0:
 		return
-	var s := minf(avail.x / canvas.x, avail.y / canvas.y)
-	s = clampf(s, 0.05, 1.0)
+	# _fit_scale = "刚好放得下"的倍率；用户缩放 _zoom 乘在上面。
+	_fit_scale = clampf(minf(avail.x / canvas.x, avail.y / canvas.y), 0.02, 1.0)
+	_apply_view()
+
+
+## 把 _zoom / _pan 落到 _container 上，并重画边框、选区、提示。
+## 缩放只改 Control 的变换，不动 SubViewport 的渲染分辨率 —— 放大多看不糊。
+func _apply_view() -> void:
+	if main == null or main.doc == null or _container == null:
+		return
+	var canvas := Vector2(main.doc.canvas)
+	var s := clampf(_fit_scale * _zoom, 0.02, MAX_ZOOM * 4.0)
 	_scale = s
 	_container.scale = Vector2(s, s)
-	_container.position = (size - canvas * s) * 0.5
+	_container.position = (size - canvas * s) * 0.5 + _pan
 	if _frame != null:
 		_frame.position = _container.position
 		_frame.size = canvas * s
 	_update_selection()
+	if _zoom_btn != null:
+		_zoom_btn.text = "%d%%" % int(round(s * 100.0))
+	if _tools != null:
+		_tools.position = Vector2(size.x - _tools.size.x - 12.0, 10.0)
 	if _hint != null:
-		_hint.text = "%d × %d   ·   %d%%   ·   拖动元素移动、拖手柄缩放（角点 Shift 等比，Alt 点选容器）" % [
-			int(canvas.x), int(canvas.y), int(round(s * 100.0))]
+		# 别把 % 操作符换到下一行：括号一闭合表达式就结束了，那行会变成新语句。
+		var tip := "   ·   空白处拖动框选（Shift 加选）   ·   滚轮缩放、中键拖动画布"
+		_hint.text = "%d × %d   ·   显示 %d%%   ·   拖动元素移动、拖手柄缩放（角点 Shift 等比）%s" % [
+			int(canvas.x), int(canvas.y), int(round(s * 100.0)), tip]
 		_hint.reset_size()
 		_hint.position = Vector2(14.0, size.y - 24.0)
+
+
+# ---------------------------------------------------------------- 视图：缩放 / 平移
+
+## 缩放，并保持 anchor（屏幕坐标）下那个画布点不动 —— 滚轮缩放在光标处。
+func zoom_by(factor: float, anchor: Vector2 = Vector2(-1.0, -1.0)) -> void:
+	set_zoom(_zoom * factor, anchor)
+
+
+func set_zoom(z: float, anchor: Vector2 = Vector2(-1.0, -1.0)) -> void:
+	var next := clampf(z, MIN_ZOOM, MAX_ZOOM)
+	if is_equal_approx(next, _zoom):
+		return
+	var a := anchor if anchor.x >= 0.0 else size * 0.5
+	var before := to_canvas(a)          # 当前 scale 下的画布点
+	_zoom = next
+	_apply_view()
+	var after := _container.position + before * _scale
+	_pan += a - after                   # 把这个点挪回光标下面
+	_apply_view()
+
+
+func pan_by(delta: Vector2) -> void:
+	_pan += delta
+	_apply_view()
+
+
+## 回到"适应窗口 + 居中"。
+func fit_view() -> void:
+	_zoom = 1.0
+	_pan = Vector2.ZERO
+	_apply_view()
+
+
+func zoom_level() -> float:
+	return _scale
+
+
+func _gui_input(event: InputEvent) -> void:
+	if main == null or main.doc == null:
+		return
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		match mb.button_index:
+			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN:
+				if not mb.pressed:
+					return
+				var factor := ZOOM_STEP if mb.button_index == MOUSE_BUTTON_WHEEL_UP \
+						else 1.0 / ZOOM_STEP
+				# 触控板滚轮会带 factor（一次事件滚很多），按它取幂。
+				zoom_by(pow(factor, maxf(1.0, absf(mb.factor))), mb.position)
+				accept_event()
+				return
+			MOUSE_BUTTON_MIDDLE:
+				# 中键拖 = 平移（左键留给选中/拖动，Ctrl+左键也平移）。
+				# 位置取自事件本身而不是 get_global_mouse_position()：后者来自 OS 光标，
+				# 合成事件推不动它（带窗口的自动化走查就靠 push_input 发事件）。
+				if mb.pressed:
+					_panning = true
+					_pan_mouse = _global_pos(mb.position)
+					_pan_origin = _pan
+				else:
+					_panning = false
+				accept_event()
+				return
+			MOUSE_BUTTON_LEFT:
+				if mb.ctrl_pressed:
+					if mb.pressed:
+						_panning = true
+						_pan_mouse = _global_pos(mb.position)
+						_pan_origin = _pan
+					else:
+						_panning = false
+					accept_event()
+				return
+		return
+	if event is InputEventMouseMotion and _panning:
+		_pan = _pan_origin + (_global_pos(event.position) - _pan_mouse)
+		_apply_view()
+		accept_event()
+
+
+## 控件局部坐标 -> 全局（_gui_input 拿到的 position 是局部的）。
+func _global_pos(local: Vector2) -> Vector2:
+	return get_global_rect().position + local
 
 
 # ---------------------------------------------------------------- 坐标换算

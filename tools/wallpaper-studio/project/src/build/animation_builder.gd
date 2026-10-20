@@ -21,6 +21,7 @@ extends RefCounted
 
 const Timeline = preload("res://src/doc/timeline.gd")
 const Layer = preload("res://src/doc/layer.gd")
+const Motion = preload("res://src/doc/motion.gd")
 
 const PLAYER_NAME := "Timeline"
 const ANIM_NAME := "wallpaper"
@@ -59,7 +60,9 @@ static func build_animation(doc, root: Node) -> Animation:
 	var added := 0
 	for item in doc.walk():
 		var layer: Dictionary = item["layer"]
-		if Layer.is_effect(layer) or not Timeline.has_animation(layer):
+		# 走路径的图层也算"有动画"：它的曲线在这里烘焙成 x/y 锚点轨道。
+		if Layer.is_effect(layer) \
+				or not (Timeline.has_animation(layer) or Motion.enabled(layer)):
 			continue
 		var node := root.find_child(NODE_PREFIX + String(layer.get("id", "")), true, false)
 		if not (node is Control):
@@ -69,7 +72,14 @@ static func build_animation(doc, root: Node) -> Animation:
 		if String(rel).is_empty():
 			continue
 		var parent_size: Vector2 = doc.parent_size(item["path"])
+		# 路径启用时它接管 x/y，同名的两条通道不再单独编译（否则两边互相打架）。
+		var path_samples := Motion.bake(layer, BAKE_HZ, MAX_BAKE_STEPS)
+		if not path_samples.is_empty():
+			added += _add_motion(anim, rel, path_samples, layer, parent_size)
 		for track in Timeline.tracks_of(layer):
+			var channel := String(track.get("channel", ""))
+			if not path_samples.is_empty() and (channel == "x" or channel == "y"):
+				continue
 			added += _add_channel(anim, rel, track, layer, parent_size)
 	return anim if added > 0 else null
 
@@ -164,6 +174,32 @@ static func _add_channel(anim: Animation, rel: NodePath, track: Dictionary,
 				"anchor_bottom":
 					value = v + size.y / ph
 			anim.track_insert_key(idx, float(sample["t"]), value)
+			count += 1
+	return count
+
+
+## 运动路径 -> 四条锚点轨道。路径是二维的，所以这里一次产出 x/y 两组边界，
+## 时刻与 _add_channel 的 x/y 完全一致（左右/上下边界必须同步）。
+static func _add_motion(anim: Animation, rel: NodePath, samples: Array,
+		layer: Dictionary, parent_size: Vector2) -> int:
+	var size := Timeline.frame_size(layer, parent_size)
+	var pw := maxf(1.0, parent_size.x)
+	var ph := maxf(1.0, parent_size.y)
+	# [属性, 取哪个分量, 加在后面的常量（右/下边界要加上框宽占父级的比例）]
+	var specs := [
+		["anchor_left", "x", 0.0],
+		["anchor_right", "x", size.x / pw],
+		["anchor_top", "y", 0.0],
+		["anchor_bottom", "y", size.y / ph],
+	]
+	var count := 0
+	for spec in specs:
+		var idx := anim.add_track(Animation.TYPE_VALUE)
+		anim.track_set_path(idx, NodePath(String(rel) + ":" + String(spec[0])))
+		anim.track_set_interpolation_type(idx, Animation.INTERPOLATION_LINEAR)
+		for s in samples:
+			anim.track_insert_key(idx, float(s["t"]),
+					float(s[String(spec[1])]) + float(spec[2]))
 			count += 1
 	return count
 

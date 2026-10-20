@@ -11,6 +11,8 @@ extends Control
 
 const StudioDoc = preload("res://src/doc/doc.gd")
 const StudioPaths = preload("res://src/doc/paths.gd")
+const History = preload("res://src/doc/history.gd")
+const Layer = preload("res://src/doc/layer.gd")
 const ProjectBar = preload("res://src/ui/project_bar.gd")
 const LayerPanel = preload("res://src/ui/layer_panel.gd")
 const CanvasView = preload("res://src/ui/canvas_view.gd")
@@ -23,9 +25,14 @@ signal selection_changed
 var doc = null                 # StudioDoc 实例（RefCounted，无类型标注是有意的）
 var project_dir := ""          # 用户工程目录（绝对路径）
 ## 当前选中图层的**路径**（空 = 未选）：[2] = 第 3 个根层，[2, 0] = 它的第一个子层。
+## 多选时它是"主选择"：属性面板 / 时间轴显示它，其余的在 sel_more 里。
 var sel := PackedInt32Array()
+var sel_more: Array = []         # Array[PackedInt32Array]，附加选择（不含主选择）
 var dirty := false             # 有没有未保存的改动
 var busy := false              # 导出等阻塞操作进行中：禁止新建/打开/退出
+
+var _history = null              # History 实例（快照栈，见 doc/history.gd）
+var _clipboard: Array = []       # 复制的图层（深拷贝，粘贴时重新分配 id）
 
 var _bar: Control
 var _layers: Control
@@ -114,7 +121,10 @@ func _set_doc(new_doc, dir_path: String) -> void:
 	doc = new_doc
 	project_dir = dir_path
 	sel = PackedInt32Array()
+	sel_more = []
 	dirty = false
+	# 换工程 = 历史归零：撤销不能退到上一个工程里去。
+	_reset_history()
 	# 换工程 = 时间轴归零：新工程不该停在上一个工程拖到的位置。
 	if _canvas != null:
 		_canvas.time = 0.0
@@ -208,7 +218,8 @@ func save_project() -> bool:
 # ---------------------------------------------------------------- 面板回调
 
 ## 任何面板改了文档之后走这里：重建画布与图层列表，可选重建属性面板。
-func apply_change(rebuild_inspector: bool = false) -> void:
+## label 会记进撤销历史（同一种连续操作靠它合并成一步）。
+func apply_change(rebuild_inspector: bool = false, label: String = "编辑") -> void:
 	if doc == null:
 		return
 	dirty = true
@@ -225,6 +236,90 @@ func apply_change(rebuild_inspector: bool = false) -> void:
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
+	commit(label)
+
+
+# ---------------------------------------------------------------- 撤销 / 重做
+
+func _reset_history() -> void:
+	if _history == null:
+		_history = History.new()
+	_history.reset(_snapshot())
+	_sync_history()
+
+
+## 把"现在的文档"记进历史。内容没变不记（面板刷新也走 apply_change）；
+## 同一种操作在 0.7 秒内连续发生会合并成一步（拖滑块 / 拖关键帧）。
+func commit(label: String = "编辑") -> void:
+	if doc == null:
+		return
+	if _history == null:
+		_history = History.new()
+	_history.push(_snapshot(), label)
+	_sync_history()
+
+
+## 下一步提交不参与合并：一段新的连续操作开始了（比如鼠标按下）。
+func break_history() -> void:
+	if _history != null:
+		_history.break_merge()
+
+
+func can_undo() -> bool:
+	return _history != null and _history.can_undo()
+
+
+func can_redo() -> bool:
+	return _history != null and _history.can_redo()
+
+
+func undo() -> void:
+	if _history == null or not _history.can_undo():
+		return
+	_restore(_history.undo())
+
+
+func redo() -> void:
+	if _history == null or not _history.can_redo():
+		return
+	_restore(_history.redo())
+
+
+func _snapshot() -> Dictionary:
+	var more := []
+	for p in sel_more:
+		more.append((p as PackedInt32Array).duplicate())
+	return {"text": doc.to_text() if doc != null else "", "sel": sel.duplicate(),
+			"more": more}
+
+
+func _restore(state: Dictionary) -> void:
+	if state.is_empty() or doc == null:
+		return
+	var parsed: Dictionary = StudioDoc.parse(String(state.get("text", "")))
+	if not parsed.ok:
+		return
+	doc = parsed.doc
+	var p: PackedInt32Array = state.get("sel", PackedInt32Array())
+	if not p.is_empty() and doc.layer_at(p).is_empty():
+		p = PackedInt32Array()
+	sel = p
+	sel_more = []
+	for item in state.get("more", []):
+		var mp: PackedInt32Array = item as PackedInt32Array
+		if not mp.is_empty() and not doc.layer_at(mp).is_empty():
+			sel_more.append(mp)
+	dirty = true
+	_refresh_all()
+	_sync_history()
+
+
+func _sync_history() -> void:
+	if _bar != null and _bar.has_method("sync_history"):
+		_bar.sync_history()
+
+
+# ---------------------------------------------------------------- 选择（多选）
 
 
 ## 关键帧被就地改过（拖动时间轴上 key 的时刻）：只重装播放器里的曲线，不重建节点。
@@ -286,16 +381,196 @@ func select_layer(index: int) -> void:
 
 
 ## 按路径选中（容器里的子层也能选）。空路径 = 取消选择。
-func select_layer_path(path: PackedInt32Array) -> void:
+## keep_more = true 时保留附加选择（框选 / 加选用），否则清空。
+func select_layer_path(path: PackedInt32Array, keep_more: bool = false) -> void:
 	if doc == null:
 		return
 	if not path.is_empty() and doc.layer_at(path).is_empty():
 		path = PackedInt32Array()
+	if not keep_more:
+		sel_more = []
+	elif path.is_empty():
+		sel_more = []
 	sel = path
 	if _layers != null:
 		_layers.sync_selection()
 	_canvas_changed_selection()
 	selection_changed.emit()
+
+
+## 所有选中路径（主选择在前），已过滤失效项。
+func selected_paths() -> Array:
+	var out := []
+	if doc == null:
+		return out
+	if not sel.is_empty() and not doc.layer_at(sel).is_empty():
+		out.append(sel)
+	for item in sel_more:
+		var p: PackedInt32Array = item as PackedInt32Array
+		if p.is_empty() or p == sel or doc.layer_at(p).is_empty():
+			continue
+		if out.has(p):
+			continue
+		out.append(p)
+	return out
+
+
+## 整体替换选择。空数组 = 取消选择；最后一个成为主选择。
+func set_selection(paths: Array) -> void:
+	var valid := []
+	for item in paths:
+		var p: PackedInt32Array = item as PackedInt32Array
+		if p.is_empty() or doc == null or doc.layer_at(p).is_empty():
+			continue
+		if valid.has(p):
+			continue
+		valid.append(p)
+	if valid.is_empty():
+		select_layer_path(PackedInt32Array())
+		return
+	var primary: PackedInt32Array = valid[valid.size() - 1]
+	var more := []
+	for p in valid:
+		if p != primary:
+			more.append(p)
+	sel_more = more
+	select_layer_path(primary, true)
+
+
+## 点选时按住 Shift = 加选 / 反选。
+func toggle_selection(path: PackedInt32Array) -> void:
+	if doc == null:
+		return
+	if path.is_empty():
+		select_layer_path(PackedInt32Array())
+		return
+	var paths := selected_paths()
+	if paths.has(path):
+		paths.erase(path)
+		set_selection(paths)
+		return
+	paths.append(path)
+	set_selection(paths)
+
+
+func has_multi_selection() -> bool:
+	return selected_paths().size() > 1
+
+
+# ---------------------------------------------------------------- 剪贴板
+
+func copy_selection() -> void:
+	_clipboard = []
+	if doc == null:
+		return
+	for p in selected_paths():
+		var layer: Dictionary = doc.layer_at(p)
+		if not layer.is_empty():
+			_clipboard.append(layer.duplicate(true))
+
+
+func has_clipboard() -> bool:
+	return not _clipboard.is_empty()
+
+
+## 粘贴：默认粘进主选择的父级（主选择本身是容器时粘进它里面，跟 Figma/PS 一致）。
+## as_sibling = true 时强制"和主选择并列"（原地复制用它 —— 把容器复制进自己里面没意义）。
+## offset 不为零时顺带平移（原地复制用它错开一点，免得看不出复制出来了）。
+func paste_layers(offset := Vector2.ZERO, as_sibling := false) -> void:
+	if doc == null or _clipboard.is_empty():
+		return
+	var parent := PackedInt32Array()
+	if not sel.is_empty():
+		var current := selected_layer()
+		if not as_sibling and not current.is_empty() and Layer.is_group(current):
+			parent = sel.duplicate()
+		else:
+			parent = doc.parent_path_of(sel)
+	var pasted := []
+	for raw in _clipboard:
+		if not (raw is Dictionary):
+			continue
+		var copy: Dictionary = (raw as Dictionary).duplicate(true)
+		_reid(copy)
+		copy["name"] = String(copy.get("name", "图层")) + " 副本"
+		if offset != Vector2.ZERO:
+			var t: Dictionary = copy.get("transform", {})
+			t["x"] = float(t.get("x", 0.0)) + offset.x
+			t["y"] = float(t.get("y", 0.0)) + offset.y
+		pasted.append(doc.insert_layer(parent, copy))
+	if pasted.is_empty():
+		return
+	set_selection(pasted)
+	apply_change(true, "粘贴图层")
+
+
+## 原地复制（Ctrl+D）：复制 + 立刻粘贴并错开 24px。
+func duplicate_selection() -> void:
+	if selected_paths().is_empty():
+		return
+	copy_selection()
+	paste_layers(Vector2(24.0, 24.0), true)
+
+
+## 删除所有选中的图层。从深往浅、同层从后往前删，避免下标串位。
+func delete_selection() -> void:
+	if doc == null:
+		return
+	var paths := selected_paths()
+	if paths.is_empty():
+		return
+	paths.sort_custom(func(a, b) -> bool:
+		var pa: PackedInt32Array = a
+		var pb: PackedInt32Array = b
+		if pa.size() != pb.size():
+			return pa.size() > pb.size()
+		return pa[pa.size() - 1] > pb[pb.size() - 1])
+	for p in paths:
+		doc.remove_at(p)
+	var parent: PackedInt32Array = doc.parent_path_of(paths[paths.size() - 1])
+	var siblings: Array = doc.siblings_at(parent)
+	var path := PackedInt32Array()
+	if not siblings.is_empty():
+		var at := mini(int(paths[paths.size() - 1][paths[paths.size() - 1].size() - 1]),
+				siblings.size() - 1)
+		path = parent.duplicate()
+		path.append(maxi(0, at))
+	select_layer_path(path)
+	apply_change(true, "删除图层")
+
+
+## 复制出来的图层必须换 id：节点名、效果层的绑定目标都按 id 找，
+## 两份同 id 的图层会让"复制出来的滤镜"作用到原来那层上。
+func _reid(layer: Dictionary) -> void:
+	var map := {}
+	_reid_subtree(layer, map)
+	_retarget_subtree(layer, map)
+
+
+func _reid_subtree(layer: Dictionary, map: Dictionary) -> void:
+	var old_id := String(layer.get("id", ""))
+	layer["id"] = "l_" + StudioPaths.new_pack_id().substr(0, 8)
+	if not old_id.is_empty():
+		map[old_id] = String(layer["id"])
+	var kids = layer.get("children")
+	if kids is Array:
+		for child in kids:
+			if child is Dictionary:
+				_reid_subtree(child, map)
+
+
+## cover.target 指向被复制进来的一份时，改成新的 id（否则滤镜仍绑在原图层上）。
+func _retarget_subtree(layer: Dictionary, map: Dictionary) -> void:
+	var cover = layer.get("cover")
+	if cover is Dictionary:
+		var target := String((cover as Dictionary).get("target", ""))
+		if not target.is_empty() and map.has(target):
+			(cover as Dictionary)["target"] = String(map[target])
+	var kids = layer.get("children")
+	if kids is Array:
+		for child in kids:
+			if child is Dictionary:
+				_retarget_subtree(child, map)
 
 
 func _canvas_changed_selection() -> void:
@@ -337,6 +612,7 @@ func _refresh_all() -> void:
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
+	_sync_history()
 
 
 func _update_window_title() -> void:
@@ -417,7 +693,12 @@ func _shortcut_input(event: InputEvent) -> void:
 		toggle_play()
 		get_viewport().set_input_as_handled()
 		return
+	var typing := _focus_is_text()
 	if not key.ctrl_pressed:
+		# 删除：焦点在输入框里时它是"删字符"，不抢。
+		if key.keycode == KEY_DELETE and not typing:
+			delete_selection()
+			get_viewport().set_input_as_handled()
 		return
 	match key.keycode:
 		KEY_N:
@@ -432,6 +713,49 @@ func _shortcut_input(event: InputEvent) -> void:
 		KEY_E:
 			_bar.popup_export()
 			get_viewport().set_input_as_handled()
+		KEY_Z:
+			# Ctrl+Shift+Z / Ctrl+Y = 重做，Ctrl+Z = 撤销。
+			if key.shift_pressed:
+				redo()
+			else:
+				undo()
+			get_viewport().set_input_as_handled()
+		KEY_Y:
+			redo()
+			get_viewport().set_input_as_handled()
+		KEY_C:
+			if not typing:
+				copy_selection()
+				get_viewport().set_input_as_handled()
+		KEY_V:
+			if not typing:
+				paste_layers()
+				get_viewport().set_input_as_handled()
+		KEY_D:
+			if not typing:
+				duplicate_selection()
+				get_viewport().set_input_as_handled()
+		KEY_A:
+			if not typing:
+				_select_all()
+				get_viewport().set_input_as_handled()
+
+
+func _select_all() -> void:
+	if doc == null:
+		return
+	var paths := []
+	for i in doc.layers.size():
+		var p := PackedInt32Array()
+		p.append(i)
+		paths.append(p)
+	set_selection(paths)
+
+
+## 焦点在文本输入类控件里：Ctrl+C/V、空格、Delete 都该留给输入控件自己处理。
+func _focus_is_text() -> bool:
+	var focus := get_viewport().gui_get_focus_owner()
+	return focus is LineEdit or focus is TextEdit
 
 
 func _notification(what: int) -> void:

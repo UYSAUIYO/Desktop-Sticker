@@ -18,7 +18,13 @@ func register(t) -> void:
 		t.eq(parsed.doc.canvas, Vector2i(1920, 1080), "canvas kept")
 		t.eq(parsed.doc.layers.size(), 1, "one layer")
 		t.eq(parsed.doc.layers[0].type, "color", "layer type kept")
-		t.eq(parsed.doc.layers[0].color, Color(0.02, 0.07, 0.12), "color kept")
+		# 颜色按 #rrggbb 写盘（JSON 不能直接存 Color），所以回来是 8bit 量化后的值：
+		# 容差取 0.5/255。想全精度就得改存浮点数组，会破坏和老工程的兼容。
+		var got: Color = parsed.doc.layers[0].color
+		t.approx(got.r, 0.02, 0.002, "color.r kept")
+		t.approx(got.g, 0.07, 0.002, "color.g kept")
+		t.approx(got.b, 0.12, 0.002, "color.b kept")
+		t.approx(got.a, 1.0, 0.0001, "color.a kept")
 		t.eq(parsed.doc.pack_id, doc.pack_id, "pack id kept")
 	)
 

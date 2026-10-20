@@ -20,6 +20,8 @@ var main = null
 
 var _info: Label
 var _status: Label
+var _btn_undo: Button
+var _btn_redo: Button
 var _buttons: Array = []
 var _overlay: ColorRect
 var _overlay_label: Label
@@ -72,6 +74,10 @@ func _ready() -> void:
 	var sep := VSeparator.new()
 	row.add_child(sep)
 
+	_btn_undo = _button(row, "撤销", "撤销上一步（Ctrl+Z）", func() -> void: main.undo())
+	_btn_redo = _button(row, "重做", "重做（Ctrl+Shift+Z）", func() -> void: main.redo())
+	sync_history()
+
 	_info = Label.new()
 	_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_info.add_theme_font_size_override("font_size", 12)
@@ -102,6 +108,13 @@ func _button(parent: Control, text: String, tip: String, cb: Callable) -> Button
 	parent.add_child(b)
 	_buttons.append(b)
 	return b
+
+
+func sync_history() -> void:
+	if _btn_undo == null or _btn_redo == null or main == null:
+		return
+	_btn_undo.disabled = not main.can_undo()
+	_btn_redo.disabled = not main.can_redo()
 
 
 func update_status() -> void:

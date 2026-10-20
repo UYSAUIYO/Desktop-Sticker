@@ -20,6 +20,7 @@ const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const Frame = preload("res://src/doc/frame.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
+const Motion = preload("res://src/doc/motion.gd")
 
 const TYPES := ["color", "image", "text", "particles", "group", "mask", "filter"]
 const BLENDS := ["mix", "add", "sub", "mul", "screen", "overlay"]
@@ -254,6 +255,11 @@ static func normalize(raw: Dictionary) -> Dictionary:
 		out["tracks"] = Timeline.normalize_tracks(raw["tracks"])
 	if raw.get("effects") is Array:
 		out["effects"] = raw["effects"]
+	# 运动路径（贝塞尔）。没有这个字段的图层就是"不走路径"。
+	if raw.get("motion") is Dictionary:
+		var m := Motion.normalize(raw["motion"])
+		if not m.is_empty():
+			out["motion"] = m
 	match type:
 		"color":
 			out["color"] = to_color(raw.get("color"), Color(0.02, 0.07, 0.12))
@@ -321,10 +327,41 @@ static func to_color(v, fallback: Color) -> Color:
 	if v is Color:
 		return v
 	if v is String:
-		var s: String = v.trim_prefix("#")
-		if s.length() == 6 and s.is_valid_hex_number(false):
-			return Color.html(s)
+		var s: String = v.strip_edges()
+		if s.begins_with("#"):
+			s = s.substr(1)
+			if (s.length() == 6 or s.length() == 8) and s.is_valid_hex_number(false):
+				return Color.html(s)
+			return fallback
+		# "(0.1, 0.2, 0.3, 1.0)"：Color 被 JSON.stringify 直接 str() 出来的样子。
+		# 写盘已经改成 #rrggbb 了（见 to_wire），这里是给早期写坏的文件兜底。
+		if s.begins_with("(") and s.ends_with(")"):
+			var parts := s.substr(1, maxi(0, s.length() - 2)).split(",", false)
+			if parts.size() >= 3:
+				return Color(float(parts[0]), float(parts[1]), float(parts[2]),
+						float(parts[3]) if parts.size() > 3 else 1.0)
 	return fallback
+
+
+## 写盘（以及撤销快照）前的转换：把 Color 变成 "#rrggbb"。
+## 不做这件事的话 JSON.stringify 会把 Color 落成 "(0.1, 0.2, 0.3, 1.0)" 这种字符串，
+## 读回来 to_color 认不出、静默退回默认色 —— 表现是"存一次盘颜色全变了"。
+## 递归下钻，所以容器子层和滤镜里的颜色一起处理。
+static func to_wire(v):
+	if v is Color:
+		var c: Color = v
+		return "#" + c.to_html(c.a < 0.999)
+	if v is Dictionary:
+		var out := {}
+		for k in v:
+			out[k] = to_wire(v[k])
+		return out
+	if v is Array:
+		var out := []
+		for item in v:
+			out.append(to_wire(item))
+		return out
+	return v
 
 
 static func to_vec2(v, fallback: Dictionary) -> Dictionary:

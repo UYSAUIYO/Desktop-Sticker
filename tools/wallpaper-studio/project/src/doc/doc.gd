@@ -15,6 +15,7 @@ const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const LayerTimeline = preload("res://src/doc/timeline.gd")
+const Motion = preload("res://src/doc/motion.gd")
 
 ## 文档格式版本。
 ##   1 —— x/y 关键帧存父级**像素**；
@@ -171,7 +172,9 @@ func to_text() -> String:
 		"canvas": {"width": canvas.x, "height": canvas.y},
 		"background": "#" + background.to_html(false),
 		"loop_seconds": loop_seconds,
-		"layers": layers,
+		# Color 必须先转成 #rrggbb：直接 stringify 会落成 "(0.1, 0.2, 0.3, 1.0)"，
+		# 读回来认不出，颜色会静默变成默认色（见 Layer.to_wire）。
+		"layers": Layer.to_wire(layers),
 	}
 	return JSON.stringify(out, "  ")
 
@@ -185,10 +188,14 @@ func timeline_end() -> float:
 
 
 ## 所有关键帧里最晚的时刻（没有关键帧返回 0）。只用于提示"超出时长"和"适配末帧"。
+## 运动路径的结束时刻也算：路径只在 [start, end] 之间走，超出同样不播放。
 func key_end() -> float:
 	var end := 0.0
 	for item in walk():
-		end = maxf(end, LayerTimeline.end_of(item["layer"]))
+		var layer: Dictionary = item["layer"]
+		end = maxf(end, LayerTimeline.end_of(layer))
+		if Motion.enabled(layer):
+			end = maxf(end, float(Motion.motion_of(layer).get("end", 0.0)))
 	return end
 
 
@@ -662,6 +669,7 @@ func reparent(path: PackedInt32Array, new_parent: PackedInt32Array) -> PackedInt
 		var root_point := old_origin + (p * old_scale).rotated(deg_to_rad(old_rot))
 		return Frame.to_space(root_point, new_map)
 	LayerTimeline.remap_xy(layer, old_parent_size, new_parent_size, to_new)
+	Motion.remap(layer, old_parent_size, new_parent_size, to_new)
 
 	var arr: Array = layers
 	var parent := PackedInt32Array()
@@ -687,8 +695,9 @@ func wrap_in_group(path: PackedInt32Array) -> PackedInt32Array:
 	var fr := Frame.of(layer, size)
 	# 换参照系：容器原点 = 图层原来的左上角，容器尺寸 = 图层原来的框。
 	# 关键帧跟着搬（容器内部坐标是旧父级坐标减去容器原点），否则动画会整体偏移。
-	LayerTimeline.remap_xy(layer, size, fr.size,
-			func(p: Vector2) -> Vector2: return p - fr.position)
+	var to_group := func(p: Vector2) -> Vector2: return p - fr.position
+	LayerTimeline.remap_xy(layer, size, fr.size, to_group)
+	Motion.remap(layer, size, fr.size, to_group)
 	var group := Layer.make_group(String(layer.get("name", "图层")) + " 容器",
 			fr.size.x, fr.size.y)
 	group["transform"]["x"] = fr.position.x

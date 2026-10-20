@@ -12,6 +12,7 @@ const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
+const Motion = preload("res://src/doc/motion.gd")
 const AssetImport = preload("res://src/ui/asset_import.gd")
 
 const TYPE_NAMES := {
@@ -255,6 +256,8 @@ func _build_layer(layer: Dictionary) -> void:
 	)
 	_row("混合模式", blend)
 
+	_build_motion(layer, parent_size)
+
 	match String(layer.get("type", "color")):
 		"image":
 			_build_image(layer)
@@ -266,6 +269,72 @@ func _build_layer(layer: Dictionary) -> void:
 			_build_group(layer)
 		_:
 			_build_color(layer)
+
+
+# ---------------------------------------------------------------- 运动路径
+
+## 曲线运动：一条贝塞尔路径接管 X / Y。曲线本身在**画布上**拖（粉色端点与控制柄），
+## 这里只放开关、时间与控制点增删 —— 把二维曲线塞进数字框里没人会用。
+func _build_motion(layer: Dictionary, parent_size: Vector2) -> void:
+	_section("运动路径")
+	var toggle := CheckButton.new()
+	toggle.text = "沿曲线运动"
+	toggle.button_pressed = Motion.enabled(layer)
+	toggle.toggled.connect(func(on: bool) -> void:
+		if on:
+			Motion.enable(layer, main.doc.parent_size(main.sel))
+		else:
+			Motion.disable(layer)
+		main.apply_change(true, "运动路径")
+	)
+	_box.add_child(toggle)
+
+	if not Motion.has(layer):
+		_hint("开启后，元素沿一条贝塞尔曲线移动：画布上会出现粉色端点与控制柄，直接拖就行。"
+				+ "\n路径启用时它接管 X / Y —— 这两条通道的关键帧不再生效。")
+		return
+
+	var m: Dictionary = Motion.motion_of(layer)
+	var start := _spin(float(m.get("start", 0.0)), 0.0, 600.0, 0.1)
+	start.value_changed.connect(func(v: float) -> void:
+		var mm: Dictionary = Motion.motion_of(layer)
+		mm["start"] = clampf(v, 0.0, float(mm.get("end", v + 1.0)) - 0.05)
+		main.apply_change(false, "运动路径")
+	)
+	_row("起跑时刻", start)
+
+	var dur := _spin(float(m.get("end", 4.0)) - float(m.get("start", 0.0)), 0.1, 600.0, 0.1)
+	dur.value_changed.connect(func(v: float) -> void:
+		var mm: Dictionary = Motion.motion_of(layer)
+		mm["end"] = float(mm.get("start", 0.0)) + maxf(0.1, v)
+		main.apply_change(false, "运动路径")
+	)
+	_row("走完全程", dur)
+
+	var btns := HBoxContainer.new()
+	btns.add_theme_constant_override("separation", 4)
+	_box.add_child(btns)
+	var add_btn := Button.new()
+	add_btn.text = "加一个点"
+	add_btn.add_theme_font_size_override("font_size", 12)
+	add_btn.pressed.connect(func() -> void:
+		Motion.add_point(layer, main.doc.parent_size(main.sel))
+		main.apply_change(true, "运动路径")
+	)
+	btns.add_child(add_btn)
+	var del_btn := Button.new()
+	del_btn.text = "删除路径"
+	del_btn.add_theme_font_size_override("font_size", 12)
+	del_btn.pressed.connect(func() -> void:
+		Motion.clear(layer)
+		main.apply_change(true, "运动路径")
+	)
+	btns.add_child(del_btn)
+
+	var pts: Array = Motion.points_of(layer)
+	_hint("%d 个路径点，用时 %.2f 秒。画布上拖动粉色方块改位置、圆点改弯曲程度；"
+			% [pts.size(), float(m.get("end", 0.0)) - float(m.get("start", 0.0))]
+			+ "拖圆点时对面那一侧会跟着转，曲线保持平滑。")
 
 
 # ---------------------------------------------------------------- 覆盖范围
