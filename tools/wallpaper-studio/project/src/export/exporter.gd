@@ -4,6 +4,7 @@ extends RefCounted
 
 const StudioPaths = preload("res://src/doc/paths.gd")
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
+const SceneBuilder3D = preload("res://src/build/scene_builder_3d.gd")
 const Packer = preload("res://src/export/packer.gd")
 const StudioManifest = preload("res://src/export/manifest.gd")
 
@@ -58,7 +59,8 @@ static func export(doc, project_dir: String, out_path: String, poster_path: Stri
 	#    二进制 .scn 里就是原始字节，膨胀约 1x，而且加载不用解析文本。
 	#
 	#    代价：场景不可读。但它本来就要被 AES 加密进 pck，可读性没有价值。
-	var root = SceneBuilder.build(doc, assets_res)
+	var root = SceneBuilder3D.build(doc, assets_res) if doc.is_3d() \
+			else SceneBuilder.build(doc, assets_res)
 	var scene := PackedScene.new()
 	if scene.pack(root) != OK:
 		root.free()

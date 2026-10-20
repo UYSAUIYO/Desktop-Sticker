@@ -5,6 +5,7 @@ extends RefCounted
 ## 不存在"海报好看、实机不对"。
 
 const SceneBuilder = preload("res://src/build/scene_builder.gd")
+const SceneBuilder3D = preload("res://src/build/scene_builder_3d.gd")
 const AnimationBuilder = preload("res://src/build/animation_builder.gd")
 
 const SIZE := Vector2i(960, 540)
@@ -23,9 +24,32 @@ static func render(doc, project_dir: String, out_png: String, tree: SceneTree) -
 	sub.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	sub.own_world_3d = true
 	sub.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
-	sub.disable_3d = true
+	# 3D 场景必须开着 3D 渲染；2D 保持关（省一次深度/相机 pass）。
+	sub.disable_3d = not doc.is_3d()
 	tree.root.add_child(sub)
 
+	if doc.is_3d():
+		return await _render_3d(doc, project_dir, out_png, tree, sub)
+	return await _render_2d(doc, project_dir, out_png, tree, sub)
+
+
+static func _render_3d(doc, project_dir: String, out_png: String, tree: SceneTree,
+		sub: SubViewport) -> bool:
+	var root = SceneBuilder3D.build(doc, project_dir, false)
+	sub.add_child(root)
+	SceneBuilder3D.set_player_time(root.get_node_or_null("Player") as AnimationPlayer, 0.0)
+	await tree.process_frame
+	await tree.process_frame
+	await RenderingServer.frame_post_draw
+	var img := sub.get_texture().get_image()
+	sub.queue_free()
+	if img == null:
+		return false
+	return img.save_png(out_png) == OK
+
+
+static func _render_2d(doc, project_dir: String, out_png: String, tree: SceneTree,
+		sub: SubViewport) -> bool:
 	var root = SceneBuilder.build(doc, project_dir, false)
 	# 海报是固定 960x540，把文档画布等比缩进去并居中；设计画布和取景框比例不同时
 	# 只留边，不拉伸内容。

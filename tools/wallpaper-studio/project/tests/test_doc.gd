@@ -266,7 +266,8 @@ func register(t) -> void:
 		if p3.ok:
 			var t3 := Timeline.find_track(Timeline.tracks_of(p3.doc.layers[0]), "x")
 			t.approx(float(t3["keys"][0]["v"]), 0.25, 0.0001, "v2 不再折算")
-			t.ok(p3.doc.to_text().contains('"format_version": 2'), "写回版本 2")
+			# FORMAT_VERSION 现在是 3（3D 场景模式），往返后写回当前版本。
+			t.ok(p3.doc.to_text().contains('"format_version": 3'), "写回当前版本")
 	)
 
 	t.case("doc_wrap_in_group_keeps_frame", func() -> void:

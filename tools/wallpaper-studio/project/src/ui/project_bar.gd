@@ -161,6 +161,12 @@ func popup_new() -> void:
 	preset.select(0)
 	box.add_child(_labeled("分辨率", preset))
 
+	var mode := OptionButton.new()
+	mode.add_item("2D 图层场景（平面动画）", 0)
+	mode.add_item("3D 场景（物体 + 相机 + 光）", 1)
+	mode.select(0)
+	box.add_child(_labeled("场景类型", mode))
+
 	var size_row := HBoxContainer.new()
 	size_row.add_theme_constant_override("separation", 6)
 	var width := SpinBox.new()
@@ -201,8 +207,9 @@ func popup_new() -> void:
 		if title.is_empty():
 			title = "未命名壁纸"
 		var size := Vector2i(int(width.value), int(height.value))
+		var scene_mode := "3d" if mode.selected == 1 else "2d"
 		d.queue_free()
-		main.request_new_project(title, size)
+		main.request_new_project(title, size, scene_mode)
 	)
 	add_child(d)
 	d.popup_centered()

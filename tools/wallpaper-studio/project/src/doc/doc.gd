@@ -16,12 +16,14 @@ const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const LayerTimeline = preload("res://src/doc/timeline.gd")
 const Motion = preload("res://src/doc/motion.gd")
+const Scene3D = preload("res://src/doc/scene3d.gd")
 
 ## 文档格式版本。
 ##   1 —— x/y 关键帧存父级**像素**；
-##   2 —— x/y 关键帧存父级**比例**（0..1），换画布/容器尺寸不再需要改关键帧。
+##   2 —— x/y 关键帧存父级**比例**（0..1），换画布/容器尺寸不再需要改关键帧；
+##   3 —— 新增 3D 场景模式（mode / objects3d / camera3d / env3d）。
 ## 老文档在 parse 里一次性折算，编辑器内部只认当前版本。
-const FORMAT_VERSION := 2
+const FORMAT_VERSION := 3
 const MIN_CANVAS := 64
 
 var name: String = "未命名壁纸"
@@ -31,6 +33,15 @@ var pack_id: String = ""
 ## 时间轴总长度（秒）。关键帧可以超出它，播放器按它循环。
 var loop_seconds: float = 8.0
 var layers: Array = []          # Array[Dictionary]，index 0 = 最底层
+## 3D 场景模式（mode = "3d"）。三个字段与 layers 互斥使用，见 doc/scene3d.gd。
+var mode: String = "2d"
+var objects3d: Array = []
+var camera3d: Dictionary = Scene3D.normalize_camera(null)
+var env3d: Dictionary = Scene3D.normalize_env(null)
+
+
+func is_3d() -> bool:
+	return mode == "3d"
 
 
 ## 不用 class_name 就没法写 `<脚本>.new()` 之外的类型名，统一走这两个入口。
@@ -72,6 +83,11 @@ static func parse(text: String) -> Dictionary:
 		d.canvas = Vector2i(int(c.get("width", 1920)), int(c.get("height", 1080)))
 	d.background = Layer.to_color(raw.get("background"), Color(0.02, 0.07, 0.12))
 	d.loop_seconds = clampf(float(raw.get("loop_seconds", 8.0)), 0.25, 600.0)
+	# 3D 场景（format_version 3 起）。mode 不是 "3d" 就按 2D 处理，老文档零改动。
+	d.mode = "3d" if String(raw.get("mode", "2d")) == "3d" else "2d"
+	d.objects3d = Scene3D.normalize_objects(raw.get("objects3d"))
+	d.camera3d = Scene3D.normalize_camera(raw.get("camera3d"))
+	d.env3d = Scene3D.normalize_env(raw.get("env3d"))
 	if d.canvas.x < MIN_CANVAS or d.canvas.y < MIN_CANVAS:
 		return {"ok": false, "doc": null, "error": "画布尺寸过小：%s" % d.canvas}
 
@@ -176,6 +192,11 @@ func to_text() -> String:
 		# 读回来认不出，颜色会静默变成默认色（见 Layer.to_wire）。
 		"layers": Layer.to_wire(layers),
 	}
+	if mode == "3d":
+		out["mode"] = "3d"
+		out["objects3d"] = Scene3D.to_wire(objects3d)
+		out["camera3d"] = Scene3D.to_wire(camera3d)
+		out["env3d"] = Scene3D.to_wire(env3d)
 	return JSON.stringify(out, "  ")
 
 
@@ -190,6 +211,9 @@ func timeline_end() -> float:
 ## 所有关键帧里最晚的时刻（没有关键帧返回 0）。只用于提示"超出时长"和"适配末帧"。
 ## 运动路径的结束时刻也算：路径只在 [start, end] 之间走，超出同样不播放。
 func key_end() -> float:
+	if is_3d():
+		# 3D：只有相机路径参与"末帧"判断（物体的自转/浮动是循环的，没有末帧）。
+		return Scene3D.camera_key_end(camera3d)
 	var end := 0.0
 	for item in walk():
 		var layer: Dictionary = item["layer"]
@@ -201,6 +225,14 @@ func key_end() -> float:
 
 ## 超出循环时长的关键帧（不会播放）。返回 [{layer, channel, count}]。
 func out_of_range_keys() -> Array:
+	if is_3d():
+		var keys: Array = camera3d.get("keys", [])
+		var n := 0
+		for k in keys:
+			if float(k.get("t", 0.0)) > loop_seconds + 0.0001:
+				n += 1
+		return [] if n == 0 else [{"layer": {"name": "相机"}, "channel": "camera",
+				"count": n}]
 	var out := []
 	for item in walk():
 		var layer: Dictionary = item["layer"]
@@ -218,6 +250,19 @@ func out_of_range_keys() -> Array:
 ## 循环接缝：每条轨道在 t=0 与 t=loop 的采样值差（按通道自己的容差归一化）。
 ## ok=false 表示回绕那一帧会"跳一下"。where 指出偏差最大的是哪一层/哪条通道。
 func loop_seam() -> Dictionary:
+	if is_3d():
+		# 3D：相机路径回绕会不会跳 = 0 时刻与 loop 时刻的机位差。
+		# mirror/once 模式天然无缝（mirror 到头折返，once 停住不动），不提示。
+		var keys: Array = camera3d.get("keys", [])
+		if keys.is_empty() or String(camera3d.get("play", "loop")) != "loop":
+			return {"ok": true, "ratio": 0.0, "where": ""}
+		var a = Scene3D.camera_at(camera3d, 0.0, loop_seconds)
+		var b = Scene3D.camera_at(camera3d, loop_seconds, loop_seconds)
+		var d := (a["pos"] as Vector3).distance_to(b["pos"]) / 0.01 \
+				+ (a["target"] as Vector3).distance_to(b["target"]) / 0.01 \
+				+ absf(float(a["fov"]) - float(b["fov"])) / 0.5
+		return {"ok": d <= 1.0, "ratio": d,
+				"where": "" if d <= 1.0 else "相机路径 · 机位"}
 	var worst := 0.0
 	var where := ""
 	for item in walk():
@@ -800,6 +845,8 @@ func validate(project_dir: String) -> PackedStringArray:
 	var problems := PackedStringArray()
 	if name.strip_edges().is_empty():
 		problems.append("壁纸名称为空。")
+	if is_3d():
+		return _validate_3d(project_dir, problems)
 	if canvas.x < MIN_CANVAS or canvas.y < MIN_CANVAS:
 		problems.append("画布尺寸过小：%s。" % canvas)
 	var visible := 0
@@ -851,10 +898,50 @@ func validate(project_dir: String) -> PackedStringArray:
 	return problems
 
 
-## 导出要拷进包里的一切实体资源（图片层、粒子贴图、图片遮罩）。
+## 3D 场景的导出校验。
+func _validate_3d(project_dir: String, problems: PackedStringArray) -> PackedStringArray:
+	var visible := 0
+	for o in objects3d:
+		if not (o is Dictionary):
+			continue
+		if not bool(o.get("visible", true)):
+			continue
+		if Scene3D.is_content(o):
+			visible += 1
+		if String(o.get("type", "")) == "model":
+			var rel := String((o.get("params", {}) as Dictionary).get("src", ""))
+			if rel.is_empty():
+				problems.append("模型「%s」没有选择文件。" % String(o.get("name", "")))
+			elif not FileAccess.file_exists(project_dir.path_join(rel)):
+				problems.append("模型「%s」的文件不存在：%s" % [String(o.get("name", "")), rel])
+	if visible == 0:
+		problems.append("3D 场景里没有任何可见物体，导出的会是一片空。")
+	var over := out_of_range_keys()
+	if not over.is_empty():
+		problems.append("有 %d 个相机关键帧超出循环时长（%.2f 秒），不会播放；"
+				% [int(over[0]["count"]), loop_seconds]
+				+ "请把「时长」调大（可用「适配末帧」）或把关键帧移回范围内。")
+	var seam := loop_seam()
+	if not bool(seam["ok"]) and String(camera3d.get("play", "loop")) == "loop":
+		problems.append("相机路径回绕时机位会跳一下：把 0 时刻和末尾的机位调成一样"
+				+ "（或把播放模式改成「往返」）。")
+	return problems
+
+
+## 导出要拷进包里的一切实体资源（图片层、粒子贴图、图片遮罩、3D 模型文件）。
 ## 返回 [{layer, field, rel}]，由 exporter 决定怎么拷。
 func asset_refs() -> Array:
 	var out := []
+	if is_3d():
+		for o in objects3d:
+			if not (o is Dictionary) or not bool(o.get("visible", true)):
+				continue
+			if String(o.get("type", "")) != "model":
+				continue
+			var rel3 := String((o.get("params", {}) as Dictionary).get("src", ""))
+			if not rel3.is_empty():
+				out.append({"layer": o, "field": "src", "rel": rel3})
+		return out
 	for item in walk():
 		var l: Dictionary = item["layer"]
 		if not bool(l.get("visible", true)):

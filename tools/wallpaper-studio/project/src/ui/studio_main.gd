@@ -18,6 +18,10 @@ const LayerPanel = preload("res://src/ui/layer_panel.gd")
 const CanvasView = preload("res://src/ui/canvas_view.gd")
 const Inspector = preload("res://src/ui/inspector.gd")
 const TimelinePanel = preload("res://src/ui/timeline_panel.gd")
+const Preview3D = preload("res://src/ui/preview3d.gd")
+const ObjectsPanel = preload("res://src/ui/objects_panel.gd")
+const Inspector3D = preload("res://src/ui/inspector3d.gd")
+const Scene3D = preload("res://src/doc/scene3d.gd")
 
 signal doc_changed
 signal selection_changed
@@ -33,12 +37,17 @@ var busy := false              # 导出等阻塞操作进行中：禁止新建/�
 
 var _history = null              # History 实例（快照栈，见 doc/history.gd）
 var _clipboard: Array = []       # 复制的图层（深拷贝，粘贴时重新分配 id）
+var _clipboard3d: Array = []     # 复制的 3D 对象（同上）
 
 var _bar: Control
 var _layers: Control
 var _canvas: Control
 var _inspector: Control
 var _timeline: Control
+# 3D 场景模式（mode = "3d"）的三块面板；2D 模式下整块隐藏，见 _apply_mode()。
+var _objects: Control
+var _preview3d: Control
+var _inspector3d: Control
 
 
 func _ready() -> void:
@@ -85,6 +94,23 @@ func _build_ui() -> void:
 	_inspector.custom_minimum_size = Vector2(300, 0)
 	hbox.add_child(_inspector)
 
+	# 3D 模式面板：默认隐藏，打开 3D 工程时由 _apply_mode 换上来。
+	_objects = ObjectsPanel.new()
+	_objects.custom_minimum_size = Vector2(240, 0)
+	_objects.visible = false
+	hbox.add_child(_objects)
+
+	_preview3d = Preview3D.new()
+	_preview3d.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_preview3d.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_preview3d.visible = false
+	hbox.add_child(_preview3d)
+
+	_inspector3d = Inspector3D.new()
+	_inspector3d.custom_minimum_size = Vector2(300, 0)
+	_inspector3d.visible = false
+	hbox.add_child(_inspector3d)
+
 	_timeline = TimelinePanel.new()
 	_timeline.custom_minimum_size = Vector2(0, 190)
 	vbox.add_child(_timeline)
@@ -95,6 +121,9 @@ func _build_ui() -> void:
 	_canvas.setup(self)
 	_inspector.setup(self)
 	_timeline.setup(self)
+	_objects.setup(self)
+	_preview3d.setup(self)
+	_inspector3d.setup(self)
 
 
 ## 默认字体。运行库内置字体没有中文字形，不换字体的话所有中文都是方块。
@@ -129,7 +158,26 @@ func _set_doc(new_doc, dir_path: String) -> void:
 	if _canvas != null:
 		_canvas.time = 0.0
 		_canvas.playing = false
+	if _preview3d != null:
+		_preview3d.time = 0.0
+		_preview3d.playing = false
+		_preview3d.camera_view = false
+	_apply_mode()
 	_update_window_title()
+
+
+## 按 doc.mode 切换 2D / 3D 面板组。两套面板都常驻（只切可见性），
+## 这样来回切换不用重建任何东西，选择状态也各归各的。
+func _apply_mode() -> void:
+	var is3d: bool = doc != null and doc.is_3d()
+	_layers.visible = not is3d
+	_canvas.visible = not is3d
+	_inspector.visible = not is3d
+	_objects.visible = is3d
+	_preview3d.visible = is3d
+	_inspector3d.visible = is3d
+	# 3D 的时间轴（相机路径）在预览自己的工具条上，底部面板对 3D 没有意义。
+	_timeline.visible = not is3d
 
 
 ## 新工程目录：user://projects/<安全名>；同名已存在就加 " 2"、" 3" …
@@ -147,10 +195,13 @@ func _make_project_dir(title: String) -> String:
 	return path
 
 
-func new_project(title: String, size: Vector2i) -> void:
+func new_project(title: String, size: Vector2i, scene_mode: String = "2d") -> void:
 	if busy:
 		return
 	var fresh = StudioDoc.create_empty(title, size)
+	fresh.mode = "3d" if scene_mode == "3d" else "2d"
+	if fresh.is_3d():
+		fresh.objects3d = Scene3D.starter_scene()
 	_set_doc(fresh, "")
 	_refresh_all()
 
@@ -224,12 +275,20 @@ func apply_change(rebuild_inspector: bool = false, label: String = "编辑") -> 
 		return
 	dirty = true
 	doc_changed.emit()
-	if _canvas != null:
-		_canvas.rebuild()
-	if _layers != null:
-		_layers.refresh()
-	if rebuild_inspector and _inspector != null:
-		_inspector.refresh(true)
+	if doc.is_3d():
+		if _preview3d != null:
+			_preview3d.rebuild()
+		if _objects != null:
+			_objects.refresh()
+		if _inspector3d != null:
+			_inspector3d.refresh(true)
+	else:
+		if _canvas != null:
+			_canvas.rebuild()
+		if _layers != null:
+			_layers.refresh()
+		if rebuild_inspector and _inspector != null:
+			_inspector.refresh(true)
 	if _timeline != null:
 		_timeline.sync_time()
 		_timeline.refresh_warnings()
@@ -301,7 +360,8 @@ func _restore(state: Dictionary) -> void:
 		return
 	doc = parsed.doc
 	var p: PackedInt32Array = state.get("sel", PackedInt32Array())
-	if not p.is_empty() and doc.layer_at(p).is_empty():
+	var camera_sel: bool = doc.is_3d() and p.size() == 1 and int(p[0]) == ObjectsPanel.CAMERA_PATH
+	if not p.is_empty() and not camera_sel and doc.layer_at(p).is_empty():
 		p = PackedInt32Array()
 	sel = p
 	sel_more = []
@@ -329,6 +389,10 @@ func recompile_animation() -> void:
 
 
 func seek_time(t: float) -> void:
+	if doc != null and doc.is_3d():
+		if _preview3d != null:
+			_preview3d.set_time(t)
+		return
 	if _canvas == null:
 		return
 	_canvas.set_time(t)
@@ -339,6 +403,10 @@ func seek_time(t: float) -> void:
 
 
 func toggle_play() -> void:
+	if doc != null and doc.is_3d():
+		if _preview3d != null:
+			_preview3d.toggle_play()
+		return
 	if _canvas == null:
 		return
 	_canvas.toggle_play()
@@ -361,6 +429,10 @@ func apply_live() -> void:
 	if doc == null:
 		return
 	dirty = true
+	if doc.is_3d():
+		if _preview3d != null:
+			_preview3d.apply_live(sel)
+		return
 	if _canvas != null:
 		_canvas.apply_live(sel)
 
@@ -385,7 +457,14 @@ func select_layer(index: int) -> void:
 func select_layer_path(path: PackedInt32Array, keep_more: bool = false) -> void:
 	if doc == null:
 		return
-	if not path.is_empty() and doc.layer_at(path).is_empty():
+	if doc.is_3d():
+		# 3D 里 sel 是 objects3d 的下标（[-1] 是相机的哨兵），不是图层路径 ——
+		# 走 layer_at 校验会把每一次选择都判成"路径失效"而清空。
+		if path.size() == 1 and int(path[0]) != ObjectsPanel.CAMERA_PATH:
+			var oi := int(path[0])
+			if oi < 0 or oi >= doc.objects3d.size():
+				path = PackedInt32Array()
+	elif not path.is_empty() and doc.layer_at(path).is_empty():
 		path = PackedInt32Array()
 	if not keep_more:
 		sel_more = []
@@ -394,7 +473,43 @@ func select_layer_path(path: PackedInt32Array, keep_more: bool = false) -> void:
 	sel = path
 	if _layers != null:
 		_layers.sync_selection()
+	if doc != null and doc.is_3d() and _objects != null:
+		_objects.sync_selection()
+		if _inspector3d != null:
+			_inspector3d.refresh(true)
 	_canvas_changed_selection()
+	selection_changed.emit()
+
+
+## 当前选中的 3D 物体（未选 / 选的是相机 / 路径失效时返回空字典）。
+func selected_object() -> Dictionary:
+	if doc == null or not doc.is_3d() or sel.size() != 1:
+		return {}
+	var i := int(sel[0])
+	if i < 0 or i >= doc.objects3d.size():
+		return {}
+	return doc.objects3d[i]
+
+
+## 3D 的粘贴：复制体放在原物体旁（+1 米），名字带后缀，id 换新。
+func _paste_objects(offset := Vector2(1.0, 0.0)) -> void:
+	if doc == null or _clipboard3d.is_empty():
+		return
+	var pasted := []
+	for raw in _clipboard3d:
+		if not (raw is Dictionary):
+			continue
+		var copy: Dictionary = (raw as Dictionary).duplicate(true)
+		copy["id"] = "o_" + "%08x" % (randi() & 0xFFFFFFFF)
+		copy["name"] = String(copy.get("name", "物体")) + " 副本"
+		copy["pos"] = [float(copy["pos"][0]) + offset.x, float(copy["pos"][1]),
+				float(copy["pos"][2])]
+		doc.objects3d.append(copy)
+		pasted.append(PackedInt32Array([doc.objects3d.size() - 1]))
+	if pasted.is_empty():
+		return
+	sel = pasted[pasted.size() - 1]
+	apply_change(true, "粘贴对象")
 	selection_changed.emit()
 
 
@@ -461,7 +576,13 @@ func has_multi_selection() -> bool:
 
 func copy_selection() -> void:
 	_clipboard = []
+	_clipboard3d = []
 	if doc == null:
+		return
+	if doc.is_3d():
+		var o := selected_object()
+		if not o.is_empty():
+			_clipboard3d.append(o.duplicate(true))
 		return
 	for p in selected_paths():
 		var layer: Dictionary = doc.layer_at(p)
@@ -477,6 +598,9 @@ func has_clipboard() -> bool:
 ## as_sibling = true 时强制"和主选择并列"（原地复制用它 —— 把容器复制进自己里面没意义）。
 ## offset 不为零时顺带平移（原地复制用它错开一点，免得看不出复制出来了）。
 func paste_layers(offset := Vector2.ZERO, as_sibling := false) -> void:
+	if doc != null and doc.is_3d():
+		_paste_objects()
+		return
 	if doc == null or _clipboard.is_empty():
 		return
 	var parent := PackedInt32Array()
@@ -506,6 +630,13 @@ func paste_layers(offset := Vector2.ZERO, as_sibling := false) -> void:
 
 ## 原地复制（Ctrl+D）：复制 + 立刻粘贴并错开 24px。
 func duplicate_selection() -> void:
+	if doc != null and doc.is_3d():
+		var o := selected_object()
+		if o.is_empty():
+			return
+		copy_selection()
+		_paste_objects(Vector2(1.0, 0.0))
+		return
 	if selected_paths().is_empty():
 		return
 	copy_selection()
@@ -515,6 +646,17 @@ func duplicate_selection() -> void:
 ## 删除所有选中的图层。从深往浅、同层从后往前删，避免下标串位。
 func delete_selection() -> void:
 	if doc == null:
+		return
+	if doc.is_3d():
+		var o := selected_object()
+		if o.is_empty():
+			return
+		var idx := int(sel[0])
+		if idx < 0 or idx >= doc.objects3d.size():
+			return
+		doc.objects3d.remove_at(idx)
+		select_layer_path(PackedInt32Array())
+		apply_change(true, "删除对象")
 		return
 	var paths := selected_paths()
 	if paths.is_empty():
@@ -574,6 +716,8 @@ func _retarget_subtree(layer: Dictionary, map: Dictionary) -> void:
 
 
 func _canvas_changed_selection() -> void:
+	if doc != null and doc.is_3d():
+		return          # 3D 预览没有选区框
 	if _canvas != null and _canvas.has_method("refresh_selection"):
 		_canvas.refresh_selection()
 	if _inspector != null:
@@ -585,6 +729,10 @@ func _canvas_changed_selection() -> void:
 ## 只改了文档元信息（名称）或图层名：不需要重建画布。
 func refresh_layers() -> void:
 	dirty = true
+	if doc != null and doc.is_3d():
+		if _objects != null:
+			_objects.refresh()
+		return
 	if _layers != null:
 		_layers.refresh()
 	if _bar != null:
@@ -601,14 +749,23 @@ func mark_dirty() -> void:
 
 func _refresh_all() -> void:
 	doc_changed.emit()
-	if _layers != null:
-		_layers.refresh()
-	if _canvas != null:
-		_canvas.rebuild()
-	if _inspector != null:
-		_inspector.refresh(true)
-	if _timeline != null:
-		_timeline.refresh()
+	_apply_mode()
+	if doc != null and doc.is_3d():
+		if _objects != null:
+			_objects.refresh()
+		if _preview3d != null:
+			_preview3d.rebuild()
+		if _inspector3d != null:
+			_inspector3d.refresh(true)
+	else:
+		if _layers != null:
+			_layers.refresh()
+		if _canvas != null:
+			_canvas.rebuild()
+		if _inspector != null:
+			_inspector.refresh(true)
+		if _timeline != null:
+			_timeline.refresh()
 	if _bar != null:
 		_bar.update_status()
 	_update_window_title()
@@ -743,6 +900,10 @@ func _shortcut_input(event: InputEvent) -> void:
 
 func _select_all() -> void:
 	if doc == null:
+		return
+	if doc.is_3d():
+		# 3D 没有多选编辑，全选等价于"全不选"（避免 Delete 误删一片）。
+		select_layer_path(PackedInt32Array())
 		return
 	var paths := []
 	for i in doc.layers.size():

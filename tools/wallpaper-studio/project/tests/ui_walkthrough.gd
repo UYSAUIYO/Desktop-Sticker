@@ -8,8 +8,11 @@ extends SceneTree
 ## `Viewport.push_input()` 发真正的鼠标/键盘事件（点和拖都走控件的 `_gui_input`），
 ## 一步步截图存盘，用来肉眼确认「新增功能在真窗口里是这个样子」。
 ##
-## 覆盖：打开工程 → 点标尺拖播放头 → 播放/暂停 → 在属性面板里键入数值写关键帧
-##      → 画布换 4K 预设 → 时长改短后的告警/适配末帧/闭合循环 → 动图帧序列在预览里真的在走。
+## 覆盖：2D —— 打开工程 → 点标尺拖播放头 → 播放/暂停 → 属性面板键入数值写关键帧
+##      → 画布换 4K → 时长改短后的告警/适配末帧/闭合循环 → 动图帧序列 → 缩放平移
+##      → 撤销重做 → 多选框选 → 复制粘贴 → 缩略图与折叠 → 贝塞尔运动路径
+##      3D —— 新建 3D 工程换面板组 → 「＋ 添加」加物体 → 预览里点物体选中 →
+##      属性面板改位置/自转 → 切相机视角并写相机关键帧 → 播放 → 导出 .dswall。
 ##
 ## 文件名刻意不叫 test_*.gd：run_tests.gd 收集的是 test_ 前缀，这份只能手动跑。
 
@@ -17,6 +20,7 @@ const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
 const Motion = preload("res://src/doc/motion.gd")
+const Scene3D = preload("res://src/doc/scene3d.gd")
 
 var fails := 0
 var _shots_dir := ""
@@ -408,8 +412,164 @@ func _run() -> void:
 		_approx(node_m.anchor_left, float(want_p.x), 0.01, "预览里的节点落在路径采样点上")
 	await _shot("17-motion-path")
 
-	# 保存走查工程，方便人工再打开这份状态。
-	scene.doc.loop_seconds = 2.0
+	# ================================================================ 3D 场景
+	# 后面的 13 ~ 19 节整体换到 3D 工程上跑。和上面 2D 的走查是同一套手法：
+	# 真实点击 / 真实键入 / 真实截图，最后再真的导出一个 3D 壁纸包。
+
+	# ---------------------------------------------------------------- 13. 新建 3D 工程：面板换组
+	scene.new_project("3D 走查", Vector2i(1920, 1080), "3d")
+	await _frames(4)
+	_ok(scene.doc.is_3d(), "新建 3D 工程（mode = %s）" % scene.doc.mode)
+	_ok(scene._objects.visible and scene._preview3d.visible and scene._inspector3d.visible,
+			"3D 面板组（对象列表 / 预览 / 属性）挂上来了")
+	_ok(not scene._layers.visible and not scene._canvas.visible \
+					and not scene._timeline.visible,
+			"2D 面板组（图层 / 画布 / 时间轴）收起来了")
+	_ok(scene.doc.objects3d.size() >= 4,
+			"起始场景有 %d 个对象（地面 / 主体 / 环 / 主光）" % scene.doc.objects3d.size())
+	_ok(scene._preview3d._root != null and scene._preview3d._doc_cam != null,
+			"预览里建出了场景树和文档相机")
+	await _shot("18-3d-new")
+
+	# ---------------------------------------------------------------- 14. 「＋ 添加」加一个立方体
+	var n_obj0: int = scene.doc.objects3d.size()
+	scene._objects._add_menu.get_popup().id_pressed.emit(0)      # 0 = 立方体
+	await _frames(3)
+	_ok(scene.doc.objects3d.size() == n_obj0 + 1, "「＋ 添加 → 立方体」加了一个对象")
+	_ok(scene.sel == PackedInt32Array([n_obj0]), "新对象建好就自动选中")
+	_ok(String((scene.doc.objects3d[n_obj0] as Dictionary).get("type", "")) == "box",
+			"类型确实是立方体")
+	_ok(scene._objects._list.item_count == n_obj0 + 2,
+			"对象列表 = 相机 1 行 + 物体 %d 行" % (n_obj0 + 1))
+	await _shot("19-3d-add")
+
+	# ---------------------------------------------------------------- 15. 在预览里点物体选中（真实命中）
+	var core_i := 1                              # 起始场景的「主体」球，在原点
+	var core_p := _obj_screen_pos(scene, core_i)
+	_ok(core_p.x >= 0.0, "算出「主体」在预览里的屏幕位置")
+	if core_p.x >= 0.0:
+		await _click(core_p)
+		await _frames(2)
+		_ok(scene.sel == PackedInt32Array([core_i]),
+				"点预览里的球选中它（sel = %s）" % str(scene.sel))
+	await _shot("20-3d-pick")
+
+	# ---------------------------------------------------------------- 16. 属性面板改位置 / 自转
+	scene.select_layer_path(PackedInt32Array([core_i]))
+	await _frames(3)
+	var pos_spins: Array = _insp3_spins(scene, "位置")
+	_ok(pos_spins.size() == 3, "属性面板有「位置」三个数字框")
+	if pos_spins.size() == 3:
+		(pos_spins[1] as SpinBox).value = 1.5
+		await _frames(3)
+		var moved: Dictionary = scene.doc.objects3d[core_i]
+		_approx(float((moved["pos"] as Array)[1]), 1.5, 0.0001,
+				"位置 Y 改成 1.5 -> 文档里真的变了")
+		var n3 := _node3d(scene, String(moved["id"]))
+		_ok(n3 != null, "预览场景树里有这个物体的节点")
+		if n3 != null:
+			_approx((n3 as Node3D).position.y, 1.5, 0.0001, "预览里的节点跟着抬高了")
+	await _shot("21-3d-move")
+
+	var spin_spins: Array = _insp3_spins(scene, "自转（度/秒）")
+	_ok(spin_spins.size() == 3, "属性面板有「自转（度/秒）」")
+	if spin_spins.size() == 3:
+		(spin_spins[1] as SpinBox).value = 90.0
+		await _frames(3)
+		var anim: Dictionary = (scene.doc.objects3d[core_i] as Dictionary).get("anim", {})
+		_approx(float((anim.get("spin", [0.0, 0.0, 0.0]) as Array)[1]), 90.0, 0.0001,
+				"自转 Y = 90 度/秒 写进文档")
+
+	# ---------------------------------------------------------------- 17. 相机视角 / 写相机关键帧
+	var cam_row_p := _item_center(scene._objects._list, 0)
+	_ok(cam_row_p.x >= 0.0, "对象列表第 0 行（相机）算得出位置")
+	if cam_row_p.x >= 0.0:
+		await _click(cam_row_p)
+		await _frames(3)
+		_ok(scene.sel == PackedInt32Array([-1]),
+				"点列表第一行选中相机（sel = %s）" % str(scene.sel))
+	_ok(_insp3_has(scene, "机位"), "属性面板换成了相机面板（有「机位」）")
+
+	await _click(_center(scene._preview3d._btn_cam_view))
+	await _frames(3)
+	_ok(scene._preview3d.camera_view,
+			"切到「相机视角」（按钮 = %s）" % scene._preview3d._btn_cam_view.text)
+	_ok(not scene._preview3d._btn_key.disabled, "相机视角下「写相机关键帧」可用")
+
+	scene.seek_time(0.0)
+	await _frames(2)
+	var cam_spins: Array = _insp3_spins(scene, "机位")
+	if cam_spins.size() == 3:
+		(cam_spins[0] as SpinBox).value = 6.0
+		await _frames(3)
+	_approx(float((scene.doc.camera3d["pos"] as Array)[0]), 6.0, 0.0001, "机位 X 改成 6 米")
+	await _click(_center(scene._preview3d._btn_key))
+	await _frames(3)
+	_ok((scene.doc.camera3d.get("keys", []) as Array).size() == 1, "写下第 1 个相机关键帧（t=0）")
+
+	scene.seek_time(2.0)
+	await _frames(2)
+	var cam_spins2: Array = _insp3_spins(scene, "机位")
+	if cam_spins2.size() == 3:
+		(cam_spins2[0] as SpinBox).value = -6.0
+		await _frames(3)
+	await _click(_center(scene._preview3d._btn_key))
+	await _frames(3)
+	var cam_keys: Array = scene.doc.camera3d.get("keys", [])
+	_ok(cam_keys.size() == 2, "在 2s 处写下第 2 个关键帧（共 %d 个）" % cam_keys.size())
+	if cam_keys.size() == 2:
+		var mid = Scene3D.camera_at(scene.doc.camera3d, 1.0, scene.doc.loop_seconds)
+		_approx((mid["pos"] as Vector3).x, 0.0, 0.02,
+				"1s 处机位在两帧中间（两帧 -6 与 +6 的中点）")
+	await _shot("22-3d-camera-key")
+
+	# ---------------------------------------------------------------- 18. 3D 播放 / 暂停
+	scene.seek_time(0.0)
+	await _frames(2)
+	var t0: float = scene._preview3d.time
+	await _click(_center(scene._preview3d._btn_play))
+	await create_timer(0.6).timeout
+	var t1: float = scene._preview3d.time
+	_ok(t1 > t0 + 0.25, "3D 播放 0.6s 后播放头前进（%.2f -> %.2f）" % [t0, t1])
+	await _click(_center(scene._preview3d._btn_play))
+	await _frames(2)
+	_ok(not scene._preview3d.playing, "再点一次暂停")
+	await _shot("23-3d-play")
+
+	# ---------------------------------------------------------------- 19. 真的导出一个 3D 壁纸包
+	var out_dir := ProjectSettings.globalize_path("user://ui-walkthrough-export")
+	DirAccess.make_dir_recursive_absolute(out_dir)
+	var out_path := out_dir.path_join("walkthrough-3d.dswall")
+	if FileAccess.file_exists(out_path):
+		DirAccess.remove_absolute(out_path)
+	await scene._bar._start_export(out_path, false)
+	await _frames(3)
+	_ok(FileAccess.file_exists(out_path), "导出出 .dswall")
+	if FileAccess.file_exists(out_path):
+		var zip := ZIPReader.new()
+		if zip.open(out_path) == OK:
+			var files: PackedStringArray = zip.get_files()
+			var has_manifest := false
+			var has_pck := false
+			for f in files:
+				if String(f).ends_with("manifest.json"):
+					has_manifest = true
+				if String(f).ends_with(".pck"):
+					has_pck = true
+			_ok(has_manifest and has_pck,
+					"包里有 manifest.json 和加密 PCK（%d 个文件）" % files.size())
+			if has_manifest:
+				var mtext: String = zip.read_file("manifest.json").get_string_from_utf8()
+				var mparsed = JSON.parse_string(mtext)
+				_ok(mparsed is Dictionary, "manifest.json 是合法 JSON")
+				if mparsed is Dictionary:
+					var dim := String((mparsed as Dictionary).get("dimension", ""))
+					_ok(dim == "3d", "manifest 标记为 3D 壁纸（dimension = %s）" % dim)
+			zip.close()
+		else:
+			_ok(false, "导出的包打不开（不是合法 zip）")
+	await _shot("24-3d-export")
+
 	print("[walk] done")
 
 
@@ -627,6 +787,77 @@ func _find_preset(scene) -> OptionButton:
 		if ob.item_count > 1 and String(ob.get_item_text(1)).contains("1920"):
 			return ob
 	return null
+
+
+## 3D 场景：容器里按名字找一行里的数字框（Inspector3D 的 _row 是 [标签 : 控件]）。
+func _insp3_spins(scene, label: String) -> Array:
+	return _insp3_controls(scene, label, "SpinBox")
+
+
+func _insp3_has(scene, label: String) -> bool:
+	return not _insp3_controls(scene, label, "").is_empty()
+
+
+## type_name 为空 = 任意控件，否则只收这个类的。
+func _insp3_controls(scene, label: String, type_name: String) -> Array:
+	var out := []
+	if scene == null or scene._inspector3d == null:
+		return out
+	var box = scene._inspector3d._box
+	if box == null:
+		return out
+	for line in box.get_children():
+		if not (line is HBoxContainer):
+			continue
+		var kids := (line as Node).get_children()
+		if kids.is_empty() or not (kids[0] is Label):
+			continue
+		if String((kids[0] as Label).text) != label:
+			continue
+		for k in kids:
+			if k is Label:
+				continue
+			if type_name.is_empty() or is_instance_of(k, type_name):
+				out.append(k)
+		return out
+	return out
+
+
+## 物体原点在预览窗口里的屏幕坐标（拾取用的是同一套 unproject）。
+func _obj_screen_pos(scene, index: int) -> Vector2:
+	var pv = scene._preview3d
+	if pv == null or pv._viewport == null or scene.doc == null:
+		return Vector2(-1.0, -1.0)
+	if index < 0 or index >= scene.doc.objects3d.size():
+		return Vector2(-1.0, -1.0)
+	var cam: Camera3D = pv._viewport.get_camera_3d()
+	if cam == null:
+		return Vector2(-1.0, -1.0)
+	var o: Dictionary = scene.doc.objects3d[index]
+	var world: Vector3 = Scene3D.vec3(o.get("pos", [0.0, 0.0, 0.0]))
+	if cam.is_position_behind(world):
+		return Vector2(-1.0, -1.0)
+	return pv.get_global_rect().position + cam.unproject_position(world)
+
+
+## 3D 场景树里的物体节点（名字 = "O_" + id）。
+func _node3d(scene, id: String) -> Node3D:
+	if scene == null or scene._preview3d == null or scene._preview3d._root == null:
+		return null
+	return scene._preview3d._root.find_child("O_" + id, true, false) as Node3D
+
+
+## ItemList 某一行在窗口里的中心点（行高不暴露，从上往下扫命中测试）。
+func _item_center(list: ItemList, row: int) -> Vector2:
+	if list == null:
+		return Vector2(-1.0, -1.0)
+	var lr: Rect2 = list.get_global_rect()
+	var y: float = lr.position.y + 2.0
+	while y < lr.end.y - 2.0:
+		if list.get_item_at_position(Vector2(8.0, y - lr.position.y), true) == row:
+			return Vector2(lr.position.x + 8.0, y)
+		y += 2.0
+	return Vector2(-1.0, -1.0)
 
 
 ## 节点在窗口里的矩形（画布 SubViewport 是缩放显示的）。

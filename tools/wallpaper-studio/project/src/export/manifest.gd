@@ -14,7 +14,9 @@ static func build(doc, main_scene: String, content_flags: Array, script_dir: Str
 		"author": "",
 		"description": "",
 		"pack_id": doc.pack_id,
-		"dimension": "2d",
+		# dimension 是 C++ 端 WallPaperManifest 的既有字段："2d" = 控件场景，
+		# "3d" = Node3D 场景（宿主据此判断要不要开 3D 渲染/相机）。
+		"dimension": "3d" if doc.is_3d() else "2d",
 		"tags": [],
 		"categories": [],
 		"main_scene": main_scene,
