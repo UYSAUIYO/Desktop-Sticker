@@ -181,6 +181,10 @@ func register(t) -> void:
 				t.ok(c.texture is AnimatedTexture, "运行库把帧序列解成 AnimatedTexture")
 				if c.texture is AnimatedTexture:
 					t.eq((c.texture as AnimatedTexture).frames, 2, "动图帧数")
+					# 包里的每帧时长也必须是 1/fps：AnimatedTexture 没有 fps 属性，
+					# 之前写 anim.fps 是静默无效的，桌面上的动图会变成 1fps。
+					t.approx((c.texture as AnimatedTexture).get_frame_duration(0),
+							1.0 / 6.0, 0.0005, "包里每帧 = 1/6 秒")
 			elif "src" in c:
 				found_image_script = true
 		t.eq(found_clock, true, "the injected clock script survived packing")

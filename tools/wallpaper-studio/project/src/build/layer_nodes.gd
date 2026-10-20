@@ -94,11 +94,14 @@ func _apply_frames() -> void:
 	var anim := AnimatedTexture.new()
 	var n := mini(frames.size(), MAX_FRAMES)
 	anim.frames = maxi(1, n)
-	anim.fps = maxf(0.1, fps)
+	# AnimatedTexture 没有 fps 属性（只有每帧 duration，默认 1 秒）：
+	# 写 anim.fps 是个静默的无效赋值，帧序列会变成 1fps。
+	var dur := 1.0 / maxf(0.1, fps)
 	for i in n:
 		var tex = _decode(frames[i])
 		if tex != null:
 			anim.set_frame_texture(i, tex)
+		anim.set_frame_duration(i, dur)
 	texture = anim
 "
 
@@ -175,11 +178,14 @@ static func load_animation(frames: Array, fps: float, project_dir: String) -> Te
 		return null
 	var anim := AnimatedTexture.new()
 	anim.frames = n
-	anim.fps = maxf(0.1, fps)
+	# 同上：AnimatedTexture 只认每帧 duration；写 anim.fps 不会报错，但也不会生效，
+	# 结果是"预览里动图每秒才换一帧"。
+	var dur := 1.0 / maxf(0.1, fps)
 	for i in n:
 		var tex := load_texture(String(frames[i]), project_dir)
 		if tex != null:
 			anim.set_frame_texture(i, tex)
+		anim.set_frame_duration(i, dur)
 	return anim
 
 

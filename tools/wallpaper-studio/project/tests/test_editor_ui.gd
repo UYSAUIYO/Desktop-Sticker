@@ -13,6 +13,7 @@ const Frame = preload("res://src/doc/frame.gd")
 const Mask = preload("res://src/doc/mask.gd")
 const Filters = preload("res://src/doc/filters.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
+const Inspector = preload("res://src/ui/inspector.gd")
 
 
 func _node_of(editor, layer: Dictionary) -> Control:
@@ -573,6 +574,42 @@ func register(t) -> void:
 				found = true
 				t.approx(float(k["v"]), 0.1, 0.0001, "闭合帧取 0 时刻的值")
 		t.eq(found, true, "循环终点补了关键帧")
+
+		tree.root.remove_child(editor)
+		editor.free()
+	)
+
+	t.case("editor_canvas_preset_applies_correct_size", func() -> void:
+		# 下拉框的 item_selected 给的是**条目下标**，下标 0 是占位符。
+		# 以前直接拿它去查 PRESETS，整体错位一格（选 1080p 得到 2K），
+		# 选最后一档还会数组越界。这里逐档验证，并且每次都重新找控件
+		# （应用画布尺寸会重建属性面板，旧引用会失效）。
+		var tree := Engine.get_main_loop() as SceneTree
+		if tree == null:
+			t.ok(false, "no SceneTree")
+			return
+		var editor = load("res://main.tscn").instantiate()
+		tree.root.add_child(editor)
+		editor.select_layer(-1)
+
+		var preset := _find_option(editor._inspector._box, Inspector.PRESETS.size() + 1)
+		t.ok(preset != null, "工程面板有画布预设下拉")
+		if preset != null:
+			preset.select(2)                      # 第二档：2560 × 1440（2K）
+			preset.item_selected.emit(2)
+			t.eq(editor.doc.canvas, Vector2i(2560, 1440), "选 2K 得到 2K")
+
+		preset = _find_option(editor._inspector._box, Inspector.PRESETS.size() + 1)
+		if preset != null:
+			preset.select(1)                      # 第一档：1920 × 1080
+			preset.item_selected.emit(1)
+			t.eq(editor.doc.canvas, Vector2i(1920, 1080), "选 1080p 得到 1080p（不再错位）")
+
+		preset = _find_option(editor._inspector._box, Inspector.PRESETS.size() + 1)
+		if preset != null:
+			preset.select(5)                      # 最后一档：1080 × 1080
+			preset.item_selected.emit(5)
+			t.eq(editor.doc.canvas, Vector2i(1080, 1080), "最后一档不越界")
 
 		tree.root.remove_child(editor)
 		editor.free()

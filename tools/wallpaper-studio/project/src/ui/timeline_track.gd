@@ -217,7 +217,9 @@ func _tick_step() -> float:
 static func _fmt(t: float) -> String:
 	if absf(t - roundf(t)) < 0.001:
 		return "%d s" % int(roundf(t))
-	return "%.2g s" % t
+	# 不能用 "%.2g"：Godot 的 String % 不认 %g，会每帧刷 "unsupported format character"，
+	# 而且标签画不出来（实测：0.5s 这一格是空的，控制台被错误刷屏）。
+	return String.num(t, 2) + " s"
 
 
 # ---------------------------------------------------------------- 命中

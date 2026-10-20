@@ -8,6 +8,7 @@ extends RefCounted
 const StudioDoc = preload("res://src/doc/doc.gd")
 const Layer = preload("res://src/doc/layer.gd")
 const Timeline = preload("res://src/doc/timeline.gd")
+const TrackView = preload("res://src/ui/timeline_track.gd")
 
 
 func register(t) -> void:
@@ -202,4 +203,12 @@ func register(t) -> void:
 		doc.loop_seconds = doc.key_end()
 		t.eq(doc.out_of_range_keys().size(), 0, "时长拉到末帧后没有超范围")
 		t.approx(float(doc.timeline_end()), 6.0, 0.0001, "循环长度跟着变成 6s")
+	)
+
+	t.case("timeline_ruler_labels_avoid_unsupported_formats", func() -> void:
+		# 标尺标签以前用 "%.2g"，Godot 的 String % 不认 %g：每帧刷
+		# "unsupported format character"，而且非整数秒的标签画不出来（实测 0.5s 是空的）。
+		t.eq(TrackView._fmt(2.0), "2 s", "整数秒")
+		t.eq(TrackView._fmt(0.25), "0.25 s", "两位小数")
+		t.eq(TrackView._fmt(1.5), "1.5 s", "一位小数不带多余的 0")
 	)

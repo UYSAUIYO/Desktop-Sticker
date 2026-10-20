@@ -146,9 +146,12 @@ func _build_doc() -> void:
 	for i in PRESETS.size():
 		preset.add_item(String(PRESETS[i]["name"]), i)
 	preset.item_selected.connect(func(i: int) -> void:
-		if i < 0:
+		# item_selected 给的是**条目下标**，而下标 0 是"选择预设…"占位符。
+		# 直接拿它去查 PRESETS 会整体错位一格（选 1080p 得到 2K），最后一档还会越界。
+		var idx := preset.get_item_id(i)
+		if idx < 0 or idx >= PRESETS.size():
 			return
-		var size: Vector2i = PRESETS[i]["size"]
+		var size: Vector2i = PRESETS[idx]["size"]
 		w.value = float(size.x)
 		h.value = float(size.y)
 		_apply_canvas(Vector2i(size.x, size.y))

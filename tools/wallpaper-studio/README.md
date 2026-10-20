@@ -13,6 +13,7 @@
 | `pack_encrypted.gd` | 把一个目录打包成加密 PCK（headless 编辑器执行） |
 | `pack_encrypted.ps1` | 上面那个的调用壳 |
 | `run_tests.ps1` | 无头测试（先同步工程到 `<exeDir>\studio\`，再跑 GDScript 用例） |
+| `run_ui_walkthrough.ps1` | 真实窗口走查：带窗口跑界面交互并逐步截图（不是无头用例） |
 | `project/` | Studio 的 Godot 工程：`src/doc`（文档模型）、`src/build`（文档→场景）、`src/export`（海报/加密包/.dswall）、`src/ui`（三栏界面）、`src/cli`（无头导出）、`tests/` |
 
 ## 用编辑器做一个壁纸
@@ -83,6 +84,25 @@ dstk-studio.exe --headless --script res://src/cli/export_cli.gd -- \
 - 帧序列存在图层的 `frames` 里，**优先于单张 `src`**；`src` 会同时指向首帧，用作海报/兜底。
 - 预览用 `AnimatedTexture`；导出时逐帧写进加密包，运行时由 `DSTK_IMAGE_SCRIPT` 解码，
   所以包体积基本等于源素材体积（不会把像素内联进场景）。
+
+## 真实窗口走查（不是无头用例）
+
+`tests/ui_walkthrough.gd` 把 `main.tscn` 挂进**带窗口**的进程，用真实鼠标/键盘事件走一遍：
+打开工程 → 点标尺拖播放头 → 播放/暂停 → 在属性面板里键入数值 → 换 4K 预设 →
+时长告警 / 适配末帧 / 闭合循环 → 动图换帧，每一步截图。
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/wallpaper-studio/run_ui_walkthrough.ps1
+```
+
+截图默认写到 `build_tmp/ui-walkthrough/`。它抓的是「控件真的在窗口里布局、真的收到输入」
+这一层，无头用例覆盖不到。实测在它上面抓到过三个无头测试没暴露的问题：
+
+- 画布预设下拉把 `item_selected` 的**条目下标**当 PRESETS 下标用，整体错位一格
+  （选 1080p 得到 2K），最后一档还会数组越界；
+- 标尺标签用了 `"%.2g"`，Godot 的 `String %` 不认 `%g`：每帧刷错误、0.5s 的标签画不出来；
+- `AnimatedTexture` **没有 `fps` 属性**，`anim.fps = 8` 是静默无效赋值，动图按默认 1fps 播；
+  帧率必须写到每帧的 `duration` 上。
 
 ## 已知边界
 

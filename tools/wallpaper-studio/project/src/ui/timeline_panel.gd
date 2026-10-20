@@ -88,9 +88,15 @@ func _ready() -> void:
 	_time_label.modulate = Color(0.68, 0.72, 0.79)
 	header.add_child(_time_label)
 
-	var sp := Control.new()
-	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(sp)
+	# 告警文字紧跟时间显示并占满中间的空档。放在最右边（spacer 之后）会被
+	# clip_text 直接裁掉：问题只显示成一个没有上下文的按钮（实测 06 号截图）。
+	_status = Label.new()
+	_status.add_theme_font_size_override("font_size", 11)
+	_status.modulate = Color(0.95, 0.62, 0.35)
+	_status.clip_text = true
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status.custom_minimum_size = Vector2(0, 0)
+	header.add_child(_status)
 
 	var len_label := Label.new()
 	len_label.text = "时长"
@@ -116,14 +122,6 @@ func _ready() -> void:
 	_btn_close = _flat_button(header, "闭合循环", "在循环终点补一帧（值 = 0 时刻），回绕不跳")
 	_btn_close.visible = false
 	_btn_close.pressed.connect(_on_close_loop)
-
-	_status = Label.new()
-	_status.add_theme_font_size_override("font_size", 11)
-	_status.modulate = Color(0.95, 0.62, 0.35)
-	# 窄窗口时宁可截断，也不把「时长」和修复按钮挤出去。
-	_status.clip_text = true
-	_status.custom_minimum_size = Vector2(0, 0)
-	header.add_child(_status)
 
 	_body = HBoxContainer.new()
 	_body.size_flags_vertical = Control.SIZE_EXPAND_FILL

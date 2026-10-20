@@ -618,7 +618,10 @@ func register(t) -> void:
 			if content.texture is AnimatedTexture:
 				var anim := content.texture as AnimatedTexture
 				t.eq(anim.frames, 2, "两帧")
-				t.approx(anim.fps, 8.0, 0.0001, "帧率来自图层")
+				# AnimatedTexture 没有 fps 属性（写 anim.fps 是静默无效的），
+				# 帧率必须落到每帧的 duration 上，否则动图就按默认 1fps 播。
+				t.approx(anim.get_frame_duration(0), 0.125, 0.0001, "8fps -> 每帧 0.125s")
+				t.approx(anim.get_frame_duration(1), 0.125, 0.0001, "每一帧都要设")
 		root.free()
 
 		# 导出路径：res:// 下不建纹理，改为把帧列表与帧率写进运行时脚本。
